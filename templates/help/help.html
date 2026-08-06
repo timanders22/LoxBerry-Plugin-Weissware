@@ -1,0 +1,88 @@
+<h2>Weissware Cloud</h2>
+
+<p>Bindet vernetzte Hausger&auml;te dreier &Ouml;kosysteme an Loxone an und bringt
+sie auf <b>ein gemeinsames Modell</b>: Zustand, Restlaufzeit, Fortschritt,
+T&uuml;r, Fernstart-Freigabe, Verbrauch. F&uuml;r den Miniserver sieht ein
+Miele-Geschirrsp&uuml;ler danach genauso aus wie eine Bosch-Waschmaschine.</p>
+
+<table>
+<tr><td><b>Home Connect</b></td><td>Bosch, Siemens, Neff, Gaggenau, Constructa</td></tr>
+<tr><td><b>Miele</b></td><td>Miele@home &uuml;ber die 3rd-Party-API</td></tr>
+<tr><td><b>SmartThings</b></td><td>Samsung &mdash; mit Vorbehalt, siehe unten</td></tr>
+</table>
+
+<h3>Was Sie brauchen</h3>
+<p>Home Connect und Miele antworten nur registrierten Anwendungen. Sie
+brauchen also je ein <b>kostenloses Entwicklerkonto</b> und daraus eine
+Client-ID:</p>
+<ul>
+<li><b>Home Connect:</b> developer.home-connect.com &rarr; <i>Applications</i>
+&rarr; neue Anwendung mit dem Verfahren <b>Device Flow</b>. Das ist das
+einzige, das ohne Bildschirm am Ger&auml;t auskommt: Sie bekommen einen Code,
+tippen ihn in einem beliebigen Browser ein, fertig.</li>
+<li><b>Miele:</b> developer.miele.com &rarr; <i>Get involved</i>. Miele bietet
+kein Verfahren f&uuml;r bildschirmlose Ger&auml;te an; die Anmeldung l&auml;uft
+&uuml;ber den Browser, und der R&uuml;ckgabecode wird von Hand eingef&uuml;gt.
+Als Weiterleitungsadresse gen&uuml;gt <i>http://localhost</i> &mdash; sie muss
+nicht erreichbar sein.</li>
+<li><b>SmartThings:</b> nur ein Personal Access Token.</li>
+</ul>
+
+<h3>Der Vorbehalt zu SmartThings</h3>
+<p>Samsung hat die Lebensdauer neu ausgestellter Personal Access Tokens am
+<b>30.12.2024 auf 24 Stunden</b> verk&uuml;rzt und die Ratengrenzen gesenkt.
+F&uuml;r Dauerbetrieb verlangt Samsung eine registrierte Anwendung mit einem
+von au&szlig;en erreichbaren Webhook &mdash; das kann ein LoxBerry hinter einem
+Router nicht ohne Weiteres. Praktisch hei&szlig;t das: <b>das Token muss
+t&auml;glich erneuert werden.</b> Wer damit nicht leben will, l&auml;sst
+SmartThings aus. Wer ein Token von vor dem 30.12.2024 hat, ist nicht
+betroffen.</p>
+
+<h3>Zwei Takte statt einem</h3>
+<p>Das ist der eigentliche Grund f&uuml;r dieses Plugin. Ein starrer
+Abfragezyklus ist entweder zu langsam f&uuml;r eine brauchbare Restzeit oder zu
+schnell f&uuml;r die Ratengrenzen. Hier gibt es einen weiten Takt, solange
+nichts l&auml;uft, und einen engen, sobald ein Ger&auml;t arbeitet &mdash;
+umgeschaltet wird von selbst. Die Untergrenze liegt bei 60 Sekunden: Home
+Connect nennt h&auml;ufiges Abfragen in seinen Best Practices ausdr&uuml;cklich
+als h&auml;ufigste Ursache f&uuml;r HTTP 429.</p>
+
+<h3>Fernstart: die Sicherung, die nicht wegzudiskutieren ist</h3>
+<p>Kein Anbieter l&auml;sst ein Programm aus der Ferne starten, solange nicht
+<b>am Ger&auml;t selbst</b> die Fernstart-Freigabe gegeben wurde &mdash; bei
+Home Connect die Taste <i>Fernstart</i>, bei Miele <i>MobileStart</i>. Die
+Freigabe erlischt meist nach dem Programm. Das Plugin zeigt sie an und weist
+einen Start ohne Freigabe von sich aus ab, statt in eine Fehlermeldung des
+Anbieters zu laufen.</p>
+<p>Au&szlig;erdem muss am Ger&auml;t ein Programm gew&auml;hlt sein, wenn Sie
+ohne Programmschl&uuml;ssel starten. Das ist der Regelfall: W&auml;sche
+einf&uuml;llen, Programm w&auml;hlen, Fernstart dr&uuml;cken &mdash; und Loxone
+dr&uuml;ckt auf Start, wenn die Sonne scheint.</p>
+
+<h3>So gehen Sie vor</h3>
+<ol>
+<li><b>Einstellungen:</b> Anbieter einschalten, Zugangsdaten eintragen,
+speichern.</li>
+<li><b>Anmeldung:</b> Home Connect &uuml;ber Code, Miele &uuml;ber Browser.
+Danach h&auml;lt sich der Dienst selbst angemeldet.</li>
+<li><b>Dienst starten</b>, eine Taktl&auml;nge abwarten.</li>
+<li><b>Test:</b> Die Selbstpr&uuml;fung sagt Zeile f&uuml;r Zeile, ob es
+tr&auml;gt.</li>
+<li><b>MQTT:</b> Das Abo im MQTT-Gateway eintragen. Ohne diesen Eintrag kommt
+am Miniserver nichts an.</li>
+<li><b>Einbindung in Loxone:</b> Schritt f&uuml;r Schritt, mit
+vollst&auml;ndiger Baustein-Liste f&uuml;r den PV-&Uuml;berschuss-Fall.</li>
+</ol>
+
+<h3>Was ungepr&uuml;ft ist</h3>
+<p>Dieses Plugin wurde <b>ohne Entwicklerkonten und ohne Ger&auml;te</b>
+gebaut. Endpunkte und Datenformen stammen aus den Entwicklerdokumentationen,
+nicht aus einer Messung. Ungepr&uuml;ft ist deshalb, ob die Anmeldung gelingt,
+ob die Feldnamen passen und ob die schreibenden Befehle wirken. Bleibt ein
+Wert leer, zeigt der Knopf <i>Rohdaten als JSON ansehen</i> im Reiter
+<i>Test</i>, was der Dienst tats&auml;chlich bekommen hat.</p>
+
+<h3>Grundlage</h3>
+<p>Das Plugin spricht die Schnittstellen selbst an und braucht daf&uuml;r nur
+die Bibliothek <i>requests</i>. Es ist mit keinem der drei Hersteller
+verbunden; alle drei k&ouml;nnen ihre Schnittstellen jederzeit &auml;ndern.</p>
