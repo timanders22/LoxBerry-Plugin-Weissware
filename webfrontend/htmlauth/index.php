@@ -50,7 +50,13 @@ if ($ww_p['home'] !== '' && is_file($ww_p['home'] . '/libs/phplib/loxberry_syste
 /* Aktiver Reiter. Wer einen Reiter hinzufuegt, muss diese Positivliste
  * mitziehen - sonst springt die Seite nach jedem Absenden zurueck auf
  * Einstellungen, obwohl der Reiter sichtbar und anklickbar ist. */
-$ww_muster = '/^tab-(settings|mqtt|loxone|test|log)$/';
+/* EINE Quelle fuer Reihenfolge, Positivliste und Beschriftung. Die Namen
+ * standen bis 0.9.0 an drei Stellen: in diesem Muster, in der Reiterleiste
+ * und in den fuenf Flaechen-ids. Wer einen Reiter ergaenzt und eine davon
+ * vergisst, bekommt keinen Fehler, sondern eine Seite, die nach jedem
+ * Absenden auf Einstellungen zurueckspringt. */
+$ww_reiter_ids = array('settings', 'mqtt', 'loxone', 'test', 'log');
+$ww_muster = '/^tab-(' . implode('|', $ww_reiter_ids) . ')$/';
 $ww_tab = 'tab-settings';
 if (isset($_POST['activetab']) && preg_match($ww_muster, (string) $_POST['activetab'])) {
     $ww_tab = (string) $_POST['activetab'];
@@ -209,6 +215,14 @@ if ($ww_post && isset($_POST['anmelden'])) {
             }
         }
     } elseif ($ww_was === 'verwerfen') {
+        /* Auch die halb fertige Home-Connect-Anmeldung wegraeumen.
+         *
+         * hc_anmeldung.json entsteht beim Geraeteablauf und enthaelt den
+         * Geraetecode samt Ablaufzeit. Bleibt sie liegen, versucht der
+         * naechste Anmeldeversuch, die alte - laengst abgelaufene - Sitzung
+         * abzuschliessen, statt eine neue zu beginnen. Genau das soll der
+         * Knopf "Anmeldung neu erzwingen" verhindern. */
+        @unlink($ww_p['datadir'] . '/hc_anmeldung.json');
         $ww_datei = $ww_p['datadir'] . '/token.json';
         if (is_file($ww_datei) && @unlink($ww_datei)) {
             $ww_meldungen[] = ww_t('EINST.SITZUNG_VERWORFEN');
@@ -280,7 +294,7 @@ $ww_basis = 'http://' . $ww_host . '/plugins/' . $ww_p['plugin'] . '/index.php';
 $ww_logzeilen = array();
 if (is_file($ww_p['log'])) {
     $ww_logzeilen = array_slice(
-        array_reverse(file($ww_p['log'], FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: array()),
+        ww_log_ende($ww_p['log'], 400),
         0, 400);
 }
 
@@ -421,15 +435,19 @@ if ($ww_rahmen) {
      Reiter verlinkbar, Eingaben in anderen Reitern gehen nicht verloren, und
      faellt das Skript aus, ist die Seite weiterhin bedienbar. -->
 <div class="sm-tabs">
-	<a class="sm-tab" data-ziel="tab-settings" href="index.php?form=settings"><?= ww_e(ww_t('REITER.EINSTELLUNGEN')) ?></a>
-	<a class="sm-tab" data-ziel="tab-mqtt"     href="index.php?form=mqtt">MQTT</a>
-	<a class="sm-tab" data-ziel="tab-loxone"   href="index.php?form=loxone"><?= ww_e(ww_t('REITER.LOXONE')) ?></a>
-	<a class="sm-tab" data-ziel="tab-test"     href="index.php?form=test"><?= ww_e(ww_t('REITER.TEST')) ?></a>
-	<a class="sm-tab" data-ziel="tab-log"      href="index.php?form=log"><?= ww_e(ww_t('REITER.LOG')) ?></a>
+<?php
+$ww_beschriftung = array(
+    'settings' => 'REITER.EINSTELLUNGEN', 'mqtt' => '', 'loxone' => 'REITER.LOXONE',
+    'test'     => 'REITER.TEST',          'log'  => 'REITER.LOG',
+);
+foreach ($ww_reiter_ids as $ww_r) {
+    $ww_bez = $ww_beschriftung[$ww_r] !== '' ? ww_t($ww_beschriftung[$ww_r]) : 'MQTT'; ?>
+	<a class="sm-tab<?= $ww_tab === 'tab-' . $ww_r ? ' sm-active' : '' ?>" data-ziel="tab-<?= $ww_r ?>" href="index.php?form=<?= $ww_r ?>"><?= ww_e($ww_bez) ?></a>
+<?php } ?>
 </div>
 
 <!-- ================= Reiter: Einstellungen ================= -->
-<div class="sm-seite" id="tab-settings">
+<div class="sm-seite<?= $ww_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
 
 <?php if ($ww_pyv !== '' && version_compare($ww_pyv, '3.9.0', '<')) { ?>
 <div class="sm-fehler"><?= ww_t('EINST.PYTHON_ZU_ALT') ?></div>
@@ -575,7 +593,7 @@ if ($ww_rahmen) {
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-lesen" type="submit"><?= ww_e(ww_t('ALLG.SPEICHERN')) ?></button>
 </div>
-\1<h2><?= ww_e(ww_t('EINST.H_ANMELDUNG')) ?></h2>
+<h2><?= ww_e(ww_t('EINST.H_ANMELDUNG')) ?></h2>
 <p class="sm-hilfe"><?= ww_t('EINST.ANMELDUNG_ERKLAERUNG') ?></p>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-lesen"></i> <?= ww_t('LEGENDE.LESEN') ?></span>
@@ -660,7 +678,7 @@ if ($ww_rahmen) {
 </div>
 
 <!-- ================= Reiter: MQTT ================= -->
-<div class="sm-seite" id="tab-mqtt">
+<div class="sm-seite<?= $ww_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" id="tab-mqtt">
 <h2><?= ww_e(ww_t('MQTT.H_ZUSTAND')) ?></h2>
 <p class="sm-hilfe"><?= ww_t('MQTT.GATEWAY_ERKLAERUNG') ?></p>
 
@@ -700,7 +718,7 @@ if ($ww_rahmen) {
 </div>
 
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
-<div class="sm-seite" id="tab-loxone">
+<div class="sm-seite<?= $ww_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
 <h2><?= ww_e(ww_t('LOX.H_TITEL')) ?></h2>
 <p><?= ww_t('LOX.EINLEITUNG') ?></p>
 
@@ -899,7 +917,7 @@ function ww_bausteine()
 </div>
 
 <!-- ================= Reiter: Test ================= -->
-<div class="sm-seite" id="tab-test">
+<div class="sm-seite<?= $ww_tab === 'tab-test' ? ' sm-active' : '' ?>" id="tab-test">
 <h2><?= ww_e(ww_t('TEST.H_SELBSTPRUEFUNG')) ?></h2>
 <p class="sm-hilfe"><?= ww_t('TEST.EINLEITUNG') ?></p>
 <table class="sm-tbl">
@@ -969,7 +987,7 @@ function ww_bausteine()
 </div>
 
 <!-- ================= Reiter: Logdateien ================= -->
-<div class="sm-seite" id="tab-log">
+<div class="sm-seite<?= $ww_tab === 'tab-log' ? ' sm-active' : '' ?>" id="tab-log">
 <h2><?= ww_e(ww_t('LOG.H_TITEL')) ?></h2>
 <?php
 if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) {

@@ -1,0 +1,130 @@
+#!/bin/bash
+# Weissware Cloud - uninstall
+# command <TEMPFOLDER> <NAME> <FOLDER> <VERSION> <BASEFOLDER>
+#
+# Laeuft als root beim Deinstallieren.
+#
+# ===================================================================
+# WARUM ES DIESE DATEI GIBT
+# ===================================================================
+#
+# LoxBerry raeumt beim Deinstallieren die Ordner weg, die dem Plugin
+# gehoeren - bin/, data/, log/, config/ und die beiden
+# webfrontend-Ordner. Zwei Dinge liegen ausserhalb:
+#
+#   1. Die Sicherungsdateien
+#        config/plugins/<ordner>.backup.weissware.json
+#        config/plugins/<ordner>.backup.zugang.json
+#      Sie liegen bewusst NEBEN dem Konfigordner, damit sie ein Update
+#      und sogar eine Neuinstallation ueberstehen - preupgrade.sh legt
+#      sie an, postinstall.sh spielt sie zurueck. Geloescht wird beim
+#      Deinstallieren config/plugins/<ordner>/, also das VERZEICHNIS;
+#      eine Datei daneben bliebe liegen.
+#
+#      In zugang.json stehen die Zugangsdaten fuer bis zu drei
+#      Herstellerclouds. Wer das Plugin entfernt, erwartet nicht, dass
+#      sie auf der Karte bleiben.
+#
+#   2. Der laufende Dienst. Er wird mit nohup gestartet und haengt an
+#      keinem Elternprozess, den LoxBerry beenden wuerde.
+#
+# Die Anmeldemarken (data/plugins/<ordner>/token.json) gehen mit dem
+# Datenordner weg, den LoxBerry selbst entfernt - dort steht ein
+# gueltiger Zugang zu den Clouds, auch ohne Passwort.
+#
+# Was NICHT aufgeraeumt werden muss: MQTT. Der Dienst sendet mit
+# "publish", nicht mit "retain".
+
+ARGV3=$3
+ARGV5=$5
+PFOLDER="${ARGV3:-weissware}"
+BASE="${ARGV5:-$LBHOMEDIR}"
+[ -n "$BASE" ] && [ -d "$BASE" ] || BASE="/opt/loxberry"
+
+PDATA="$BASE/data/plugins/$PFOLDER"
+PBIN="$BASE/bin/plugins/$PFOLDER"
+PCONFIG="$BASE/config/plugins"
+
+# ---------------------------------------------------------------
+# 1. Dienst anhalten
+# ---------------------------------------------------------------
+# Geprueft wird ARGUMENTWEISE: /proc/<pid>/cmdline trennt die Argumente
+# mit Nullbytes. Das zweite Argument muss genau unser Skript sein, das
+# erste ein Python - "nano <pfad>/weissware.py" fuehrt den vollen Pfad
+# sonst ebenfalls als zweites Argument. Der volle Pfad statt nur des
+# Dateinamens, damit die Deinstallation des einen Exemplars nicht den
+# Dienst eines zweiten abschiesst.
+ist_unser_dienst() {
+    [ -r "/proc/$1/cmdline" ] || return 1
+    ARGS=$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null)
+    [ "$(echo "$ARGS" | sed -n '2p')" = "$PBIN/weissware.py" ] || return 1
+    echo "$ARGS" | sed -n '1p' | grep -qE '(^|/)python[0-9.]*$' || return 1
+    return 0
+}
+
+beenden() {
+    P="$1"
+    kill "$P" 2>/dev/null
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        kill -0 "$P" 2>/dev/null || return 0
+        sleep 1
+    done
+    kill -9 "$P" 2>/dev/null
+    sleep 1
+    return 0
+}
+
+GEFUNDEN=0
+PIDDATEI="$PDATA/dienst.pid"
+if [ -f "$PIDDATEI" ]; then
+    P=$(cat "$PIDDATEI" 2>/dev/null)
+    if [ -n "$P" ] && kill -0 "$P" 2>/dev/null && ist_unser_dienst "$P"; then
+        beenden "$P"; GEFUNDEN=1
+        echo "<OK> Laufender Abrufdienst beendet (PID $P)."
+    fi
+fi
+for D in /proc/[0-9]*; do
+    P=$(basename "$D")
+    if ist_unser_dienst "$P" && kill -0 "$P" 2>/dev/null; then
+        beenden "$P"; GEFUNDEN=1
+        echo "<OK> Weiterer Abrufdienst beendet (PID $P)."
+    fi
+done
+[ "$GEFUNDEN" -eq 0 ] && echo "<INFO> Es lief kein Abrufdienst."
+rm -f "$PIDDATEI" "$PDATA/soll_laufen" 2>/dev/null
+
+# ---------------------------------------------------------------
+# 2. Sicherungsdateien ausserhalb der Plugin-Ordner
+# ---------------------------------------------------------------
+for f in weissware.json zugang.json; do
+    BK="$PCONFIG/$PFOLDER.backup.$f"
+    if [ -f "$BK" ]; then
+        # Ueberschreiben, dann entfernen: nur unlink liesse den Inhalt
+        # auf der Karte stehen, bis der Platz neu vergeben wird.
+        LAENGE=$(stat -c %s "$BK" 2>/dev/null || echo 0)
+        [ "$LAENGE" -gt 0 ] && dd if=/dev/zero of="$BK" bs=1 count="$LAENGE" \
+            conv=notrunc >/dev/null 2>&1
+        rm -f "$BK" && echo "<OK> Sicherung entfernt: $PFOLDER.backup.$f"
+    fi
+done
+
+# ---------------------------------------------------------------
+# 3. Anmeldemarken und Zwischenstaende
+# ---------------------------------------------------------------
+# LoxBerry entfernt den Datenordner selbst - hier wird nur das
+# Empfindliche vorher ueberschrieben, falls die Karte spaeter ausgelesen
+# wird.
+for f in token.json hc_anmeldung.json; do
+    Z="$PDATA/$f"
+    if [ -f "$Z" ]; then
+        LAENGE=$(stat -c %s "$Z" 2>/dev/null || echo 0)
+        [ "$LAENGE" -gt 0 ] && dd if=/dev/zero of="$Z" bs=1 count="$LAENGE" \
+            conv=notrunc >/dev/null 2>&1
+        rm -f "$Z"
+    fi
+done
+rm -rf "$PDATA/befehle" "$PDATA/antworten" 2>/dev/null
+
+echo "<INFO> Zugangsdaten und Anmeldemarken der Herstellerclouds sind vom"
+echo "<INFO> LoxBerry entfernt."
+exit 0

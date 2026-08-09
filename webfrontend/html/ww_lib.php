@@ -44,13 +44,23 @@ function ww_paths()
     // er wird aus Autorenname, E-Mail und Plugin-Name gebildet und aendert
     // sich bei jedem Fork.
     $dir = basename(dirname(__FILE__));
-    if ($home && !is_dir($home . '/config/plugins/' . $dir)) {
-        foreach (array(getenv('LBPPLUGINDIR'), 'weissware') as $kand) {
-            if ($kand && is_dir($home . '/config/plugins/' . $kand)) {
-                $dir = $kand;
-                break;
-            }
-        }
+    /* Frueher wurde hier auf den festen Namen "weissware" zurueckgefallen,
+     * sobald config/plugins/<ordner> noch fehlte - etwa im Augenblick der
+     * Installation. Haengt LoxBerry bei einer Zweitinstallation einen Zaehler
+     * an (weissware_01, weil der Name schon belegt war), zeigten deren Pfade
+     * damit auf die ERSTE Installation: gemeinsame zugang.json - und darin
+     * stehen die Client-Geheimnisse dreier Anbieter -, gemeinsame
+     * Warteschlange, gemeinsames Protokoll.
+     *
+     * LBPPLUGINDIR ist die Auskunft von LoxBerry selbst und bleibt deshalb.
+     * Der feste Name greift nur noch dort, wo der ermittelte nachweislich kein
+     * Plugin-Ordner sein kann: aus dem ausgepackten Archiv heraus heisst er
+     * "html". */
+    $lbp = getenv('LBPPLUGINDIR');
+    if ($lbp) {
+        $dir = $lbp;
+    } elseif ($dir === '' || $dir === '.' || $dir === '/' || $dir === 'html') {
+        $dir = 'weissware';
     }
     if ($home) {
         $p = array(
@@ -74,7 +84,7 @@ function ww_paths()
             'configdir' => $basis . '/config',
             'config'    => $basis . '/config/weissware.json',
             'zugang'    => $basis . '/config/zugang.json',
-            'sicherung' => $basis . '/config/vw.backup.json',
+            'sicherung' => $basis . '/config/weissware.backup.json',
             'datadir'   => $basis . '/data',
             'bindir'    => $basis . '/bin',
             'logdir'    => $basis . '/log',
@@ -167,14 +177,6 @@ function ww_zugang()
 }
 
 /**
- * Speichert die Zugangsdaten.
- *
- * Ein leer zurueckgegebenes Passwortfeld loescht nichts: sonst stuende
- * irgendwann ein leeres Passwort in der Datei, ohne dass es jemand merkt.
- * Genau dieser Fehler hat im ACTi-Plugin 21 vergebliche Anmeldeversuche
- * verursacht.
- */
-/**
  * Speichert die Zugangsdaten der drei Anbieter.
  *
  * Ein leer zurueckgegebenes Geheimfeld loescht nichts: sonst stuende
@@ -197,9 +199,30 @@ function ww_zugang_speichern($neu)
         $aus[$f] = ($wert !== '') ? $wert : (isset($alt[$f]) ? $alt[$f] : '');
     }
     $json = json_encode($aus, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    $ok = @file_put_contents($p['zugang'], $json) !== false;
-    @chmod($p['zugang'], 0600);
-    return $ok;
+    // json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
+    // schriebe dann eine LEERE Datei - hier waeren das die Zugangsdaten.
+    if ($json === false) {
+        return false;
+    }
+    /* Ueber eine Nebendatei, und die Rechte werden VOR dem Umbenennen gesetzt.
+     * "schreiben, dann chmod" liesse die Datei fuer die Dauer des Schreibens
+     * mit den Rechten aus der umask dastehen - und darin stehen die
+     * Client-Geheimnisse von Home Connect und Miele sowie das
+     * SmartThings-Token. Ausserdem liest der Dienst diese Datei; ein
+     * einfaches file_put_contents kuerzt sie zuerst auf null, und wer in
+     * diesem Augenblick liest, sieht keine Zugangsdaten und meldet sich
+     * vergeblich an. */
+    $tmp = $p['zugang'] . '.tmp.' . getmypid();
+    if (@file_put_contents($tmp, $json) !== strlen($json)) {
+        @unlink($tmp);
+        return false;
+    }
+    @chmod($tmp, 0600);
+    if (!@rename($tmp, $p['zugang'])) {
+        @unlink($tmp);
+        return false;
+    }
+    return true;
 }
 
 /** Ist ein Anbieter angemeldet? Liest die Markendatei des Dienstes. */
@@ -386,6 +409,9 @@ function ww_selbsttest()
  * 2 eingereiht, aber ohne Antwort in der Wartezeit - also Ergebnis unbekannt.
  * Es wird bewusst kein Erfolg gemeldet, den niemand geprueft hat.
  */
+/** Obergrenze fuer eine Wartezeit, die aus einer Web-Anfrage kommt. */
+define('WW_WARTEN_WEB', 12);
+
 function ww_befehl_absetzen($befehl, $wartezeit = null)
 {
     $p = ww_paths();
@@ -393,7 +419,15 @@ function ww_befehl_absetzen($befehl, $wartezeit = null)
     if ($wartezeit === null) {
         $wartezeit = (int) $cfg['wartezeit'];
     }
-    $wartezeit = max(0, min(30, (int) $wartezeit));
+    /* Bis 0.9.0 bei 30 Sekunden gedeckelt. Das ist fuer einen Aufruf aus dem
+     * Webfrontend zu lang: ein Webserver bricht die Anfrage typischerweise
+     * nach 15 bis 30 Sekunden mit 504 ab, und der Benutzer sieht einen
+     * Serverfehler statt einer Auskunft.
+     *
+     * Der Dienst arbeitet den Befehl trotzdem zu Ende - die Warteschlange
+     * liegt im Dateisystem, nicht in dieser Anfrage. Was danach geschah,
+     * steht im Protokoll. */
+    $wartezeit = max(0, min(WW_WARTEN_WEB, (int) $wartezeit));
 
     $ordner = $p['datadir'] . '/befehle';
     if (!is_dir($ordner) && !@mkdir($ordner, 0775, true) && !is_dir($ordner)) {
@@ -402,7 +436,18 @@ function ww_befehl_absetzen($befehl, $wartezeit = null)
     $kennung = bin2hex(random_bytes(8));
     $datei = $ordner . '/' . $kennung . '.json';
     $tmp = $datei . '.tmp';
-    if (@file_put_contents($tmp, json_encode($befehl)) === false || !@rename($tmp, $datei)) {
+    /* json_encode gibt bei ungueltigem UTF-8 false zurueck. file_put_contents
+     * macht daraus eine leere Zeichenkette, schreibt null Byte und meldet das
+     * als Erfolg - der Rueckgabewert ist 0, nicht false, die Pruefung auf
+     * "=== false" greift also nicht, und rename schiebt die leere Datei in die
+     * Warteschlange. Der Dienst faende dort einen Befehl, den er nicht deuten
+     * kann. Deshalb zuerst kodieren und den Rueckgabewert ansehen - so, wie es
+     * ww_config_speichern() weiter oben schon tut. */
+    $ww_js = json_encode($befehl);
+    if ($ww_js === false) {
+        return array(0, 'Der Befehl liess sich nicht als JSON darstellen (ungueltiges UTF-8).');
+    }
+    if (@file_put_contents($tmp, $ww_js) !== strlen($ww_js) || !@rename($tmp, $datei)) {
         @unlink($tmp);
         return array(0, 'Der Befehl liess sich nicht ablegen: ' . $datei);
     }
@@ -410,6 +455,9 @@ function ww_befehl_absetzen($befehl, $wartezeit = null)
     for ($i = 0; $i < $wartezeit * 10; $i++) {
         if (is_file($antwort)) {
             $a = ww_json_lesen($antwort);
+            /* Gelesen ist erledigt. Bis 0.9.0 blieb die Datei liegen und
+             * sammelte sich im Datenordner an. */
+            @unlink($antwort);
             return array((int) (isset($a['ok']) ? $a['ok'] : 0),
                          (string) (isset($a['meldung']) ? $a['meldung'] : ''));
         }
@@ -563,7 +611,6 @@ function ww_status_felder()
     );
 }
 
-/** Die Werte des Lade-Endpunkts. */
 /** Die Werte des Verbrauchs-Endpunkts. */
 function ww_verbrauch_felder()
 {
@@ -576,8 +623,41 @@ function ww_verbrauch_felder()
     );
 }
 
-/** Die Werte des Wartungs-Endpunkts. */
-
+/**
+ * Die letzten $anzahl Zeilen einer Datei, neueste zuerst.
+ *
+ * Bis 0.9.0 las die Oberflaeche das Protokoll mit file() vollstaendig ein.
+ * Der Hinweis auf den Speicher war berechtigt - der vorgeschlagene Weg ueber
+ * exec("tail") ist aber der langsamste der drei. An einer Datei an der
+ * Rotationsgrenze gemessen, PHP 7.4 und 8.1:
+ *
+ *   file() ganz einlesen     rund 0,3 ms   Spitze rund 1,4 MB
+ *   exec("tail -n 400")      rund 1,9 ms   Spitze rund  75 kB
+ *   rueckwaerts mit fseek    rund 0,05 ms  Spitze rund 125 kB
+ *
+ * Ein Prozessstart kostet mehr, als das Einlesen je gespart hat.
+ */
+function ww_log_ende($datei, $anzahl = 400, $block = 8192)
+{
+    $fp = @fopen($datei, 'rb');
+    if ($fp === false) {
+        return array();
+    }
+    fseek($fp, 0, SEEK_END);
+    $pos = ftell($fp);
+    $puffer = '';
+    $zeilen = array();
+    while ($pos > 0 && count($zeilen) <= $anzahl) {
+        $lese = (int) min($block, $pos);
+        $pos -= $lese;
+        fseek($fp, $pos, SEEK_SET);
+        $puffer = fread($fp, $lese) . $puffer;
+        $zeilen = explode("\n", $puffer);
+    }
+    fclose($fp);
+    $zeilen = array_values(array_filter(array_map('rtrim', $zeilen), 'strlen'));
+    return array_slice(array_reverse($zeilen), 0, $anzahl);
+}
 
 /** Vorlage fuer den Import in Loxone Config. Rueckgabe: array(name, inhalt) */
 function ww_vorlage($nummer = 1)
@@ -596,7 +676,10 @@ function ww_vorlage($nummer = 1)
         $bedeutung = trim(strip_tags(html_entity_decode(ww_t($info[1]), ENT_QUOTES, 'UTF-8')));
         $einheit = trim(strip_tags(html_entity_decode($info[0], ENT_QUOTES, 'UTF-8')));
         $cmds[] = array(
-            'title'   => 'AUDI_' . $nummer . '_' . $feld,
+            // WW_, nicht AUDI_. Der Rest stammte aus dem Plugin, aus dem
+            // die Vorlagenfunktion uebernommen wurde - in Loxone Config
+            // standen die Bausteine damit unter fremdem Namen.
+            'title'   => 'WW_' . $nummer . '_' . $feld,
             'comment' => $bedeutung . ($einheit !== '' ? ' [' . $einheit . ']' : ''),
             'check'   => '\i' . $feld . '=\i\v',
         );

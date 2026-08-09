@@ -216,9 +216,22 @@ def json_schreiben(pfad: Path, daten, rechte: int | None = None) -> bool:
     try:
         pfad.parent.mkdir(parents=True, exist_ok=True)
         tmp = pfad.with_suffix(pfad.suffix + ".tmp")
-        with tmp.open("w", encoding="utf-8") as f:
+        # Die Rechte gehoeren an das ANLEGEN, nicht hinterher.
+        #
+        # Bis 0.9.0 wurde die Nebendatei mit tmp.open("w") angelegt und erst
+        # nach dem Schreiben auf 0600 gesetzt. Nachgemessen mit umask 022:
+        #     bisher: waehrend des Schreibens 0644, danach 0600
+        #     jetzt:  waehrend des Schreibens 0600, danach 0600
+        # In token.json steht ein gueltiger Zugang zu drei Herstellerclouds.
+        # Ein Zeitfenster, in dem ihn jeder Systembenutzer lesen kann, ist
+        # kurz - aber es gibt keinen Grund, es offen zu lassen.
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                     rechte if rechte is not None else 0o644)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(daten, f, ensure_ascii=False, indent=1, default=str)
         if rechte is not None:
+            # Falls die Datei schon bestand: O_CREAT setzt die Rechte dann
+            # nicht, deshalb hier noch einmal ausdruecklich.
             os.chmod(tmp, rechte)
         os.replace(tmp, pfad)
         return True
@@ -371,7 +384,7 @@ def kopfzeilen(token: str, sprache: str = "") -> dict:
         "Authorization": "Bearer " + token,
         "Accept": "application/vnd.bsh.sdk.v1+json, application/json",
         "Accept-Encoding": "gzip, deflate",
-        "User-Agent": "LoxBerry-Weissware/0.9.0",
+        "User-Agent": "LoxBerry-Weissware/0.9.1",
     }
     if sprache:
         h["Accept-Language"] = sprache
@@ -1026,10 +1039,24 @@ def warteschlange(sitzung, cfg: dict, z: dict, marken: dict, geraete: list) -> b
     for datei in sorted(ORDNER_BEFEHLE.glob("*.json")):
         b = json_lesen(datei)
         kennung = datei.stem
+        # ERST loeschen, DANN ausfuehren - und wenn das Loeschen scheitert,
+        # gar nicht ausfuehren.
+        #
+        # Bis 0.9.0 wurde ein Fehler beim Loeschen verschluckt und der Befehl
+        # trotzdem abgearbeitet. Die Datei bleibt dann liegen und wird in
+        # JEDEM weiteren Durchgang erneut ausgefuehrt. Bei einem Abruf waere
+        # das nur Last; bei "Waschmaschine starten" laeuft das Geraet jede
+        # Runde neu an. Lieber ein gemeldeter Stillstand als eine Schleife,
+        # die Geraete schaltet.
         try:
             datei.unlink()
-        except OSError:
-            pass
+        except OSError as err:
+            melde_gebremst("queue_" + kennung,
+                           "Befehlsdatei {0} liess sich nicht entfernen ({1}) - der "
+                           "Befehl wird NICHT ausgefuehrt, sonst liefe er endlos "
+                           "erneut. Schreibrechte auf {2} pruefen.".format(
+                               datei.name, err, ORDNER_BEFEHLE), 900)
+            continue
         if not b:
             antwort_schreiben(kennung, 0, "Befehlsdatei war leer oder unlesbar.")
             continue

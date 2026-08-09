@@ -133,8 +133,145 @@ Zugangsdaten und Anmeldemarken liegen in
 Loxone-Projektdatei. Verbindungen gibt es nur zu den eingeschalteten Anbietern
 und, bei der Installation, zu PyPI.
 
+## Fassung 0.9.1 — nachgemessen und korrigiert
+
+### Zugangsdaten werden unteilbar geschrieben, Rechte vor dem Umbenennen
+
+`zugang.json` hält die Client-Geheimnisse von Home Connect und Miele sowie das
+SmartThings-Token. Geschrieben wurde sie mit `file_put_contents`, **danach**
+kam `chmod 0600`. Zwei Dinge daran:
+
+* Zwischen Anlegen und `chmod` steht die Datei mit den Rechten aus der umask
+  da — mit den Geheimnissen bereits darin. Jetzt werden die Rechte an der
+  Nebendatei gesetzt, **bevor** sie an ihren Platz umbenannt wird.
+* Der Dienst liest dieselbe Datei. `file_put_contents` kürzt sie zuerst auf
+  null; wer in diesem Augenblick liest, sieht keine Zugangsdaten und meldet
+  sich vergeblich an. `rename()` ist unteilbar.
+
+### Der Plugin-Ordner wird ermittelt, nicht geraten
+
+`ww_paths()` fiel auf den festen Namen `weissware` zurück, sobald
+`config/plugins/<ordner>` noch fehlte. Hängt LoxBerry bei einer
+Zweitinstallation einen Zähler an (`weissware_01`), zeigten deren Pfade damit
+auf die **erste** Installation — gemeinsame `zugang.json` mit den Geheimnissen
+dreier Anbieter, gemeinsame Warteschlange, gemeinsames Protokoll. Maßgeblich
+ist jetzt `LBPPLUGINDIR`.
+
+### Eine leere Befehlsdatei konnte in die Warteschlange geraten
+
+`ww_befehl_senden()` schrieb `json_encode($befehl)` direkt weiter. Gibt
+`json_encode` bei ungültigem UTF-8 `false` zurück, macht `file_put_contents`
+daraus eine leere Zeichenkette, schreibt null Byte und meldet **Erfolg** — der
+Rückgabewert ist `0`, nicht `false`, die Prüfung auf `=== false` greift also
+nicht. `ww_config_speichern()` im selben Modul macht es seit jeher richtig.
+
+Dazu: Der `User-Agent` an die drei Herstellerclouds trug noch `0.9.0`.
+
+Vierzehn Punkte aus einer Durchsicht. Zehn trafen zu, drei teilweise, einer
+nicht. Bemerkenswert an dieser Liste: die Hälfte sind Altlasten aus fremden
+Plugins, aus denen Bausteine übernommen wurden. Die waren alle real.
+
+### Altlasten aus fremden Plugins
+
+| Fundstelle | war | ist |
+|---|---|---|
+| `ww_vorlage()` | `'AUDI_' . $nummer . '_' . $feld` | `'WW_' …` |
+| `ww_paths()`, Ersatzzweig | `config/vw.backup.json` | `config/weissware.backup.json` |
+| vor `ww_zugang_speichern()` | zwei PHPDoc-Blöcke übereinander | einer |
+| vor `ww_verbrauch_felder()` | „Die Werte des **Lade**-Endpunkts" *und* „…des Verbrauchs-Endpunkts" | nur der richtige |
+| nach `ww_verbrauch_felder()` | „Die Werte des Wartungs-Endpunkts" ohne Code dahinter | entfernt |
+| `htmlauth/index.php` | ein `\1` vor `<h2>` — Rest einer Suchen-und-Ersetzen-Aktion | entfernt |
+
+Das `AUDI_` war der folgenreichste: in Loxone Config wären die Bausteine
+unter fremdem Namen gelandet. Das `\1` stand sichtbar in der Oberfläche.
+
+### Doppelter Block in der Selbstprüfung
+
+Trifft zu, und die Beschreibung war genau: ohne Ausfälle erschien
+*„keine Ausfälle"* zweimal, mit Ausfällen wurden sie erst einzeln je Anbieter
+und danach noch einmal gesammelt aufgeführt. Der zweite Block ist weg — die
+Einzelaufstellung bleibt, sie nennt den Grund.
+
+### Zugriffsrechte beim Schreiben der Token-Datei
+
+Trifft zu. `json_schreiben()` legte die Nebendatei mit `tmp.open("w")` an und
+setzte die Rechte erst danach. Gemessen mit `umask 022`:
+
+| | während des Schreibens | danach |
+|---|---|---|
+| bisher | **0644** | 0600 |
+| jetzt (`os.open` mit `mode`) | 0600 | 0600 |
+
+In `token.json` steht ein gültiger Zugang zu drei Herstellerclouds.
+
+### Weitere zutreffende Punkte
+
+**Antwortdateien** blieben nach dem Lesen liegen — `unlink` ergänzt.
+
+**Wartezeit aus dem Webfrontend** war auf 30 s gedeckelt; jetzt 12. Ein
+Webserver bricht vorher mit 504 ab, und der Dienst arbeitet den Befehl
+ohnehin zu Ende — die Warteschlange liegt im Dateisystem, nicht in der
+Anfrage.
+
+**Nicht löschbare Befehlsdatei.** Der Fehler wurde verschluckt und der Befehl
+trotzdem ausgeführt; die Datei blieb liegen und wurde in jedem weiteren
+Durchgang erneut abgearbeitet. Bei einem Abruf wäre das nur Last — bei
+„Waschmaschine starten" läuft das Gerät jede Runde neu an. Jetzt wird der
+Befehl in diesem Fall **nicht** ausgeführt und der Grund gemeldet.
+
+**Alte PID-Datei** blieb liegen, wenn der Prozess fort war. Sie wird jetzt
+entfernt, sobald sie sich als Leiche erweist.
+
+**Cron über `/bin/bash`.** Umgesetzt: geht das Ausführungsrecht verloren,
+schlüge der unmittelbare Aufruf lautlos fehl — die Ausgabe geht nach
+`/dev/null`.
+
+**`hc_anmeldung.json` beim Verwerfen.** Umgesetzt. Blieb die Datei liegen,
+versuchte der nächste Anmeldeversuch die alte, längst abgelaufene Sitzung
+abzuschließen — genau das soll der Knopf verhindern.
+
+**Protokoll ganz eingelesen.** Der Speicherhinweis war berechtigt, `tail` ist
+aber der langsamste der drei Wege (rund 1,9 ms gegen 0,05 ms beim
+Rückwärtslesen mit `fseek`). Umgestellt auf `fseek`.
+
+### Was nicht zutraf
+
+**Fehlende Timeouts bei `requests`.** Jeder einzelne Aufruf in
+`weissware.py` trägt `timeout=30` — vierzehn Stellen, nachgezählt. Richtig
+an dem Punkt ist nur die Folge: 30 s sind lang genug, dass `dienst.sh stop`
+in den harten `kill -9` nach zehn Sekunden laufen kann. Das ist aber ein
+Abwägung zwischen „Abruf abbrechen" und „sauber beenden", kein fehlender
+Timeout.
+
+### Nebenbefunde
+
+**Die Prozessprüfung war zu weich.** `grep -qa "weissware.py"` über die ganze
+Befehlszeile: hat eine wiederverwendete Prozessnummer einen Editor mit
+geöffneter `weissware.py` erwischt, galt der als laufender Dienst. Geprüft
+werden jetzt zwei Dinge argumentweise — argv[1] ist genau das Skript, argv[0]
+ist ein Python. Nur das erste zu prüfen reicht nicht: `nano <pfad>/weissware.py`
+führt den Pfad ebenfalls als zweites Argument.
+
+**Die fünf Reiter brauchten JavaScript.** `sm-active` wurde ausschließlich
+vom Skript vergeben — ohne JavaScript war keine Fläche sichtbar. Reihenfolge,
+Positivliste und Beschriftung kommen jetzt aus einem einzigen Feld, der
+Server setzt die Klasse selbst.
+
+**Es gab kein Uninstall-Skript.** Die Sicherungen mit den Zugangsdaten von bis
+zu drei Herstellerclouds liegen neben dem Konfigordner — gelöscht wird beim
+Deinstallieren nur das Verzeichnis. Sie wären für immer auf der Karte
+geblieben. `uninstall/uninstall` gibt es jetzt; es hält den Dienst an,
+überschreibt Sicherungen, Anmeldemarken und die halbe Anmeldung und entfernt
+sie.
+
 ## Lizenz
 
-MIT — siehe [LICENSE](LICENSE). Das Projekt ist mit keinem der drei Hersteller
-verbunden. Alle drei können ihre Schnittstellen ohne Ankündigung ändern, womit
+MIT — siehe [LICENSE](LICENSE).
+
+Home Connect, Bosch, Siemens, Neff, Gaggenau und Constructa sind Marken der
+BSH Hausgeräte GmbH, Miele und Miele@home Marken der Miele & Cie. KG,
+SmartThings und Samsung Marken der Samsung Electronics Co., Ltd. Dieses
+Projekt steht in keiner Verbindung zu diesen Unternehmen und wird von ihnen
+weder herausgegeben noch unterstützt; es benutzt lediglich deren öffentlich
+angebotene Schnittstellen. Alle drei können sie ohne Ankündigung ändern, womit
 dieses Plugin ganz oder teilweise unbrauchbar würde.

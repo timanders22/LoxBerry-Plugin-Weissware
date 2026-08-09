@@ -109,11 +109,10 @@ function ww_pruefungen()
     } elseif ($geraete) {
         $zeilen[] = ww_pruefzeile(1, ww_t('TEST.F_AUSFAELLE'), ww_t('TEST.A_KEINE_AUSFAELLE'));
     }
-    if ($aus) {
-        $zeilen[] = ww_pruefzeile(0, ww_t('TEST.F_AUSFAELLE'), ww_e(implode(', ', $aus)));
-    } elseif ($geraete) {
-        $zeilen[] = ww_pruefzeile(1, ww_t('TEST.F_AUSFAELLE'), ww_t('TEST.A_KEINE_AUSFAELLE'));
-    }
+    /* Hier stand derselbe Block ein zweites Mal. Ohne Ausfaelle erschien die
+     * Zeile "keine Ausfaelle" doppelt; mit Ausfaellen wurden sie erst einzeln
+     * je Anbieter und danach noch einmal gesammelt aufgefuehrt. Die
+     * Einzelaufstellung oben ist die brauchbarere - sie nennt den Grund. */
 
     $alter = ww_alter();
     if ($alter < 0) {

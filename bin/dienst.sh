@@ -24,10 +24,26 @@ mkdir -p "$PDATA" "$PLOG" 2>/dev/null
 laeuft() {
     [ -f "$PID" ] || return 1
     P=$(cat "$PID" 2>/dev/null)
-    [ -n "$P" ] || return 1
-    kill -0 "$P" 2>/dev/null || return 1
-    # Nummernrecycling ausschliessen: der Prozess muss unser Skript sein
-    grep -qa "weissware.py" "/proc/$P/cmdline" 2>/dev/null || return 1
+    if [ -z "$P" ]; then rm -f "$PID"; return 1; fi
+    if ! kill -0 "$P" 2>/dev/null; then
+        # Der Prozess ist fort - die PID-Datei ist eine Leiche und wird
+        # entfernt. Bis 0.9.0 blieb sie liegen; "status" meldete dann zwar
+        # richtig, dass nichts laeuft, aber die Datei stand weiter herum und
+        # jeder folgende Aufruf las sie erneut.
+        rm -f "$PID"
+        return 1
+    fi
+    # Nummernrecycling ausschliessen: der Prozess muss unser Skript sein.
+    #
+    # Bis 0.9.0 ein grep ueber die ganze Befehlszeile. Die enthaelt alle
+    # Argumente; hat die wiederverwendete Nummer einen Editor mit geoeffneter
+    # weissware.py erwischt, galt der als laufender Dienst. Geprueft werden
+    # jetzt zwei Dinge argumentweise: das zweite Argument ist genau unser
+    # Skript, und das erste ist ein Python. Nur das zweite zu pruefen reicht
+    # nicht - "nano <pfad>/weissware.py" fuehrt den Pfad ebenfalls dort.
+    ARGS=$(tr '\0' '\n' < "/proc/$P/cmdline" 2>/dev/null)
+    if [ "$(echo "$ARGS" | sed -n '2p')" != "$SKRIPT" ]; then rm -f "$PID"; return 1; fi
+    echo "$ARGS" | sed -n '1p' | grep -qE '(^|/)python[0-9.]*$' || { rm -f "$PID"; return 1; }
     return 0
 }
 
