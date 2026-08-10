@@ -591,7 +591,7 @@ foreach ($ww_reiter_ids as $ww_r) {
 </div>
 
 <div class="sm-knopfreihe">
-  <button data-role="none" class="sm-btn sm-b-lesen" type="submit"><?= ww_e(ww_t('ALLG.SPEICHERN')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= ww_e(ww_t('ALLG.SPEICHERN')) ?></button>
 </div>
 <h2><?= ww_e(ww_t('EINST.H_ANMELDUNG')) ?></h2>
 <p class="sm-hilfe"><?= ww_t('EINST.ANMELDUNG_ERKLAERUNG') ?></p>
