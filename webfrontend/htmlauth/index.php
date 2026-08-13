@@ -109,9 +109,21 @@ if ($ww_post && isset($_POST['speichern'])) {
     }
 
     foreach (array('mqtt_ein', 'steuerung_ein', 'hc_ein', 'hc_simulator',
-                   'miele_ein', 'st_ein') as $ww_haken) {
+                   'miele_ein', 'st_ein', 'ansage_ein') as $ww_haken) {
         $ww_cfg[$ww_haken] = isset($_POST[$ww_haken]) ? 1 : 0;
     }
+
+    /* Sprachausgabe - Felder und Grenzen wortgleich zu AWM-Abfuhr */
+    $ww_mode = (string) (isset($_POST['tts_mode']) ? $_POST['tts_mode'] : 'musicserver');
+    $ww_cfg['tts'] = array(
+        'mode' => in_array($ww_mode, array('musicserver', 'ms4h', 'audioserver', 'custom'), true) ? $ww_mode : 'musicserver',
+        'ip' => trim((string) (isset($_POST['tts_ip']) ? $_POST['tts_ip'] : '')),
+        'port' => max(1, min(65535, (int) (isset($_POST['tts_port']) ? $_POST['tts_port'] : 7091))),
+        'zones' => trim((string) (isset($_POST['tts_zones']) ? $_POST['tts_zones'] : '1')),
+        'volume' => max(1, min(100, (int) (isset($_POST['tts_volume']) ? $_POST['tts_volume'] : 8))),
+        'lang' => preg_replace('/[^a-z]/', '', strtolower((string) (isset($_POST['tts_lang']) ? $_POST['tts_lang'] : 'de'))) ?: 'de',
+        'template' => trim((string) (isset($_POST['tts_template']) ? $_POST['tts_template'] : '')),
+    );
 
     $ww_spr = isset($_POST['sprache']) ? (string) $_POST['sprache'] : 'de-DE';
     if (!preg_match('/^[a-z]{2}-[A-Z]{2}$/', $ww_spr)) {
@@ -267,6 +279,15 @@ if ($ww_post && isset($_POST['selbsttest'])) {
     $ww_testausgabe = ww_selbsttest();
     $ww_tab = 'tab-test';
 }
+/* Testansage: spricht sofort in die konfigurierten Zonen (wie AWM-Abfuhr). */
+if ($ww_post && isset($_POST['ansage_test'])) {
+    if (ww_say(ww_t('ANSAGE.TESTTEXT'))) {
+        $ww_meldungen[] = ww_t('ANSAGE.TEST_OK');
+    } else {
+        $ww_fehler[] = ww_t('ANSAGE.TEST_FEHLER');
+    }
+    $ww_tab = 'tab-test';
+}
 
 /* ---------------- Laden ---------------- */
 $ww_cfg = ww_config();
@@ -367,6 +388,12 @@ if ($ww_rahmen) {
 .sm-log { background: #1e1e1e; color: #d4d4d4; font-family: Consolas, "Courier New", monospace;
     font-size: 0.82em; padding: 12px; border-radius: 8px; max-height: 480px; overflow: auto;
     white-space: pre-wrap; }
+
+/* Nachgetragene Definitionen (CSS-Luecken-Durchgang 13.08.2026):
+   benutzt, aber nie definiert - wortgleich aus der Hausstandard-Vorlage
+   bzw. der Referenzimplementierung uebernommen. */
+.sm-row { display: flex; gap: 12px; }
+.sm-row > div { flex: 1; }
 </style>
 <div class="sm-wrap">
 
@@ -575,6 +602,58 @@ foreach ($ww_reiter_ids as $ww_r) {
   <label for="wartezeit"><?= ww_e(ww_t('EINST.L_WARTEZEIT')) ?></label>
   <input data-role="none" type="number" id="wartezeit" name="wartezeit" value="<?= (int) $ww_cfg['wartezeit'] ?>" min="0" max="60">
   <div class="sm-hilfe"><?= ww_t('EINST.H_WARTEZEIT') ?></div>
+</div>
+
+<h2><?= ww_e(ww_t('ANSAGE.H')) ?></h2>
+<?php $ww_tts = ww_tts(); ?>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="ansage_ein" value="1" <?= !empty($ww_cfg['ansage_ein']) ? 'checked' : '' ?>>
+    <?= ww_e(ww_t('ANSAGE.L_EIN')) ?>
+  </label>
+  <div class="sm-hilfe"><?= ww_t('ANSAGE.H_EIN') ?></div>
+</div>
+<div class="sm-row">
+    <div>
+        <label><?= ww_e(ww_t('ANSAGE.L_AUSGABE')) ?></label>
+        <select data-role="none" name="tts_mode" id="tts_mode" onchange="wwTtsMode()">
+            <option value="musicserver"<?= $ww_tts['mode'] === 'musicserver' ? ' selected' : '' ?>><?= ww_e(ww_t('ANSAGE.O_MUSICSERVER')) ?></option>
+            <option value="ms4h"<?= $ww_tts['mode'] === 'ms4h' ? ' selected' : '' ?>><?= ww_e(ww_t('ANSAGE.O_MS4H')) ?></option>
+            <option value="audioserver"<?= $ww_tts['mode'] === 'audioserver' ? ' selected' : '' ?>><?= ww_e(ww_t('ANSAGE.O_AUDIOSERVER')) ?></option>
+            <option value="custom"<?= $ww_tts['mode'] === 'custom' ? ' selected' : '' ?>><?= ww_e(ww_t('ANSAGE.O_CUSTOM')) ?></option>
+        </select>
+    </div>
+    <div>
+        <label><?= ww_e(ww_t('ANSAGE.L_IP')) ?></label>
+        <input data-role="none" type="text" name="tts_ip" value="<?= ww_e($ww_tts['ip']) ?>" placeholder="z. B. 192.168.1.50">
+    </div>
+    <div>
+        <label><?= ww_e(ww_t('ANSAGE.L_PORT')) ?></label>
+        <input data-role="none" type="number" name="tts_port" value="<?= (int) $ww_tts['port'] ?>" min="1" max="65535">
+    </div>
+</div>
+<div class="sm-row">
+    <div>
+        <label><?= ww_e(ww_t('ANSAGE.L_ZONEN')) ?></label>
+        <input data-role="none" type="text" name="tts_zones" value="<?= ww_e($ww_tts['zones']) ?>" placeholder="z. B. 2,4,6">
+        <div class="sm-hilfe"><?= ww_t('ANSAGE.H_ZONEN') ?></div>
+    </div>
+    <div>
+        <label><?= ww_e(ww_t('ANSAGE.L_LAUTSTAERKE')) ?></label>
+        <input data-role="none" type="number" name="tts_volume" value="<?= (int) $ww_tts['volume'] ?>" min="1" max="100">
+    </div>
+    <div>
+        <label><?= ww_e(ww_t('ANSAGE.L_SPRACHE')) ?></label>
+        <input data-role="none" type="text" name="tts_lang" value="<?= ww_e($ww_tts['lang']) ?>" maxlength="2">
+    </div>
+</div>
+<div id="tts_template_row">
+    <label><?= ww_e(ww_t('ANSAGE.L_VORLAGE')) ?></label>
+    <textarea data-role="none" name="tts_template" id="tts_template" rows="2" placeholder="http://{ip}:{port}/tts?text={text}&amp;zone={zones}&amp;vol={vol}"><?= ww_e($ww_tts['template']) ?></textarea>
+    <div class="sm-hilfe"><?= ww_t('ANSAGE.H_VORLAGE') ?></div>
+</div>
+<div id="tts_audioserver_hint" class="sm-warnung" style="display:none;">
+    <?= ww_t('ANSAGE.H_AUDIOSERVER') ?>
 </div>
 
 <h2>MQTT</h2>
@@ -952,6 +1031,15 @@ function ww_bausteine()
   </form>
   <a class="sm-btn sm-b-technik" href="<?= ww_e($ww_basis) ?>?token=<?= ww_e($ww_token) ?>&amp;aktion=roh" target="_blank"><?= ww_e(ww_t('TEST.K_ROH')) ?></a>
 </div>
+
+<h3><?= ww_e(ww_t('ANSAGE.H_TEST')) ?></h3>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_test" value="1"><?= ww_e(ww_t('ANSAGE.K_TEST')) ?></button>
+  </form>
+</div>
+<div class="sm-hilfe"><?= ww_t('ANSAGE.H_TEST_TEXT') ?></div>
 <?php if ($ww_testausgabe !== '') { ?>
 <div class="sm-pre"><?= ww_e($ww_testausgabe) ?></div>
 <?php } ?>
@@ -1028,6 +1116,12 @@ if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) {
 	});
 	zeige(<?= json_encode($ww_tab) ?>);
 })();
+function wwTtsMode() {
+	var m = document.getElementById('tts_mode').value;
+	document.getElementById('tts_audioserver_hint').style.display = (m === 'audioserver') ? 'block' : 'none';
+	document.getElementById('tts_template_row').style.display = (m === 'ms4h' || m === 'custom') ? 'block' : 'none';
+}
+wwTtsMode();
 </script>
 <?php
 if ($ww_rahmen) {

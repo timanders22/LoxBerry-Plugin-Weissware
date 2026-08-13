@@ -138,6 +138,9 @@ function ww_vorgaben()
         'st_ein'         => 0,
         'sprache'        => 'de-DE',
         'aktionstoken'   => '',
+        // Ansage bewusst AUS als Vorgabe: ein Update soll nicht ungefragt
+        // anfangen zu sprechen, womoeglich nachts.
+        'ansage_ein'     => 0,
         'wartezeit'      => 12,
     );
 }
@@ -799,4 +802,172 @@ function ww_t($schluessel)
     $a = $teile[0];
     $s = $teile[1];
     return isset($texte[$a][$s]) ? $texte[$a][$s] : $schluessel;
+}
+
+/* ==================================================================
+ * Sprachausgabe (Ansage "Geraet ist fertig")
+ *
+ * Mechanismus 1:1 uebernommen aus AWM-Abfuhr 1.3.3 (dort seit 1.2.0 mit
+ * dem Fix, dass die IP nur verlangt wird, wenn die Vorlage sie benutzt);
+ * Kuerzel getauscht, Ansagetext und Ausloeser sind Weissware-eigen:
+ * gesprochen wird beim Uebergang eines Geraets auf Stufe "fertig".
+ * ================================================================== */
+
+/** Sperre gegen parallele Cron-Laeufe - 1:1 nach fer_sperre (FerienFeiertage). */
+function ww_sperre($name = 'ansage')
+{
+    $p = ww_paths();
+    if (!is_dir($p['datadir'])) { @mkdir($p['datadir'], 0775, true); }
+    $f = $p['datadir'] . '/' . preg_replace('/[^a-z0-9_]/', '', $name) . '.lock';
+    $fh = @fopen($f, 'c');
+    if ($fh === false) {
+        ww_ansage_log('WARNUNG: Sperrdatei ' . $f . ' laesst sich nicht oeffnen - '
+              . 'Platz im Verzeichnis und Eigentuemer pruefen.');
+        return false;
+    }
+    if (!flock($fh, LOCK_EX | LOCK_NB)) {
+        fclose($fh);
+        return false;
+    }
+    return $fh;
+}
+
+/** Protokollzeile der Ansage-Strecke. */
+function ww_ansage_log($msg)
+{
+    $p = ww_paths();
+    if (!is_dir($p['logdir'])) {
+        @mkdir($p['logdir'], 0775, true);
+    }
+    @file_put_contents($p['logdir'] . '/ansage.log',
+        '[' . date('Y-m-d H:i:s') . '] ' . $msg . "\n", FILE_APPEND);
+}
+
+function ww_http_get($url, $tmo = 20)
+{
+    $ctx = stream_context_create(array('http' => array(
+        'timeout' => $tmo,
+        'user_agent' => 'Mozilla/5.0 (LoxBerry Weissware)',
+        'follow_location' => 1,
+    ), 'ssl' => array('verify_peer' => true)));
+    return @file_get_contents($url, false, $ctx);
+}
+
+/** TTS-Einstellungen mit Vorgaben (wie AWM-Abfuhr). */
+function ww_tts()
+{
+    $cfg = ww_config();
+    $tts = isset($cfg['tts']) && is_array($cfg['tts']) ? $cfg['tts'] : array();
+    $tts += array('mode' => 'musicserver', 'ip' => '', 'port' => 7091,
+                  'zones' => '1', 'volume' => 8, 'lang' => 'de', 'template' => '');
+    return $tts;
+}
+
+function ww_tts_url($text)
+{
+    $tts = ww_tts();
+    $mode = $tts['mode'];
+    if ($mode === 'audioserver') {
+        return null; // Original Loxone Audioserver: TTS nur ueber Loxone Config (Textgenerator -> TTS-Eingang)
+    }
+    if ($mode === 'musicserver' && (string) $tts['ip'] === '') {
+        return '';   // ohne IP laesst sich die Music-Server-Adresse nicht bauen
+    }
+    if ($mode === 'musicserver') {
+        // Zonenliste normalisieren: "2,4,6" + Lautstaerke-Feld -> "2~8,4~8,6~8".
+        // Explizite Angaben "Zone~Lautstaerke" haben Vorrang.
+        $vol = max(1, min(100, (int) $tts['volume']));
+        $zones = array();
+        foreach (explode(',', (string) $tts['zones']) as $z) {
+            $z = trim($z);
+            if ($z === '') {
+                continue;
+            }
+            $zones[] = (strpos($z, '~') === false) ? $z . '~' . $vol : $z;
+        }
+        $zoneStr = $zones ? implode(',', $zones) : '1~' . $vol;
+        return 'http://' . $tts['ip'] . ':' . (int) $tts['port'] . '/audio/grouped/tts/' . $zoneStr . '/' . rawurlencode($tts['lang'] . '|' . $text);
+    }
+    // ms4h (MusicServer4Home / Audioserver4Home) und custom: Vorlage mit Platzhaltern
+    $tpl = trim((string) $tts['template']);
+    if ($tpl === '') {
+        // Standard-Vorlage MusicServer4Home
+        $tpl = 'http://{ip}:{port}/tts?text={text}&zone={zones}&vol={vol}';
+    }
+    // Die IP wird nur verlangt, wenn die Vorlage sie auch verwendet.
+    if ((string) $tts['ip'] === '' && strpos($tpl, '{ip}') !== false) {
+        return '';
+    }
+    return str_replace(
+        array('{ip}', '{port}', '{zones}', '{vol}', '{lang}', '{text}'),
+        array($tts['ip'], (int) $tts['port'], $tts['zones'], (int) $tts['volume'], $tts['lang'], rawurlencode($text)),
+        $tpl
+    );
+}
+
+function ww_say($text)
+{
+    $url = ww_tts_url($text);
+    if ($url === null) {
+        ww_ansage_log('Ansage: Modus "Original Loxone Audioserver" - Sprachausgabe erfolgt ueber Loxone Config (Textgenerator)');
+        return false;
+    }
+    if ($url === '') {
+        ww_ansage_log('Ansage uebersprungen: keine TTS-IP konfiguriert');
+        return false;
+    }
+    $r = ww_http_get($url, 10);
+    ww_ansage_log('Ansage gesendet: "' . $text . '" -> ' . ($r !== false ? 'OK' : 'FEHLER'));
+    return $r !== false;
+}
+
+/** Ansagetext fuer ein fertiges Geraet. Name kommt aus dem Abbild. */
+function ww_ansage_text($name)
+{
+    $name = trim((string) $name);
+    if ($name === '') {
+        return 'Hallo! Ein Haushaltsgeraet ist fertig.';
+    }
+    $name = preg_replace('/[^\p{L}\p{N} .,:!?\-]/u', ' ', $name); // TTS-sichere Zeichen
+    return 'Hallo! ' . $name . ' ist fertig.';
+}
+
+/**
+ * Minutenpruefung (Cron): sprechen, wenn ein Geraet auf "fertig" wechselt.
+ *
+ * Der letzte gesehene fertig-Stand je Geraet liegt in einer Merkdatei -
+ * gesprochen wird nur beim Uebergang auf 1, nie bei jedem Cron-Lauf.
+ * Ein unbekannter Vorzustand (Erstlauf, Neustart) loest bewusst KEINE
+ * Ansage aus: wer nachts hochfaehrt, soll nicht verkuenden, dass die
+ * Waschmaschine von gestern fertig ist.
+ */
+function ww_ansage_check()
+{
+    $cfg = ww_config();
+    if (empty($cfg['ansage_ein'])) {
+        return;
+    }
+    $merk = ww_paths()['datadir'] . '/ansage_stand.json';
+    $alt = ww_json_lesen($merk);
+    $alt = is_array($alt) ? $alt : array();
+    $neu = array();
+    $erstlauf = !is_file($merk);
+    foreach (ww_geraete() as $nr => $g) {
+        $kennung = isset($g['anbieter'], $g['name']) ? $g['anbieter'] . '|' . $g['name'] : (string) $nr;
+        $fertig = isset($g['fertig']) ? $g['fertig'] : null;
+        $neu[$kennung] = ($fertig === 1 || $fertig === '1') ? 1 : 0;
+        if ($erstlauf) {
+            continue;
+        }
+        $vorher = isset($alt[$kennung]) ? (int) $alt[$kennung] : null;
+        if ($neu[$kennung] === 1 && $vorher === 0) {
+            ww_say(ww_ansage_text(isset($g['name']) ? $g['name'] : ''));
+        }
+    }
+    // json_encode liefert bei ungueltigem UTF-8 false - dann lieber die alte
+    // Merkdatei stehen lassen als eine leere schreiben (vgl. ww_config_speichern).
+    $json = json_encode($neu, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($json !== false) {
+        @file_put_contents($merk, $json);
+    }
 }

@@ -7,3 +7,6 @@
 # Aufruf lautlos fehl - die Ausgabe geht nach /dev/null, und niemand
 # bemerkte, dass der Waechter nicht mehr laeuft.
 /bin/bash "REPLACELBPBINDIR/dienst.sh" waechter >/dev/null 2>&1
+# Ansage "Geraet ist fertig" - prueft den Zustand und spricht bei Bedarf.
+# Ueber die PHP-Kommandozeile, nie ueber HTTP (siehe bin/ansage.php).
+php "REPLACELBPBINDIR/ansage.php" >/dev/null 2>&1
