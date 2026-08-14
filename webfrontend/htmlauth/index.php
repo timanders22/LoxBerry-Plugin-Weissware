@@ -108,7 +108,10 @@ if ($ww_post && isset($_POST['speichern'])) {
         $ww_fehler[] = ww_t('EINST.FEHLER_TAKT_TAUSCH');
     }
 
-    foreach (array('mqtt_ein', 'steuerung_ein', 'hc_ein', 'hc_simulator',
+    /* 'mqtt_ein' steht hier NICHT mehr: der Haken wohnt im Reiter MQTT.
+     * Bliebe er in dieser Liste, schaltete jedes Speichern der Einstellungen
+     * MQTT stillschweigend ab. */
+    foreach (array('steuerung_ein', 'hc_ein', 'hc_simulator',
                    'miele_ein', 'st_ein', 'ansage_ein') as $ww_haken) {
         $ww_cfg[$ww_haken] = isset($_POST[$ww_haken]) ? 1 : 0;
     }
@@ -132,12 +135,6 @@ if ($ww_post && isset($_POST['speichern'])) {
         $ww_cfg['sprache'] = $ww_spr;
     }
 
-    $ww_topic = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) $_POST['mqtt_topic']));
-    if ($ww_topic === '' || !preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $ww_topic)) {
-        $ww_fehler[] = ww_t('EINST.FEHLER_TOPIC');
-    } else {
-        $ww_cfg['mqtt_topic'] = trim($ww_topic, '/');
-    }
 
     /* Zugangsdaten: eigene Datei mit Rechten 0600. Leere Felder loeschen
      * nichts - sonst stuende irgendwann ein leeres Geheimnis in der Datei,
@@ -170,6 +167,37 @@ if ($ww_post && isset($_POST['speichern'])) {
         }
     }
     $ww_tab = 'tab-settings';
+
+    /* mqtt_ein und mqtt_topic werden hier bewusst NICHT angefasst: sie wohnen im
+     * Reiter MQTT und haben dort ein eigenes Formular. Die Konfiguration
+     * kommt aus ww_config(), die Werte ueberleben also unveraendert. Stuende
+     * hier weiter "isset($_POST['mqtt_ein']) ? 1 : 0", wuerde jedes Speichern
+     * der Einstellungen MQTT stillschweigend abschalten. */
+}
+
+/* ---------------- MQTT (eigener Reiter, eigenes Formular) ----------------
+ *
+ * Eigenes Formular UND eigener Handler gehoeren zusammen. Loesten beide
+ * Formulare denselben Handler aus, setzte dieser die Haken des jeweils
+ * nicht abgeschickten Formulars per isset() auf 0 - der Benutzer verloere
+ * Werte, die er nie gesehen hat. Der Handler laedt darum den Bestand und
+ * ruehrt ausschliesslich die MQTT-Werte an. */
+if ($ww_post && isset($_POST['save_mqtt'])) {
+    $ww_mcfg = ww_config();
+    $ww_mcfg['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
+    $ww_mtopic = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
+        (string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : '')));
+    if ($ww_mtopic === '' || !preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $ww_mtopic)) {
+        $ww_fehler[] = ww_t('EINST.FEHLER_TOPIC');
+    } else {
+        $ww_mcfg['mqtt_topic'] = trim($ww_mtopic, '/');
+    }
+    if (!$ww_fehler) {
+        if (ww_config_speichern($ww_mcfg)) {
+        $ww_meldungen[] = ww_t('EINST.GESPEICHERT');
+        }
+    }
+    $ww_tab = 'tab-mqtt';
 }
 
 /* ---------------- Dienst starten, anhalten, neu starten ---------------- */
@@ -394,6 +422,20 @@ if ($ww_rahmen) {
    bzw. der Referenzimplementierung uebernommen. */
 .sm-row { display: flex; gap: 12px; }
 .sm-row > div { flex: 1; }
+
+/* Der Ansage- und der MQTT-Abschnitt stehen in .sm-row, nicht in .sm-feld.
+   Ohne eigene Regeln bekommen ihre Beschriftungen kein display:block und
+   ihre Eingabefelder keine Breite: die drei Spalten wurden unterschiedlich
+   breit und standen nicht untereinander. AWM-Abfuhr und Abfahrtsassistent
+   stylen dafuer global unter .sm-wrap; hier ist es auf .sm-row begrenzt,
+   damit die uebrigen Reiter unveraendert bleiben. */
+.sm-row > div > label { display: block; font-weight: 600; font-size: 0.9em; color: #555; margin: 0 0 4px; }
+.sm-row > div input[type=text], .sm-row > div input[type=number],
+.sm-row > div select, .sm-row > div textarea,
+#tts_template_row textarea {
+  width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px;
+  font-size: 0.95em; box-sizing: border-box; }
+#tts_template_row > label { display: block; font-weight: 600; font-size: 0.9em; color: #555; margin: 10px 0 4px; }
 </style>
 <div class="sm-wrap">
 
@@ -656,22 +698,21 @@ foreach ($ww_reiter_ids as $ww_r) {
     <?= ww_t('ANSAGE.H_AUDIOSERVER') ?>
 </div>
 
-<h2>MQTT</h2>
-<div class="sm-feld">
-  <label style="display:inline-flex;align-items:center;gap:8px;">
-    <input data-role="none" type="checkbox" name="mqtt_ein" value="1" <?= !empty($ww_cfg['mqtt_ein']) ? 'checked' : '' ?>>
-    <?= ww_e(ww_t('EINST.L_MQTT_EIN')) ?>
-  </label>
-</div>
-<div class="sm-feld">
-  <label for="mqtt_topic"><?= ww_e(ww_t('EINST.L_MQTT_TOPIC')) ?></label>
-  <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic" value="<?= ww_e($ww_cfg['mqtt_topic']) ?>" placeholder="weissware">
-  <div class="sm-hilfe"><?= ww_t('EINST.H_MQTT_TOPIC') ?></div>
-</div>
+<?php /* MQTT stand hier bis zu dieser Fassung. Es wohnt jetzt
+         vollstaendig im Reiter MQTT - eine Sache, eine Stelle. */ ?>
 
+<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= ww_t('LEGENDE.AKTION') ?></span></div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= ww_e(ww_t('ALLG.SPEICHERN')) ?></button>
 </div>
+</form>
+<?php /* Das Einstellungsformular endet HIER. Bis zu dieser Fassung fehlte
+         das schliessende </form>: alle folgenden Formulare der Seite lagen
+         dadurch verschachtelt darin. HTML verbietet das, der Browser wirft
+         die inneren weg - ihre Knoepfe sendeten also an das Einstellungs-
+         formular. Ein Klick auf "Anmeldung verwerfen" oder auf einen
+         Testknopf loeste damit ein Speichern der Einstellungen aus. */ ?>
+
 <h2><?= ww_e(ww_t('EINST.H_ANMELDUNG')) ?></h2>
 <p class="sm-hilfe"><?= ww_t('EINST.ANMELDUNG_ERKLAERUNG') ?></p>
 <div class="sm-legende">
@@ -758,6 +799,27 @@ foreach ($ww_reiter_ids as $ww_r) {
 
 <!-- ================= Reiter: MQTT ================= -->
 <div class="sm-seite<?= $ww_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" id="tab-mqtt">
+
+<h2>MQTT</h2>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="save_mqtt" value="1">
+<input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="mqtt_ein" value="1" <?= !empty($ww_cfg['mqtt_ein']) ? 'checked' : '' ?>>
+    <?= ww_e(ww_t('EINST.L_MQTT_EIN')) ?>
+  </label>
+</div>
+<div class="sm-feld">
+  <label for="mqtt_topic"><?= ww_e(ww_t('EINST.L_MQTT_TOPIC')) ?></label>
+  <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic" value="<?= ww_e($ww_cfg['mqtt_topic']) ?>" placeholder="weissware">
+  <div class="sm-hilfe"><?= ww_t('EINST.H_MQTT_TOPIC') ?></div>
+</div>
+<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= ww_t('LEGENDE.AKTION') ?></span></div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= ww_e(ww_t('ALLG.SPEICHERN')) ?></button>
+</div>
+</form>
 <h2><?= ww_e(ww_t('MQTT.H_ZUSTAND')) ?></h2>
 <p class="sm-hilfe"><?= ww_t('MQTT.GATEWAY_ERKLAERUNG') ?></p>
 

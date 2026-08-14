@@ -839,7 +839,16 @@ function ww_ansage_log($msg)
     if (!is_dir($p['logdir'])) {
         @mkdir($p['logdir'], 0775, true);
     }
-    @file_put_contents($p['logdir'] . '/ansage.log',
+    $ww_al = $p['logdir'] . '/ansage.log';
+    /* Kappung nach dem Hausmuster (fer_log, FerienFeiertage): ab 500 kB
+     * bleiben die letzten 200 Zeilen stehen. Ohne sie waechst die Datei
+     * unbegrenzt - auf einem LoxBerry mit SD-Karte ist das kein
+     * Schoenheitsfehler. */
+    if (is_file($ww_al) && filesize($ww_al) > 512000) {
+        $rest = array_slice(file($ww_al, FILE_IGNORE_NEW_LINES) ?: array(), -200);
+        @file_put_contents($ww_al, implode("\n", $rest) . "\n");
+    }
+    @file_put_contents($ww_al,
         '[' . date('Y-m-d H:i:s') . '] ' . $msg . "\n", FILE_APPEND);
 }
 
@@ -870,6 +879,20 @@ function ww_tts_url($text)
     if ($mode === 'audioserver') {
         return null; // Original Loxone Audioserver: TTS nur ueber Loxone Config (Textgenerator -> TTS-Eingang)
     }
+
+    /* Zonenliste EINMAL fuer alle Modi normalisieren.
+     *
+     * Bis hierher wurde nur im Modus musicserver je Zone getrimmt. In den
+     * Modi ms4h und "eigene Vorlage" ging die Eingabe roh in {zones} - aus
+     * "2, 4, 6" wurde eine Adresse mit Leerzeichen, also eine kaputte
+     * Adresse. Der Hilfetext sagt zu, dass beide Schreibweisen gehen;
+     * hier wird das eingeloest. */
+    $zl = array();
+    foreach (explode(',', (string) $tts['zones']) as $z) {
+        $z = trim($z);
+        if ($z !== '') { $zl[] = $z; }
+    }
+    $tts['zones'] = implode(',', $zl);
     if ($mode === 'musicserver' && (string) $tts['ip'] === '') {
         return '';   // ohne IP laesst sich die Music-Server-Adresse nicht bauen
     }
