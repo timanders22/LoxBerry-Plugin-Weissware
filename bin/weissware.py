@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import signal
 import socket
 import sys
@@ -103,11 +104,28 @@ DATEI_TOKEN = PDATA / "token.json"
 DATEI_CACHE = PDATA / "cache.json"
 DATEI_LOXONE = PDATA / "loxone.json"
 DATEI_ZUSTAND = PDATA / "zustand.json"
+DATEI_NUMMERN = PDATA / "geraetenummern.json"
 ORDNER_BEFEHLE = PDATA / "befehle"
 ORDNER_ANTWORTEN = PDATA / "antworten"
 DATEI_LOG = PLOG / "weissware.log"
+DATEI_MITSCHNITT = PLOG / "mitschnitt.log"
+
+# Harte Obergrenze fuer den Mitschnitt. log/plugins liegt auf einem LoxBerry
+# auf einer Ramdisk - eine Datei, die unbegrenzt waechst, ist dort kein
+# Schoenheitsfehler.
+MITSCHNITT_MAX = 512000
 
 ANBIETER = ("homeconnect", "miele", "smartthings")
+
+# Befehle, die den Zustand eines Geraets aendern. Nach ihnen wird nachgefasst;
+# 'abruf' steht bewusst nicht darin - der IST der Abruf.
+SCHALTAKTIONEN = ("start", "stop", "pause", "fortsetzen", "ein", "aus")
+
+# Sekunden zwischen einem angenommenen Schaltbefehl und dem Nachfass-Abruf.
+# Kein gemessener Wert, sondern eine gewaehlte Wartezeit: die Anbieter reichen
+# den Befehl an das Geraet weiter, und der Zustand steht nicht in derselben
+# Sekunde um. Zu kurz gewaehlt meldet der Nachfass den alten Zustand.
+NACHFASS_S = 5
 
 # Muessen zu ww_vorgaben() in webfrontend/html/ww_lib.php passen.
 VORGABEN = {
@@ -116,6 +134,11 @@ VORGABEN = {
     "mqtt_ein": 0,
     "mqtt_topic": "weissware",
     "steuerung_ein": 0,
+    # Mitschnitt: Unixzeit, bis zu der mitgeschrieben wird. 0 = aus, und das
+    # ist die Werkseinstellung. Eine feste Frist statt eines Schalters, damit
+    # er von selbst ablaeuft - ein vergessener Mitschnitt schreibt sonst
+    # wochenlang auf die Speicherkarte.
+    "mitschnitt_bis": 0,
     "hc_ein": 0,
     "hc_simulator": 0,
     "miele_ein": 0,
@@ -367,6 +390,199 @@ def mqtt_senden(paare: dict, praefix: str) -> None:
         s.close()
 
 
+# ===========================================================================
+# Mitschnitt des Datenverkehrs
+#
+# Traegt eine Zuordnung nicht, ist der Rohwert das einzige Mittel: die Antwort
+# des Anbieters ansehen, statt zu raten, wie sie heisst. Drei Bedingungen aus
+# den Hausregeln, alle drei umgesetzt:
+#   ab Werk AUS, eine feste Frist, die von selbst ablaeuft, und eine harte
+#   Obergrenze fuer die Datei.
+#
+# Und: kein Geheimnis darf hineingeraten. Der Mitschnitt liegt im Protokoll,
+# das die Oberflaeche anzeigt und das in einer Fehlermeldung weitergereicht
+# wird - ein Zugriffstoken darin waere ein Zugang zu drei Herstellerclouds.
+# ===========================================================================
+_MITSCHNITT_VOLL = False
+
+_GEHEIM = re.compile(
+    r"(?i)(Bearer\s+|(?:access_token|refresh_token|client_secret|device_code|"
+    r"code|token)[\"'=: ]+)([A-Za-z0-9._~+/-]{6,})")
+
+
+def mitschnitt_maskieren(text: str) -> str:
+    """Ersetzt alles, was ein Geheimnis sein koennte, durch seine Laenge."""
+    def weg(m):
+        return m.group(1) + "<%d Zeichen entfernt>" % len(m.group(2))
+    return _GEHEIM.sub(weg, str(text))
+
+
+def mitschnitt_aktiv(cfg: dict) -> bool:
+    return time.time() < ganz(cfg.get("mitschnitt_bis"), 0)
+
+
+def mitschnitt_zeile(methode: str, url: str, kwargs: dict, antwort) -> None:
+    global _MITSCHNITT_VOLL
+    try:
+        PLOG.mkdir(parents=True, exist_ok=True)
+        if DATEI_MITSCHNITT.is_file() and DATEI_MITSCHNITT.stat().st_size > MITSCHNITT_MAX:
+            if not _MITSCHNITT_VOLL:
+                _MITSCHNITT_VOLL = True
+                _LOG.warning("Mitschnitt: Obergrenze von %d Byte erreicht - es wird "
+                             "nichts mehr angehaengt.", MITSCHNITT_MAX)
+            return
+        rumpf = kwargs.get("data") or kwargs.get("json") or ""
+        stand = getattr(antwort, "status_code", "?")
+        text = (getattr(antwort, "text", "") or "")[:2000]
+        zeit = time.strftime("%Y-%m-%d %H:%M:%S")
+        block = (f"[{zeit}] --> {methode} {url}\n"
+                 f"[{zeit}]     Rumpf: {rumpf}\n"
+                 f"[{zeit}] <-- HTTP {stand}\n"
+                 f"[{zeit}]     {text}\n")
+        with DATEI_MITSCHNITT.open("a", encoding="utf-8") as f:
+            f.write(mitschnitt_maskieren(block))
+    except OSError as err:
+        melde_gebremst("mitschnitt", f"Mitschnitt nicht schreibbar: {err}", 3600)
+
+
+class Mitschnittsitzung:
+    """Legt sich um die echte Sitzung und schreibt mit, solange die Frist laeuft.
+
+    Alles andere wird durchgereicht. Der Mitschnitt haengt an der Konfiguration
+    und nicht an einem Merker im Speicher: so wirkt das Einschalten sofort und
+    ueberlebt keinen Neustart laenger als die Frist.
+    """
+
+    def __init__(self, echt, cfg_holen):
+        self._echt = echt
+        self._cfg_holen = cfg_holen
+
+    def __getattr__(self, name):
+        echt = getattr(self._echt, name)
+        if name not in ("get", "put", "post", "delete"):
+            return echt
+
+        def rufen(url, **kw):
+            antwort = echt(url, **kw)
+            try:
+                if mitschnitt_aktiv(self._cfg_holen()):
+                    mitschnitt_zeile(name.upper(), url, kw, antwort)
+            except Exception:  # noqa: BLE001
+                pass          # ein Mitschnitt darf den Abruf nie stoeren
+            return antwort
+
+        return rufen
+
+
+# ===========================================================================
+# Trockenlauf
+#
+# Die Stufe vor dem ersten echten Befehl: was WUERDE gesendet, welche Sperre
+# greift? Er oeffnet keine Verbindung und braucht keinen laufenden Dienst -
+# gerade dann will man es wissen.
+#
+# Er laeuft durch DENSELBEN Code wie ein echter Befehl. Eine zweite
+# Beschreibung dessen, was gesendet wuerde, liefe mit dem Sendecode
+# auseinander - das ist die Fehlerklasse, die bei Renault fuenf Themennamen
+# falsch stehen liess.
+# ===========================================================================
+class TrockenAntwort:
+    status_code = 204
+    text = ""
+    content = b"{}"
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        # Nur fuer einen Fall gebraucht: Home Connect liest vor einem Start
+        # ohne Programmschluessel das am Geraet gewaehlte Programm.
+        return {"data": {"key": "<das am Geraet gewaehlte Programm>"}}
+
+
+class Trockensitzung:
+    """Nimmt Anfragen entgegen, statt sie zu senden."""
+
+    def __init__(self):
+        self.schritte = []
+
+    def _merken(self, methode, url, kw):
+        self.schritte.append({
+            "methode": methode, "url": url,
+            "rumpf": str(kw.get("data") or kw.get("json") or ""),
+        })
+        return TrockenAntwort()
+
+    def get(self, url, **kw):
+        return self._merken("GET", url, kw)
+
+    def put(self, url, **kw):
+        return self._merken("PUT", url, kw)
+
+    def post(self, url, **kw):
+        return self._merken("POST", url, kw)
+
+    def delete(self, url, **kw):
+        return self._merken("DELETE", url, kw)
+
+    def close(self):
+        return None
+
+
+def trockenlauf(aktion: str, geraet: str, programm: str = "") -> int:
+    """Zeigt, was der Befehl taete. Sendet nichts."""
+    cfg = config()
+    z = zugang()
+    marken = token_lesen()
+    lox = json_lesen(DATEI_LOXONE)
+    geraete = []
+    for nr, g in sorted((lox.get("geraete") or {}).items(), key=lambda kv: ganz(kv[0], 0)):
+        g = dict(g)
+        g["nummer"] = ganz(nr, 0)
+        geraete.append(g)
+
+    zeilen = ["Trockenlauf: es wird NICHTS gesendet.", ""]
+    zeilen.append(f"[INFO] Aktion '{aktion}', Geraet '{geraet}'"
+                  + (f", Programm '{programm}'" if programm else ""))
+    zeilen.append(f"[INFO] Bekannte Geraete aus dem letzten Abbild: {len(geraete)}")
+    if not geraete:
+        zeilen.append("[INFO] Ohne Abbild laesst sich kein Geraet aufloesen - erst einen "
+                      "Abruf abwarten. Die Sperren unten gelten trotzdem.")
+
+    zeilen.append(f"[{'OK]    ' if cfg.get('steuerung_ein') else 'SPERRE]'} Schreibende Befehle "
+                  + ("zugelassen" if cfg.get("steuerung_ein") else
+                     "GESPERRT (Reiter Einstellungen, Haken 'Schreibende Befehle zulassen')"))
+
+    b = {"aktion": aktion, "geraet": geraet}
+    if programm:
+        b["programm"] = programm
+    sitzung = Trockensitzung()
+    try:
+        ok, meldung, _ = befehl_ausfuehren(sitzung, cfg, z, marken, geraete, b)
+    except Exception as err:  # noqa: BLE001
+        ok, meldung = 0, fehlertext(err)
+
+    zeilen.append("")
+    # Die Meldung stammt aus dem echten Codepfad und sagt dort "gesendet".
+    # In einem Trockenlauf waere das eine Falschaussage - deshalb steht davor,
+    # was wirklich geschehen ist: nichts.
+    zeilen.append(f"[{'OK]    ' if ok else 'FEHL]  '} Der Befehl WUERDE "
+                  + ("angenommen." if ok else "abgewiesen."))
+    zeilen.append(f"         Wortlaut eines echten Laufs: {meldung}")
+    zeilen.append("")
+    if sitzung.schritte:
+        zeilen.append("Diese Anfragen gingen hinaus, wenn es kein Trockenlauf waere:")
+        for i, s in enumerate(sitzung.schritte, start=1):
+            zeilen.append(f"  {i}. {s['methode']} {mitschnitt_maskieren(s['url'])}")
+            if s["rumpf"]:
+                zeilen.append(f"     Rumpf: {mitschnitt_maskieren(s['rumpf'])}")
+    else:
+        zeilen.append("Es waere keine einzige Anfrage hinausgegangen - eine Sperre hat "
+                      "vorher gegriffen. Genau dafuer ist der Trockenlauf da.")
+    print("\n".join(zeilen))
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Hilfsfunktionen
 # ---------------------------------------------------------------------------
@@ -513,7 +729,8 @@ def hc_abschnitt(sitzung, cfg: dict, token: str, haid: str, pfad: str, schluesse
     return {str(e.get("key")): e.get("value") for e in (d.get(schluessel) or [])}
 
 
-def hc_abbilden(geraet: dict, status: dict, settings: dict, aktiv: dict) -> dict:
+def hc_abbilden(geraet: dict, status: dict, settings: dict, aktiv: dict,
+                gewaehlt: dict | None = None) -> dict:
     """Home-Connect-Antworten auf das gemeinsame Modell.
 
     Die Schluesselnamen stammen aus der Dokumentation (States, Settings,
@@ -539,6 +756,12 @@ def hc_abbilden(geraet: dict, status: dict, settings: dict, aktiv: dict) -> dict
         "tuer_offen": None if tuer == "" else (1 if tuer == "Open" else 0),
         "programm": str(aktiv.get("__key") or ""),
         "programm_text": str(aktiv.get("__key") or "").rsplit(".", 1)[-1],
+        # Das am Geraet GEWAEHLTE Programm - gelesen, solange keines laeuft.
+        # Nur Home Connect fuehrt es getrennt; bei Miele und SmartThings
+        # bleibt es leer, und leer heisst hier "nicht verfuegbar", nicht
+        # "keines gewaehlt".
+        "gewaehlt": str((gewaehlt or {}).get("__key") or ""),
+        "gewaehlt_text": str((gewaehlt or {}).get("__key") or "").rsplit(".", 1)[-1],
         "fortschritt": zahl(aktiv.get("BSH.Common.Option.ProgramProgress")),
         # Home Connect liefert Zeiten in SEKUNDEN. Fuer Loxone sind Minuten
         # brauchbarer, und die uebrigen Anbieter liefern ohnehin Minuten.
@@ -578,7 +801,16 @@ def hc_lesen(sitzung, cfg: dict, token: str) -> list:
         status = hc_abschnitt(sitzung, cfg, token, haid, "/status", "status")
         settings = hc_abschnitt(sitzung, cfg, token, haid, "/settings", "settings")
         aktiv = hc_abschnitt(sitzung, cfg, token, haid, "/programs/active", "")
-        geraete.append(hc_abbilden(g, status, settings, aktiv))
+        gewaehlt = {}
+        if not aktiv.get("__key"):
+            # Laeuft nichts, antwortet /programs/active mit 404 - und
+            # 'programm' blieb bis 0.9.6 leer, solange das Geraet still stand.
+            # Wer einen gezielten Start bauen will, braucht aber genau dann den
+            # Schluessel. Gelesen wird deshalb ERSATZWEISE das am Geraet
+            # gewaehlte Programm: derselbe eine Abruf, nur ein anderer Pfad,
+            # also keine zusaetzliche Last auf der Ratengrenze.
+            gewaehlt = hc_abschnitt(sitzung, cfg, token, haid, "/programs/selected", "")
+        geraete.append(hc_abbilden(g, status, settings, aktiv, gewaehlt))
     return geraete
 
 
@@ -661,6 +893,10 @@ def miele_abbilden(kennung: str, g: dict) -> dict:
             zustand_roh.get("signalDoor")),
         "programm": str((zustand_roh.get("ProgramID") or {}).get("value_raw") or ""),
         "programm_text": str((zustand_roh.get("ProgramID") or {}).get("value_localized") or ""),
+        # Miele fuehrt kein getrenntes "gewaehltes" Programm - das Feld
+        # bleibt leer, damit alle drei Anbieter denselben Satz Felder haben.
+        "gewaehlt": "",
+        "gewaehlt_text": "",
         "fortschritt": miele_fortschritt(zustand_roh),
         "restzeit_min": miele_dauer(zustand_roh.get("remainingTime")),
         "startzeit_min": miele_dauer(zustand_roh.get("startTime")),
@@ -715,6 +951,10 @@ MIELE_AKTION = {"start": 1, "stop": 2, "pause": 3, "fortsetzen": 1}
 
 
 def miele_befehl(sitzung, cfg: dict, token: str, kennung: str, aktion: str, wert=None):
+    # 'wert' (der Programmschluessel) wird hier bewusst nicht ausgewertet:
+    # processAction kennt keinen. befehl_ausfuehren() weist einen Start mit
+    # Programmschluessel fuer Miele deshalb schon vorher ab, statt ihn
+    # stillschweigend fallen zu lassen.
     kopf = kopfzeilen(token)
     kopf["Content-Type"] = "application/json"
     if aktion in ("ein", "aus"):
@@ -778,6 +1018,12 @@ def st_abbilden(g: dict, zustand: dict) -> dict:
     # Der Betriebszustand steckt je nach Geraeteart in einer anderen
     # Faehigkeit. Genommen wird die erste, die etwas liefert.
     roh_zustand = None
+    # Welche Faehigkeit geantwortet hat, wird GEMERKT: bis 0.9.6 las das
+    # Plugin aus vier Geraetefamilien, schaltete aber ausnahmslos ueber
+    # washerOperatingState. Ein Geschirrspueler wurde damit gelesen und nicht
+    # geschaltet, und Samsung antwortete mit einem Fehler, dessen Grund in der
+    # Meldung unterging.
+    st_faehigkeit = ""
     for faehigkeit, feld in (("washerOperatingState", "machineState"),
                              ("dryerOperatingState", "machineState"),
                              ("dishwasherOperatingState", "machineState"),
@@ -786,6 +1032,7 @@ def st_abbilden(g: dict, zustand: dict) -> dict:
         v = st_wert(zustand, faehigkeit, feld)
         if v:
             roh_zustand = str(v)
+            st_faehigkeit = faehigkeit
             break
     rest = None
     for faehigkeit in ("washerOperatingState", "dryerOperatingState",
@@ -810,6 +1057,9 @@ def st_abbilden(g: dict, zustand: dict) -> dict:
                         or st_wert(zustand, "dryerOperatingState", "dryerJobState") or ""),
         "programm_text": str(st_wert(zustand, "washerOperatingState", "washerJobState")
                              or st_wert(zustand, "dryerOperatingState", "dryerJobState") or ""),
+        # SmartThings fuehrt kein getrenntes "gewaehltes" Programm.
+        "gewaehlt": "",
+        "gewaehlt_text": "",
         # SmartThings liefert keinen Fortschritt in Prozent.
         "fortschritt": None,
         "restzeit_min": rest,
@@ -827,6 +1077,7 @@ def st_abbilden(g: dict, zustand: dict) -> dict:
         "wasser_l": None,
         "temperatur": zahl(st_wert(zustand, "temperatureMeasurement", "temperature"), 1),
         "schleuderdrehzahl": None,
+        "st_faehigkeit": st_faehigkeit,
         "roh": {"geraet": g, "zustand": haupt},
     }
 
@@ -845,20 +1096,41 @@ def st_restzeit(zeitpunkt) -> int | None:
     return max(0, int(round(rest)))
 
 
+# Die Zustands-Aktionen laufen ueber DIE Faehigkeit, die das Geraet fuehrt -
+# sie steht als 'st_faehigkeit' im Abbild. Nur ein/aus geht immer ueber
+# 'switch'. Ein leerer Eintrag heisst: nimm die Faehigkeit des Geraets.
 ST_BEFEHL = {
-    "start": ("washerOperatingState", "setMachineState", ["run"]),
-    "stop": ("washerOperatingState", "setMachineState", ["stop"]),
-    "pause": ("washerOperatingState", "setMachineState", ["pause"]),
-    "fortsetzen": ("washerOperatingState", "setMachineState", ["run"]),
+    "start": ("", "setMachineState", ["run"]),
+    "stop": ("", "setMachineState", ["stop"]),
+    "pause": ("", "setMachineState", ["pause"]),
+    "fortsetzen": ("", "setMachineState", ["run"]),
     "ein": ("switch", "on", []),
     "aus": ("switch", "off", []),
 }
 
+# Faehigkeiten, die setMachineState kennen. 'switch' steht bewusst nicht
+# darin: ein Geraet, das nur einen Schalter fuehrt, kann kein Programm starten.
+ST_ZUSTANDSFAEHIG = ("washerOperatingState", "dryerOperatingState",
+                     "dishwasherOperatingState", "ovenOperatingState")
 
-def st_befehl(sitzung, cfg: dict, token: str, kennung: str, aktion: str, wert=None):
+
+def st_befehl(sitzung, cfg: dict, token: str, kennung: str, aktion: str, wert=None,
+              geraet_faehigkeit: str = ""):
+    # 'wert' (der Programmschluessel) wird hier bewusst nicht ausgewertet -
+    # setMachineState kennt nur run/stop/pause. befehl_ausfuehren() weist
+    # einen Start mit Programmschluessel fuer SmartThings vorher ab.
     if aktion not in ST_BEFEHL:
         raise ValueError("SmartThings kennt die Aktion '%s' nicht." % aktion)
     faehigkeit, befehl, argumente = ST_BEFEHL[aktion]
+    if faehigkeit == "":
+        faehigkeit = str(geraet_faehigkeit or "")
+        if faehigkeit not in ST_ZUSTANDSFAEHIG:
+            # Abweisen statt an die falsche Faehigkeit senden: Samsung
+            # antwortet sonst mit einem Fehler, dessen Grund niemand sieht.
+            raise ValueError(
+                "Dieses SmartThings-Geraet fuehrt keine Betriebszustands-Faehigkeit "
+                "(gemeldet: '%s'). Programme lassen sich daran nicht starten, "
+                "anhalten oder abbrechen; 'ein' und 'aus' gehen." % (geraet_faehigkeit or "keine"))
     kopf = kopfzeilen(token)
     kopf["Content-Type"] = "application/json"
     rumpf = {"commands": [{"component": "main", "capability": faehigkeit,
@@ -972,6 +1244,66 @@ def alle_lesen(sitzung, cfg: dict, z: dict, marken: dict) -> tuple:
     return geraete, ausfaelle
 
 
+def geraet_schluessel(g: dict) -> str:
+    """Die dauerhafte Kennung eines Geraets: Anbieter und dessen eigene Id."""
+    return (str(g.get("anbieter") or "") + "|" + str(g.get("id") or ""))
+
+
+def nummern_zuordnen(liste: list) -> dict:
+    """Vergibt feste Geraetenummern und haelt sie in einer Datei fest.
+
+    Eine Nummer aus enumerate() ist keine Adresse: faellt ein Geraet weg oder
+    antwortet ein Anbieter nicht, rueckt jedes nachfolgende um eins vor - und
+    der virtuelle Eingang, das MQTT-Thema und die Ausgangsadresse zeigen still
+    auf ein anderes Geraet. Kein Fehler, keine Meldung, nur falsche Werte.
+
+    Deshalb:
+      * Beim ERSTEN Lauf wird genau so nummeriert, wie die bisherige Zaehlung
+        ausfiel (sortierte Liste, 1-basiert). Bestehende Anlagen behalten damit
+        ihre Adressen - ein Update darf keine Loxone-Verdrahtung umlegen.
+      * Danach behaelt jedes bekannte Geraet seine Nummer.
+      * Neue Geraete bekommen die naechste freie Nummer.
+      * Eine einmal vergebene Nummer wird NICHT neu vergeben, auch wenn das
+        Geraet verschwindet. Sonst erbte ein neues Geraet die Adresse des
+        alten.
+
+    Rueckgabe: {schluessel: nummer} fuer die Geraete dieses Durchgangs.
+    """
+    roh = json_lesen(DATEI_NUMMERN)
+    bekannt = {}
+    for k, v in roh.items():
+        n = ganz(v, 0)
+        if n > 0:
+            bekannt[str(k)] = n
+
+    schluessel = [geraet_schluessel(g) for g in liste]
+    geaendert = False
+    if not bekannt:
+        for i, s in enumerate(schluessel, start=1):
+            if s not in bekannt:
+                bekannt[s] = i
+                geaendert = True
+    else:
+        frei = max(bekannt.values()) + 1
+        for s in schluessel:
+            if s not in bekannt:
+                bekannt[s] = frei
+                frei += 1
+                geaendert = True
+    if geaendert:
+        if not json_schreiben(DATEI_NUMMERN, bekannt):
+            # Ohne die Datei waeren die Nummern beim naechsten Start wieder
+            # anders. Das gehoert gemeldet, nicht verschwiegen.
+            melde_gebremst("nummern",
+                           "Die Geraetenummern liessen sich nicht nach {0} schreiben. "
+                           "Bis das behoben ist, koennen sich die Nummern nach einem "
+                           "Neustart verschieben.".format(DATEI_NUMMERN), 3600)
+        else:
+            _LOG.info("Geraetenummern vergeben: %s",
+                      ", ".join("%s=%d" % (s, bekannt[s]) for s in schluessel))
+    return {s: bekannt[s] for s in schluessel}
+
+
 def befehl_senden(sitzung, cfg: dict, z: dict, marken: dict, geraet: dict,
                   aktion: str, wert=None):
     anbieter = geraet.get("anbieter")
@@ -982,7 +1314,8 @@ def befehl_senden(sitzung, cfg: dict, z: dict, marken: dict, geraet: dict,
         return miele_befehl(sitzung, cfg, miele_token_erneuern(sitzung, cfg, z, marken),
                             geraet["id"], aktion, wert)
     if anbieter == "smartthings":
-        return st_befehl(sitzung, cfg, z["st_token"], geraet["id"], aktion, wert)
+        return st_befehl(sitzung, cfg, z["st_token"], geraet["id"], aktion, wert,
+                         geraet.get("st_faehigkeit", ""))
     raise ValueError("Unbekannter Anbieter '%s'." % anbieter)
 
 
@@ -1005,7 +1338,14 @@ def antwort_schreiben(kennung: str, ok: int, meldung: str, zusatz: dict | None =
 
 
 def geraet_waehlen(geraete: list, schluessel):
-    """Nimmt die laufende Nummer (1-basiert) oder die Kennung des Anbieters."""
+    """Nimmt die feste Geraetenummer oder die Kennung des Anbieters.
+
+    Bis 0.9.6 stand hier geraete[n - 1], also die POSITION in der Liste des
+    laufenden Durchgangs. Faellt ein Anbieter aus, waehrend ein anderer
+    liefert, ruecken die uebrigen Geraete auf; derselbe Aufruf traf dann ein
+    anderes Geraet. Massgeblich ist jetzt die Nummer aus geraetenummern.json,
+    die nummern_zuordnen() an jedes Geraet haengt.
+    """
     s = str(schluessel or "").strip()
     for g in geraete:
         if str(g.get("id") or "").upper() == s.upper():
@@ -1013,8 +1353,12 @@ def geraet_waehlen(geraete: list, schluessel):
     try:
         n = int(s)
     except (TypeError, ValueError):
-        n = 1
-    return geraete[n - 1] if 1 <= n <= len(geraete) else None
+        # Nicht auf 1 raten: was nicht ins Muster passt, wird gemeldet.
+        return None
+    for g in geraete:
+        if ganz(g.get("nummer"), 0) == n:
+            return g
+    return None
 
 
 def befehl_ausfuehren(sitzung, cfg: dict, z: dict, marken: dict, geraete: list,
@@ -1049,6 +1393,20 @@ def befehl_ausfuehren(sitzung, cfg: dict, z: dict, marken: dict, geraete: list,
                    f"Geraet selbst gegeben (bei Home Connect die Taste 'Fernstart', bei Miele "
                    f"'MobileStart') und gilt meist nur bis zum Programmende.", {})
 
+    if aktion == "start" and b.get("programm") and g.get("anbieter") != "homeconnect":
+        # Einen Programmschluessel wertet NUR Home Connect aus: hc_befehl()
+        # setzt ihn in den Rumpf von PUT /programs/active ein. miele_befehl()
+        # und st_befehl() nehmen den Wert zwar als Parameter entgegen, lesen
+        # ihn aber nirgends - bis 0.9.6 startete ein Befehl mit Programm dort
+        # stillschweigend das am Geraet gewaehlte Programm und meldete OK=1.
+        # Das ist die stille Falschaussage: der Anwender bekommt eine
+        # Bestaetigung fuer etwas, das nicht geschehen ist. Was nicht ins
+        # Muster passt, wird gemeldet und nicht zurechtgebogen.
+        return (0, f"Ein Programmschluessel laesst sich nur bei Home Connect angeben. "
+                   f"'{g.get('name')}' gehoert zu {g.get('anbieter')}; dort startet der "
+                   f"Befehl ausschliesslich das am Geraet gewaehlte Programm. Den Parameter "
+                   f"'programm' weglassen.", {})
+
     nachsatz = (" Der Anbieter hat die Anfrage angenommen; ob das Geraet den Befehl "
                 "ausfuehrt, zeigt der naechste Abruf.")
     try:
@@ -1069,9 +1427,14 @@ def befehl_ausfuehren(sitzung, cfg: dict, z: dict, marken: dict, geraete: list,
             {"geraet": g.get("id"), "http": antwort.status_code})
 
 
-def warteschlange(sitzung, cfg: dict, z: dict, marken: dict, geraete: list) -> bool:
+def warteschlange(sitzung, cfg: dict, z: dict, marken: dict, geraete: list) -> int:
+    """Arbeitet die Warteschlange ab.
+
+    Rueckgabe: -1 kein Sofortabruf, sonst die Zahl der Sekunden, die noch
+    gewartet wird, bevor der naechste Abruf laeuft (0 = sofort).
+    """
     ORDNER_BEFEHLE.mkdir(parents=True, exist_ok=True)
-    sofort = False
+    sofort = -1
     for datei in sorted(ORDNER_BEFEHLE.glob("*.json")):
         b = json_lesen(datei)
         kennung = datei.stem
@@ -1102,8 +1465,17 @@ def warteschlange(sitzung, cfg: dict, z: dict, marken: dict, geraete: list) -> b
             ok, meldung, zusatz = 0, fehlertext(err), {}
         antwort_schreiben(kennung, ok, meldung, zusatz)
         _LOG.info("Befehl %s (%s): ok=%s %s", kennung, b.get("aktion"), ok, meldung)
-        if b.get("aktion") == "abruf" and ok:
-            sofort = True
+        if not ok:
+            continue
+        if b.get("aktion") == "abruf":
+            sofort = 0
+        elif b.get("aktion") in SCHALTAKTIONEN and (sofort < 0 or sofort > NACHFASS_S):
+            # Nachfass-Abruf: ohne ihn stehen LAEUFT und ZUSTAND bis zum
+            # naechsten regulaeren Takt auf dem alten Wert - ab Werk 300 s,
+            # einstellbar bis 7200 s. Die eigene Anleitung verlangt aber vom
+            # Anwender, nach einem Start LAEUFT auszuwerten; die Antwort darauf
+            # muss also kommen, solange jemand hinsieht.
+            sofort = NACHFASS_S
     return sofort
 
 
@@ -1116,6 +1488,12 @@ MQTT_FELDER = (
     "fortschritt", "restzeit_min", "startzeit_min", "laufzeit_min",
     "fernstart_frei", "fernbedienung_frei", "netz_ein", "energie_kwh",
     "wasser_l", "temperatur", "schleuderdrehzahl", "programm_text",
+    # Hinten angehaengt, nie dazwischen: bestehende Anlagen finden sonst nicht
+    # mehr, was sie suchen. fertig_um wurde bis 0.9.6 zwar gerechnet, kam aber
+    # an keinem Ausgabeweg an.
+    "fertig_um",
+    # Das am Geraet gewaehlte Programm - nur Home Connect fuehrt es.
+    "gewaehlt_text",
 )
 
 
@@ -1132,7 +1510,8 @@ def ableiten(g: dict) -> dict:
     return g
 
 
-def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str, ausfaelle: dict) -> dict:
+def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str, ausfaelle: dict,
+                     fehler_folge: int = 0) -> dict:
     """Bei einem fehlgeschlagenen Abruf bleiben die zuletzt gueltigen Werte
     stehen, und der Zeitstempel wird NICHT aufgefrischt - sonst bliebe ALTER
     klein, woran aber die Ausfallerkennung in Loxone haengt."""
@@ -1152,17 +1531,95 @@ def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str, ausfaelle: di
                                  "ausfaelle": ausfaelle, "geraete": geraete})
 
     praefix = str(cfg.get("mqtt_topic") or "weissware").strip("/") or "weissware"
+    # Ueber MQTT gibt es kein "Alter": beim Senden ist es immer null. Wer die
+    # Ausfallerkennung auch auf diesem Weg haben will, braucht den ZEITSTEMPEL
+    # des letzten erfolgreichen Abrufs und rechnet auf der Gegenseite. Ohne ihn
+    # ist ein toter Dienst von einem gesunden nicht zu unterscheiden: es kommt
+    # schlicht nichts mehr, die letzten Werte stehen weiter im Broker, und
+    # geraetN/laeuft behaelt die 1, die es zuletzt hatte.
+    #
+    # In Loxone: Alter = (Loxone-Zeit + 1230768000) - ts.
+    #
+    # fehler_folge trennt "hakt kurz" von "seit Stunden tot"; ok allein tut das
+    # nicht. Beides geht auch bei einem FEHLGESCHLAGENEN Abruf hinaus - sonst
+    # kaeme auf dem Regelweg bei einer Stoerung gar nichts an.
+    grund = {"ok": ok, "ts": ganz(stand.get("ts"), 0), "fehler_folge": int(fehler_folge)}
+    # Je Anbieter ein Ausfallmerker. Feste Themen fuer alle drei, auch fuer die
+    # ausgeschalteten: ein Thema, das mal da ist und mal nicht, taugt in Loxone
+    # nicht als Eingang. Ein Text als Wert waere hier falsch - die Begruendung
+    # steht im Protokoll und im Reiter Test, in Loxone gehoert eine Zahl hin.
+    for a in ANBIETER:
+        grund["ausfall/" + a] = 1 if a in (ausfaelle or {}) else 0
+    grund["ausfaelle"] = len(ausfaelle or {})
     if not ok:
         if cfg.get("mqtt_ein"):
-            mqtt_senden({"ok": 0}, praefix)
+            mqtt_senden(grund, praefix)
         return lox
     if cfg.get("mqtt_ein"):
-        paare = {"ok": ok, "geraete": len(geraete)}
+        paare = dict(grund)
+        paare["geraete"] = len(geraete)
         for nummer, g in geraete.items():
             for feld in MQTT_FELDER:
                 paare[f"geraet{nummer}/{feld}"] = g.get(feld)
         mqtt_senden(paare, praefix)
     return lox
+
+
+DATEI_LAEUFE = PDATA / "laeufe.json"
+LAEUFE_MAX = 200
+
+
+def laeufe_fortschreiben(vorher: dict, jetzt: dict) -> None:
+    """Haelt einen beendeten Programmlauf fest.
+
+    energie_kwh und wasser_l sind Momentanwerte aus ecoFeedback und werden bei
+    jedem Takt ueberschrieben; nach dem Quittieren sind sie fort. Wer wissen
+    will, was der letzte Waschgang gekostet hat - die Kernfrage einer
+    PV-gesteuerten Weissware -, braucht den Wert im Augenblick des Uebergangs.
+
+    Festgehalten wird beim Uebergang laeuft -> fertig. Ein unbekannter
+    Vorzustand loest nichts aus, sonst schriebe jeder Neustart einen Lauf mit,
+    der laengst vorbei ist.
+
+    Was der Anbieter nicht liefert, bleibt LEER - nie 0. Home Connect liefert
+    weder Energie noch Wasser, SmartThings kein Wasser.
+    """
+    if not vorher:
+        return
+    neu = []
+    for nummer, g in jetzt.items():
+        alt = vorher.get(nummer)
+        if not isinstance(alt, dict):
+            continue
+        if not (alt.get("laeuft") == 1 and g.get("fertig") == 1):
+            continue
+        def letzter(feld):
+            return g.get(feld) if g.get(feld) is not None else alt.get(feld)
+        neu.append({
+            "ts": int(time.time()),
+            "geraet": ganz(nummer, 0),
+            "name": g.get("name") or "",
+            "anbieter": g.get("anbieter") or "",
+            "programm": g.get("programm_text") or alt.get("programm_text") or "",
+            "laufmin": letzter("laufzeit_min"),
+            "energie_kwh": letzter("energie_kwh"),
+            "wasser_l": letzter("wasser_l"),
+            "temperatur": letzter("temperatur"),
+        })
+    if not neu:
+        return
+    bestand = json_lesen(DATEI_LAEUFE).get("laeufe") or []
+    if not isinstance(bestand, list):
+        bestand = []
+    bestand.extend(neu)
+    # Harte Obergrenze: die aeltesten fallen heraus.
+    json_schreiben(DATEI_LAEUFE, {"laeufe": bestand[-LAEUFE_MAX:]})
+    for e in neu:
+        _LOG.info("Lauf beendet: Geraet %s (%s), Programm '%s', %s min, %s kWh, %s l",
+                  e["geraet"], e["name"], e["programm"],
+                  e["laufmin"] if e["laufmin"] is not None else "-",
+                  e["energie_kwh"] if e["energie_kwh"] is not None else "-",
+                  e["wasser_l"] if e["wasser_l"] is not None else "-")
 
 
 def zustand_schreiben(**felder) -> None:
@@ -1189,14 +1646,25 @@ def dienst(einmal: bool = False) -> int:
     marken = token_lesen()
     if not any(cfg.get(k) for k in ("hc_ein", "miele_ein", "st_ein")):
         _LOG.error("Es ist kein Anbieter eingeschaltet. Reiter Einstellungen oeffnen.")
-        zustand_schreiben(ok=0, fehler="Kein Anbieter eingeschaltet.")
+        # ausfaelle MUSS mitgeschrieben werden, auch leer.
+        # zustand_schreiben() mischt in den Bestand: was hier fehlt, bleibt
+        # stehen. Bis 0.9.7 blieb so die Ausfallliste eines FRUEHEREN Laufs
+        # ewig in zustand.json - die Oberflaeche zeigte dann "Anbieter, die
+        # nicht geantwortet haben: miele", waehrend gar kein Anbieter
+        # eingeschaltet war und seit Tagen niemand mehr gefragt hatte. Eine
+        # Aussage ueber die Vergangenheit, die aussieht wie eine ueber die
+        # Gegenwart.
+        zustand_schreiben(ok=0, ausfaelle={}, anzahl_geraete=0,
+                          fehler="Kein Anbieter eingeschaltet. Reiter Einstellungen: Haken beim Anbieter setzen und speichern.")
         return 1
 
     _LOG.info("Dienst startet (Takt %s s in Ruhe, %s s im Betrieb, Steuerung %s).",
               cfg["takt_ruhe"], cfg["takt_betrieb"],
               "ein" if cfg.get("steuerung_ein") else "aus")
 
-    sitzung = requests.Session()
+    # Der Mitschnitt liegt UM die Sitzung, nicht in den einzelnen Aufrufen:
+    # sonst muesste jede der vierzehn Stellen daran denken.
+    sitzung = Mitschnittsitzung(requests.Session(), config)
     stand: dict = {"ts": 0, "geraete": {}}
     fehler_folge = 0
     liste: list = []
@@ -1211,8 +1679,14 @@ def dienst(einmal: bool = False) -> int:
             geraete: dict = {}
             try:
                 liste, ausfaelle = alle_lesen(sitzung, cfg, z, marken)
-                for i, g in enumerate(liste, start=1):
-                    geraete[str(i)] = ableiten(g)
+                # Feste Nummern statt enumerate(): siehe nummern_zuordnen().
+                # Die Nummer haengt danach am Geraet selbst, damit die
+                # Warteschlange dieselbe Zuordnung benutzt wie der Endpunkt.
+                nummern = nummern_zuordnen(liste)
+                for g in liste:
+                    g["nummer"] = nummern[geraet_schluessel(g)]
+                for g in sorted(liste, key=lambda x: x["nummer"]):
+                    geraete[str(g["nummer"])] = ableiten(g)
                 ok = 1 if geraete else 0
                 if not liste and not ausfaelle:
                     fehler = "Die eingeschalteten Anbieter fuehren kein Geraet."
@@ -1226,8 +1700,11 @@ def dienst(einmal: bool = False) -> int:
                 melde_gebremst("abruf", f"Abruf fehlgeschlagen: {fehler}", 900)
 
             if ok:
+                # Vor dem Ueberschreiben: der beendete Lauf ist nur im
+                # Vergleich mit dem vorigen Stand zu sehen.
+                laeufe_fortschreiben(stand.get("geraete") or {}, geraete)
                 stand = {"ts": int(time.time()), "geraete": geraete}
-            abbild_schreiben(stand, cfg, ok, fehler, ausfaelle)
+            abbild_schreiben(stand, cfg, ok, fehler, ausfaelle, fehler_folge)
             zustand_schreiben(ok=ok, fehler=fehler, fehler_folge=fehler_folge,
                               pid=os.getpid(), anzahl_geraete=len(stand["geraete"]),
                               ausfaelle=ausfaelle)
@@ -1247,8 +1724,15 @@ def dienst(einmal: bool = False) -> int:
                                1800)
             while rest > 0 and _LAUF:
                 try:
-                    if warteschlange(sitzung, cfg, z, marken, liste):
+                    nachfass = warteschlange(sitzung, cfg, z, marken, liste)
+                    if nachfass == 0:
                         break
+                    if nachfass > 0:
+                        # Nicht sofort: das Geraet bekommt ein paar Sekunden zum
+                        # Anlaufen. Sonst meldet der Nachfass-Abruf noch den
+                        # Zustand von vor dem Befehl - und das saehe aus, als
+                        # haette der Befehl nicht gewirkt.
+                        rest = nachfass
                 except Exception as err:  # noqa: BLE001
                     _LOG.error("Warteschlange: %s", fehlertext(err))
                 time.sleep(1)
@@ -1502,6 +1986,14 @@ def main() -> int:
         return hc_anmeldung_starten()
     if "--hc-fertig" in sys.argv:
         return hc_anmeldung_abschliessen()
+    if "--trockenlauf" in sys.argv:
+        # Aufruf: --trockenlauf <aktion> <geraet> [programm]
+        i = sys.argv.index("--trockenlauf")
+        rest = sys.argv[i + 1:]
+        if len(rest) < 2:
+            print("[FEHL] Aufruf: --trockenlauf <aktion> <geraet> [programm]")
+            return 1
+        return trockenlauf(rest[0], rest[1], rest[2] if len(rest) > 2 else "")
     if "--miele-code" in sys.argv:
         i = sys.argv.index("--miele-code")
         if i + 1 >= len(sys.argv):

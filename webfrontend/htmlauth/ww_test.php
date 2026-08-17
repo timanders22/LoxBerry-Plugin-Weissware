@@ -13,12 +13,176 @@ function ww_pruefzeile($stand, $frage, $antwort)
     return array('stand' => $stand, 'frage' => $frage, 'antwort' => $antwort);
 }
 
+/**
+ * Liest eine Python-Tabelle statisch aus bin/weissware.py.
+ *
+ * Was statisch liest, muss auch statisch vergleichen - deshalb wird hier
+ * NICHT das laufende Python befragt, sondern die Datei gelesen.
+ * Rueckgabe: Liste der Schluessel, oder null wenn die Datei fehlt.
+ */
+function ww_py_tabelle($anfang, $muster)
+{
+    $datei = ww_paths()['bindir'] . '/weissware.py';
+    if (!is_file($datei)) {
+        return null;
+    }
+    $q = (string) @file_get_contents($datei);
+    $i = strpos($q, $anfang);
+    if ($i === false) {
+        return null;
+    }
+    $rest = substr($q, $i);
+    /* Der FRUEHERE der beiden Endmarker gilt. Wer nur auf "\n)" prueft und ihn
+     * nimmt, wenn er da ist, laeuft bei einem Verzeichnis (das auf "\n}"
+     * endet) bis zur naechsten schliessenden Klammer irgendwo weiter unten -
+     * und liest dann die halbe Datei mit. Aufgefallen an einer Prueffzeile,
+     * die daraufhin Zustandsnamen als fehlende Vorgabewerte meldete: ein rotes
+     * Kreuz, das nichts bedeutet. */
+    $kandidaten = array();
+    foreach (array("\n)", "\n}") as $marke) {
+        $pos = strpos($rest, $marke);
+        if ($pos !== false) {
+            $kandidaten[] = $pos;
+        }
+    }
+    if (!$kandidaten) {
+        return null;
+    }
+    $ende = min($kandidaten);
+    preg_match_all($muster, substr($rest, 0, $ende), $m);
+    return $m[1];
+}
+
 function ww_pruefungen()
 {
     $p = ww_paths();
     $cfg = ww_config();
     $z = ww_zugang();
     $zeilen = array();
+
+    /* Erste Zeile: ein ECHTER Aufruf des eigenen Endpunkts. Alle uebrigen
+     * Zeilen sehen sich Dateien an; nur diese spricht die Stelle an, an der
+     * das Plugin bei getrennten Baeumen mit HTTP 500 stirbt, ohne dass es
+     * jemand merkt. Drei Ausgaenge - "nicht feststellbar" ist ein Hinweis,
+     * kein Kreuz. */
+    $ep = ww_endpunkt_pruefen();
+    $zeilen[] = ww_pruefzeile((int) $ep['stand'], ww_t('TEST.F_ENDPUNKT'),
+        ww_e($ep['text']) . ($ep['alter'] > 0
+            ? ' <span class="sm-hilfe">(' . sprintf(ww_t('TEST.A_EP_ALTER'), (int) $ep['alter']) . ')</span>'
+            : ''));
+
+    /* Oberflaeche und Dienst muessen dieselben Vorgabewerte fuehren. Ein
+     * Schluessel, den nur eine Seite kennt, faellt sonst erst auf, wenn ein
+     * Wert unerklaerlich auf die Werkseinstellung zurueckspringt. */
+    $py_vorgaben = ww_py_tabelle('VORGABEN = {', '/"([a-z_]+)":/');
+    if ($py_vorgaben === null) {
+        $zeilen[] = ww_pruefzeile(-1, ww_t('TEST.F_VORGABEN'), ww_t('TEST.A_VORGABEN_UNLESBAR'));
+    } else {
+        $fehlen = array_diff($py_vorgaben, array_keys(ww_vorgaben()));
+        $zeilen[] = ww_pruefzeile($fehlen ? 0 : 1, ww_t('TEST.F_VORGABEN'),
+            $fehlen ? sprintf(ww_t('TEST.A_VORGABEN_FEHLEN'), ww_e(implode(', ', $fehlen)))
+                    : sprintf(ww_t('TEST.A_VORGABEN_OK'), count($py_vorgaben)));
+    }
+
+    /* Themenliste gegen Sendecode. Bei Renault nannten Oberflaeche, Baustein-
+     * Liste und Importdatei fuenf Themen, die der Sendecode nie
+     * veroeffentlicht hat - der Anwender bekam virtuelle Eingaenge, die
+     * dauerhaft auf 0 standen, ohne Fehlermeldung. */
+    $py_felder = ww_py_tabelle('MQTT_FELDER = (', '/"([a-z_]+)"/');
+    if ($py_felder === null) {
+        $zeilen[] = ww_pruefzeile(-1, ww_t('TEST.F_THEMEN'), ww_t('TEST.A_THEMEN_UNLESBAR'));
+    } else {
+        $doku = array();
+        foreach (array_keys(ww_mqtt_themen()) as $t) {
+            if (strpos($t, 'geraetN/') === 0) {
+                $doku[] = substr($t, strlen('geraetN/'));
+            }
+        }
+        $ab = array_merge(array_diff($py_felder, $doku), array_diff($doku, $py_felder));
+        $zeilen[] = ww_pruefzeile($ab ? 0 : 1, ww_t('TEST.F_THEMEN'),
+            $ab ? sprintf(ww_t('TEST.A_THEMEN_AB'), ww_e(implode(', ', $ab)))
+                : sprintf(ww_t('TEST.A_THEMEN_OK'), count($py_felder)));
+    }
+
+    /* Reiterleiste, Bereiche und Positivliste fuehren dieselben Namen.
+     * Fehlt einer in der Positivliste, ist der Reiter sichtbar und anklickbar
+     * - aber nach jedem Absenden springt die Seite zurueck auf Einstellungen.
+     * Die Leiste steht ausgeschrieben da, damit hausstandard_pruefen.py sie
+     * sieht; diese Zeile misst nach, dass die drei Stellen zusammenpassen. */
+    $eig = @file_get_contents(__DIR__ . '/index.php');
+    if ($eig === false) {
+        $zeilen[] = ww_pruefzeile(-1, ww_t('TEST.F_REITER'), ww_t('TEST.A_REITER_UNLESBAR'));
+    } else {
+        preg_match_all('/data-ziel="tab-([a-z0-9]+)"/', $eig, $mL);
+        preg_match_all('/class="sm-seite[^"]*"[^>]*id="tab-([a-z0-9]+)"/', $eig, $mB);
+        // Die Positivliste steht als erzeugtes Muster in der Datei.
+        preg_match('/\$ww_reiter_ids\s*=\s*array\(([^)]*)\)/', $eig, $mP);
+        preg_match_all("/'tab-([a-z0-9]+)'/", isset($mP[1]) ? $mP[1] : '', $mPl);
+        $leiste = $mL[1];
+        $flaechen = $mB[1];
+        $liste = $mPl[1];
+        sort($leiste); sort($flaechen); sort($liste);
+        $gleich = ($leiste === $flaechen && $leiste === $liste && $leiste !== array());
+        $zeilen[] = ww_pruefzeile($gleich ? 1 : 0, ww_t('TEST.F_REITER'),
+            $gleich ? sprintf(ww_t('TEST.A_REITER_OK'), count($leiste))
+                    : sprintf(ww_t('TEST.A_REITER_AB'), count($leiste),
+                              count($flaechen), count($liste)));
+    }
+
+    /* Vorlage und Statuszeile fuehren dieselben Feldnamen.
+     * Die Statuszeile ist ein von Hand geschriebenes printf, die Vorlage
+     * entsteht aus ww_status_felder() - zwei Stellen, die auseinanderlaufen
+     * koennen. Bei der Waermepumpe legte die Vorlage 20 Eingaenge an, die
+     * Zeile lieferte 17, und die drei fehlenden standen dauerhaft auf 0. */
+    $ep_datei = dirname(__DIR__) . '/html/index.php';
+    $ep_q = is_file($ep_datei) ? (string) @file_get_contents($ep_datei) : '';
+    if ($ep_q === '') {
+        $zeilen[] = ww_pruefzeile(-1, ww_t('TEST.F_FELDER'), ww_t('TEST.A_FELDER_UNLESBAR'));
+    } else {
+        // Nur die Formatzeichenkette der Statuszeile ansehen, nicht die Datei.
+        $zeile = '';
+        if (preg_match('/printf\("(WEISSWARE;.*?)\\\\n"/s', $ep_q, $mZ)) {
+            $zeile = preg_replace('/"\s*\.\s*"/', '', $mZ[1]);
+        }
+        preg_match_all('/([A-Z]+)=%/', $zeile, $mF);
+        $inZeile = $mF[1];
+        $inVorlage = array_keys(ww_status_felder());
+        $fehlt = array_merge(array_diff($inVorlage, $inZeile), array_diff($inZeile, $inVorlage));
+        $zeilen[] = ww_pruefzeile($zeile === '' ? -1 : ($fehlt ? 0 : 1), ww_t('TEST.F_FELDER'),
+            $zeile === '' ? ww_t('TEST.A_FELDER_UNLESBAR')
+                : ($fehlt ? sprintf(ww_t('TEST.A_FELDER_AB'), ww_e(implode(', ', $fehlt)))
+                          : sprintf(ww_t('TEST.A_FELDER_OK'), count($inVorlage))));
+
+        /* Jedes Suchmuster ist eindeutig. Loxone sucht woertlich und nimmt den
+         * ERSTEN Treffer: steckt 'ALTER=' auch in 'SOLLALTER=', bekommt der
+         * Baustein den falschen Wert. Geprueft wird paarweise. */
+        $doppelt = array();
+        foreach ($inVorlage as $a) {
+            foreach ($inVorlage as $b) {
+                if ($a !== $b && strpos($b . '=', $a . '=') !== false) {
+                    $doppelt[] = $a . ' in ' . $b;
+                }
+            }
+        }
+        $zeilen[] = ww_pruefzeile($doppelt ? 0 : 1, ww_t('TEST.F_MUSTER'),
+            $doppelt ? sprintf(ww_t('TEST.A_MUSTER_AB'), ww_e(implode(', ', $doppelt)))
+                     : sprintf(ww_t('TEST.A_MUSTER_OK'), count($inVorlage)));
+    }
+
+    /* Gibt es eine Zweitschrift? Sie liegt NEBEN dem Konfigordner, damit sie
+     * ein Update und sogar eine Neuinstallation uebersteht. */
+    $zw = is_file($p['sicherung']);
+    $zeilen[] = ww_pruefzeile($zw ? 1 : -1, ww_t('TEST.F_ZWEITSCHRIFT'),
+        $zw ? sprintf(ww_t('TEST.A_ZWEITSCHRIFT_DA'), ww_e(basename($p['sicherung'])))
+            : ww_t('TEST.A_ZWEITSCHRIFT_FEHLT'));
+
+    // Laeuft gerade ein Mitschnitt? Ein Hinweis, kein Befund - aber er darf
+    // nicht unbemerkt weiterlaufen.
+    $rest = ww_mitschnitt_rest();
+    if ($rest > 0) {
+        $zeilen[] = ww_pruefzeile(-1, ww_t('TEST.F_MITSCHNITT'),
+            sprintf(ww_t('TEST.A_MITSCHNITT_LAEUFT'), $rest));
+    }
 
     $venv = $p['bindir'] . '/venv/bin/python3';
     $zeilen[] = ww_pruefzeile(is_file($venv) ? 1 : 0, ww_t('TEST.F_VENV'),
@@ -75,6 +239,22 @@ function ww_pruefungen()
     $zeilen[] = ww_pruefzeile($eins > 0 ? 1 : 0, ww_t('TEST.F_ANBIETER'),
         $eins > 0 ? sprintf(ww_t('TEST.A_ANBIETER'), $eins) : ww_t('TEST.A_KEIN_ANBIETER'));
 
+    /* Angemeldet UND eingeschaltet sind zwei Dinge. Wer sich anmeldet und den
+     * Haken vergisst, sieht in den Zeilen darueber nichts davon - die Schleife
+     * oben ueberspringt ausgeschaltete Anbieter -, und der Dienst weigert sich
+     * zu starten mit "kein Anbieter eingeschaltet". Diese Zeile nennt den Fall
+     * beim Namen. Ein Hinweis, kein Kreuz: es kann Absicht sein. */
+    $stumm = array();
+    foreach (array('homeconnect' => 'hc_ein', 'miele' => 'miele_ein') as $ww_a => $ww_s) {
+        if (empty($cfg[$ww_s]) && ww_angemeldet($ww_a)) {
+            $stumm[] = $ww_a;
+        }
+    }
+    if ($stumm) {
+        $zeilen[] = ww_pruefzeile(-1, ww_t('TEST.F_ANGEMELDET_AUS'),
+            sprintf(ww_t('TEST.A_ANGEMELDET_AUS'), ww_e(implode(', ', $stumm))));
+    }
+
     $rechte = is_file($p['zugang']) ? (fileperms($p['zugang']) & 0777) : -1;
     $zeilen[] = ww_pruefzeile(($rechte >= 0 && ($rechte & 0077) === 0) ? 1 : 0,
         ww_t('TEST.F_RECHTE'),
@@ -118,7 +298,14 @@ function ww_pruefungen()
     if ($alter < 0) {
         $zeilen[] = ww_pruefzeile(0, ww_t('TEST.F_ABRUF'), ww_t('TEST.A_NIE_ABGERUFEN'));
     } else {
-        $frisch = $alter <= max(600, 3 * (int) $cfg['intervall']);
+        /* Bis 0.9.6 stand hier $cfg['intervall'] - einen solchen Schluessel
+         * kennt weder ww_vorgaben() noch VORGABEN in bin/weissware.py. Der
+         * Ausdruck wurde damit zu 0, die Schwelle lag unabhaengig vom
+         * eingestellten Takt immer bei 600 s. Wer den Ruhetakt hoeher stellt,
+         * bekam ein rotes Kreuz, das nichts bedeutet - und sucht dann dort.
+         * Massgeblich ist der Ruhetakt: laeuft nichts, wird in diesem Abstand
+         * abgerufen, und ein Abbild darf entsprechend alt sein. */
+        $frisch = $alter <= max(600, 3 * (int) $cfg['takt_ruhe']);
         $zeilen[] = ww_pruefzeile($frisch ? 1 : 0, ww_t('TEST.F_ABRUF'),
             sprintf(ww_t('TEST.A_ABRUF_ALTER'), $alter));
     }

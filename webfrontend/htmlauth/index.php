@@ -55,12 +55,17 @@ if ($ww_p['home'] !== '' && is_file($ww_p['home'] . '/libs/phplib/loxberry_syste
  * und in den fuenf Flaechen-ids. Wer einen Reiter ergaenzt und eine davon
  * vergisst, bekommt keinen Fehler, sondern eine Seite, die nach jedem
  * Absenden auf Einstellungen zurueckspringt. */
-$ww_reiter_ids = array('settings', 'mqtt', 'loxone', 'test', 'log');
-$ww_muster = '/^tab-(' . implode('|', $ww_reiter_ids) . ')$/';
+/* Die Positivliste steht AUSGESCHRIEBEN und mit dem Praefix da. Vorher war sie
+ * ein aus implode() zusammengesetzter regulaerer Ausdruck - fuer
+ * hausstandard_pruefen.py unsichtbar, weil im Quelltext weder die eine noch
+ * die andere gesuchte Schreibweise steht. Die Spalte stand deshalb auf "Liste
+ * 0". Verglichen wird jetzt mit in_array(..., true), also streng. */
+$ww_reiter_ids = array('tab-settings', 'tab-mqtt', 'tab-loxone', 'tab-test', 'tab-log');
 $ww_tab = 'tab-settings';
-if (isset($_POST['activetab']) && preg_match($ww_muster, (string) $_POST['activetab'])) {
+if (isset($_POST['activetab']) && in_array((string) $_POST['activetab'], $ww_reiter_ids, true)) {
     $ww_tab = (string) $_POST['activetab'];
-} elseif (isset($_GET['form']) && preg_match($ww_muster, 'tab-' . (string) $_GET['form'])) {
+} elseif (isset($_GET['form'])
+          && in_array('tab-' . (string) $_GET['form'], $ww_reiter_ids, true)) {
     $ww_tab = 'tab-' . (string) $_GET['form'];
 }
 
@@ -71,12 +76,29 @@ $ww_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '')
 
 /* ---------------- Vorlage herunterladen ---------------- */
 if ($ww_post && isset($_POST['vorlage'])) {
-    $ww_nr = preg_match('/^[0-9]{1,2}$/', (string) $_POST['vorlage']) ? (int) $_POST['vorlage'] : 1;
-    list($ww_name, $ww_inhalt) = ww_vorlage($ww_nr);
-    header('Content-Type: application/xml; charset=utf-8');
-    header('Content-Disposition: attachment; filename="' . $ww_name . '"');
-    echo $ww_inhalt;
-    exit;
+    /* Bis 0.9.6 gab es genau einen Knopf mit fest verdrahteter 1 - bei zwei
+     * Geraeten musste die zweite Datei von Hand gebaut werden. Jetzt Art und
+     * Nummer getrennt; was nicht ins Muster passt, wird abgewiesen. */
+    $ww_art = (string) $_POST['vorlage'];
+    if (!in_array($ww_art, array('status', 'verbrauch', 'ausgang', 'mqtt'), true)) {
+        $ww_fehler[] = ww_t('LOX.FEHLER_VORLAGE');
+    } else {
+        $ww_rohnr = isset($_POST['vorlage_nr']) ? (string) $_POST['vorlage_nr'] : '1';
+        if (!preg_match('/^[0-9]{1,3}$/', $ww_rohnr)) {
+            $ww_fehler[] = ww_t('LOX.FEHLER_VORLAGE');
+        } else {
+            $ww_v = ww_vorlage($ww_art, (int) $ww_rohnr);
+            if (is_array($ww_v)) {
+                list($ww_name, $ww_inhalt) = $ww_v;
+                header('Content-Type: application/xml; charset=utf-8');
+                header('Content-Disposition: attachment; filename="' . $ww_name . '"');
+                echo $ww_inhalt;
+                exit;
+            }
+            $ww_fehler[] = ww_t('LOX.FEHLER_VORLAGE');
+        }
+    }
+    $ww_tab = 'tab-loxone';
 }
 
 /* ---------------- Einstellungen speichern ---------------- */
@@ -88,7 +110,11 @@ if ($ww_post && isset($_POST['speichern'])) {
         // Best Practices ausdruecklich als haeufigste Ursache fuer HTTP 429.
         'takt_betrieb' => array(60, 3600),
         'takt_ruhe'    => array(60, 7200),
-        'wartezeit'    => array(0, 60),
+        /* Obergrenze WW_WARTEN_WEB, nicht 60. Bis 0.9.6 nahm das Formular 60
+         * an, und ww_befehl_absetzen() deckelte danach stillschweigend auf 12
+         * - wer 45 eintrug, bekam 12 und erfuhr es nicht. Was nicht ins Muster
+         * passt, wird gemeldet, nicht zurechtgebogen. */
+        'wartezeit'    => array(0, WW_WARTEN_WEB),
     ) as $ww_feld => $ww_grenzen) {
         $ww_wert = isset($_POST[$ww_feld]) ? trim((string) $_POST[$ww_feld]) : '';
         if (!preg_match('/^[0-9]+$/', $ww_wert)) {
@@ -112,8 +138,26 @@ if ($ww_post && isset($_POST['speichern'])) {
      * Bliebe er in dieser Liste, schaltete jedes Speichern der Einstellungen
      * MQTT stillschweigend ab. */
     foreach (array('steuerung_ein', 'hc_ein', 'hc_simulator',
-                   'miele_ein', 'st_ein', 'ansage_ein') as $ww_haken) {
+                   'miele_ein', 'st_ein', 'ansage_ein',
+                   'ansage_stoerung', 'ansage_fernstart') as $ww_haken) {
         $ww_cfg[$ww_haken] = isset($_POST[$ww_haken]) ? 1 : 0;
+    }
+
+    /* Ruhezeit der Ansage. Was nicht ins Muster passt, wird gemeldet - eine
+     * stillschweigend auf 00:00 zurechtgebogene Zeit hiesse: es spricht doch
+     * nachts. */
+    /* Der Sprachschluessel steht AUSGESCHRIEBEN neben dem Feld, er wird nicht
+     * aus dem Feldnamen gerechnet. Ein geratener Schluessel ergibt eine
+     * Meldung, in der der Schluessel selbst steht - und faellt erst auf, wenn
+     * jemand den Fehlerfall ausloest. */
+    foreach (array('ansage_ruhe_von' => 'ANSAGE.L_RUHE_VON',
+                   'ansage_ruhe_bis' => 'ANSAGE.L_RUHE_BIS') as $ww_zf => $ww_zk) {
+        $ww_zw = isset($_POST[$ww_zf]) ? trim((string) $_POST[$ww_zf]) : '';
+        if (!preg_match('/^([01][0-9]|2[0-3]):[0-5][0-9]$/', $ww_zw)) {
+            $ww_fehler[] = sprintf(ww_t('ANSAGE.FEHLER_ZEIT'), ww_t($ww_zk));
+        } else {
+            $ww_cfg[$ww_zf] = $ww_zw;
+        }
     }
 
     /* Sprachausgabe - Felder und Grenzen wortgleich zu AWM-Abfuhr */
@@ -203,13 +247,29 @@ if ($ww_post && isset($_POST['save_mqtt'])) {
 /* ---------------- Dienst starten, anhalten, neu starten ---------------- */
 if ($ww_post && isset($_POST['dienst'])) {
     $ww_befehl = (string) $_POST['dienst'];
-    list($ww_ok, $ww_ausgabe) = ww_dienst($ww_befehl);
-    if ($ww_ok) {
-        $ww_meldungen[] = ww_t('EINST.DIENST_' . strtoupper($ww_befehl)) . ' ' . ww_e($ww_ausgabe);
-    } else {
-        $ww_fehler[] = ww_e($ww_ausgabe);
+    /* Der haeufigste Grund, aus dem der Start scheitert, ist der einzige, den
+     * die Oberflaeche VORHER kennt: es ist kein Anbieter eingeschaltet. Der
+     * Dienst schreibt ihn ins Protokoll und endet; dienst.sh weiss davon
+     * nichts und meldet nur "Start fehlgeschlagen - siehe weissware.log". Wer
+     * das liest, sucht in einer Logdatei nach etwas, das die Seite selbst
+     * weiss. Ein Haken beim Anbieter und die Anmeldung sind ZWEI Dinge - man
+     * kann angemeldet und trotzdem nicht eingeschaltet sein. */
+    $ww_cfg0 = ww_config();
+    if (in_array($ww_befehl, array('start', 'restart'), true)
+        && empty($ww_cfg0['hc_ein']) && empty($ww_cfg0['miele_ein']) && empty($ww_cfg0['st_ein'])) {
+        $ww_fehler[] = ww_t('EINST.FEHLER_KEIN_ANBIETER');
+        $ww_tab = 'tab-settings';
+        $ww_befehl = '';
     }
-    $ww_tab = 'tab-settings';
+    if ($ww_befehl !== '') {
+        list($ww_ok, $ww_ausgabe) = ww_dienst($ww_befehl);
+        if ($ww_ok) {
+            $ww_meldungen[] = ww_t('EINST.DIENST_' . strtoupper($ww_befehl)) . ' ' . ww_e($ww_ausgabe);
+        } else {
+            $ww_fehler[] = ww_e($ww_ausgabe);
+        }
+        $ww_tab = 'tab-settings';
+    }
 }
 
 /* ---------------- Anmeldung der Anbieter ----------------
@@ -300,6 +360,39 @@ if ($ww_post && isset($_POST['test'])) {
         $ww_meldungen[] = ww_e($ww_text);
     } else {
         $ww_fehler[] = ww_e($ww_text);
+    }
+    $ww_tab = 'tab-test';
+}
+/* Trockenlauf: zeigt, was der Befehl taete. Loest nichts aus - deshalb grau
+ * und nicht orange, und deshalb auch dann brauchbar, wenn der Dienst steht. */
+if ($ww_post && isset($_POST['trockenlauf'])) {
+    $ww_tnr = isset($_POST['test_geraet']) ? (string) $_POST['test_geraet'] : '1';
+    $ww_tprog = isset($_POST['test_programm']) ? trim((string) $_POST['test_programm']) : '';
+    if (!preg_match('/^[0-9]{1,3}$/', $ww_tnr)) {
+        $ww_fehler[] = ww_t('TEST.M_GERAET_UNGUELTIG');
+    } elseif ($ww_tprog !== '' && !preg_match('/^[A-Za-z0-9](?!.*\.\.)[A-Za-z0-9._-]{0,79}$/', $ww_tprog)) {
+        $ww_fehler[] = ww_t('TEST.M_PROGRAMM_UNGUELTIG');
+    } else {
+        $ww_takt = (string) $_POST['trockenlauf'];
+        if (!in_array($ww_takt, array('start', 'stop', 'pause', 'fortsetzen', 'ein', 'aus'), true)) {
+            $ww_fehler[] = ww_t('TEST.M_UNBEKANNT');
+        } else {
+            list($ww_c, $ww_testausgabe) = ww_trockenlauf($ww_takt, $ww_tnr, $ww_tprog);
+        }
+    }
+    $ww_tab = 'tab-test';
+}
+/* Mitschnitt: eine Frist, kein Schalter - er laeuft von selbst ab. */
+if ($ww_post && isset($_POST['mitschnitt'])) {
+    $ww_sek = preg_match('/^[0-9]{1,4}$/', (string) $_POST['mitschnitt'])
+        ? (int) $_POST['mitschnitt'] : 0;
+    $ww_erg = ww_mitschnitt_schalten($ww_sek);
+    if ($ww_erg < 0) {
+        $ww_fehler[] = sprintf(ww_t('EINST.FEHLER_SPEICHERN'), $ww_p['config']);
+    } elseif ($ww_erg > 0) {
+        $ww_meldungen[] = sprintf(ww_t('TEST.M_MITSCHNITT_EIN'), $ww_erg);
+    } else {
+        $ww_meldungen[] = ww_t('TEST.M_MITSCHNITT_AUS');
     }
     $ww_tab = 'tab-test';
 }
@@ -469,8 +562,18 @@ if ($ww_rahmen) {
   </div>
 </div>
 
-<?php if (!empty($ww_zustand['fehler'])) { ?>
-<div class="sm-warnung"><b><?= ww_e(ww_t('ALLG.LETZTE_STOERUNG')) ?></b> <?= ww_e($ww_zustand['fehler']) ?></div>
+<?php
+/* Eine Stoerung OHNE Zeitangabe sieht immer aus, als waere sie von eben.
+ * zustand.json fuehrt den Zeitpunkt seit jeher mit; angezeigt wurde er nicht.
+ * Wer den Dienst anhaelt, sieht die letzte Stoerung sonst noch tagelang so,
+ * als bestuende sie fort. */
+$ww_st_alter = isset($ww_zustand['ts']) ? max(0, time() - (int) $ww_zustand['ts']) : -1;
+if (!empty($ww_zustand['fehler'])) { ?>
+<div class="sm-warnung"><b><?= ww_e(ww_t('ALLG.LETZTE_STOERUNG')) ?></b> <?= ww_e($ww_zustand['fehler']) ?>
+<?php if ($ww_st_alter >= 0) { ?>
+<span class="sm-hilfe"><?= ww_e(sprintf(ww_t('ALLG.STOERUNG_ALTER'), $ww_st_alter)) ?></span>
+<?php } ?>
+</div>
 <?php } ?>
 
 <?php foreach ($ww_geraete as $ww_nr => $ww_fz) { ?>
@@ -503,16 +606,31 @@ if ($ww_rahmen) {
 <!-- Reiterleiste: echte Links, JavaScript faengt den Klick ab. So bleibt jeder
      Reiter verlinkbar, Eingaben in anderen Reitern gehen nicht verloren, und
      faellt das Skript aus, ist die Seite weiterhin bedienbar. -->
-<div class="sm-tabs">
 <?php
-$ww_beschriftung = array(
-    'settings' => 'REITER.EINSTELLUNGEN', 'mqtt' => '', 'loxone' => 'REITER.LOXONE',
-    'test'     => 'REITER.TEST',          'log'  => 'REITER.LOG',
-);
-foreach ($ww_reiter_ids as $ww_r) {
-    $ww_bez = $ww_beschriftung[$ww_r] !== '' ? ww_t($ww_beschriftung[$ww_r]) : 'MQTT'; ?>
-	<a class="sm-tab<?= $ww_tab === 'tab-' . $ww_r ? ' sm-active' : '' ?>" data-ziel="tab-<?= $ww_r ?>" href="index.php?form=<?= $ww_r ?>"><?= ww_e($ww_bez) ?></a>
-<?php } ?>
+/* Die Leiste steht AUSGESCHRIEBEN da, nicht als Schleife.
+ *
+ * hausstandard_pruefen.py sucht die Reiter woertlich am Ziel-Attribut der
+ * Verweise. Aus einer Schleife erzeugt findet es keinen einzigen und meldet
+ * "nicht gemessen" - ein Strich in der Spalte, der leicht wie ein Haken
+ * aussieht.
+ *
+ * Dieser Kommentar nennt die gesuchte Form deshalb NICHT im Wortlaut: ein
+ * Beispiel in derselben Schreibweise wird mitgezaehlt, und die Pruefung
+ * meldet dann einen Reiter zu viel. Genau das ist hier beim Schreiben
+ * passiert.
+ * Bis 0.9.6 war das hier so, und die Spalte stand deshalb dauerhaft auf "-".
+ * Genau dieser Fehler steht in REGELN_1 zweimal in der Liste eigener Fehler.
+ *
+ * Der Preis ist eine zweite Stelle, die zu $ww_reiter_ids passen muss. Die
+ * Uebereinstimmung prueft der Reiter Test nach - ausgeschrieben UND
+ * nachgemessen, nicht ausgeschrieben und gehofft. */
+?>
+<div class="sm-tabs">
+	<a class="sm-tab<?= $ww_tab === 'tab-settings' ? ' sm-active' : '' ?>" data-ziel="tab-settings" href="index.php?form=settings"><?= ww_e(ww_t('REITER.EINSTELLUNGEN')) ?></a>
+	<a class="sm-tab<?= $ww_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" data-ziel="tab-mqtt" href="index.php?form=mqtt">MQTT</a>
+	<a class="sm-tab<?= $ww_tab === 'tab-loxone' ? ' sm-active' : '' ?>" data-ziel="tab-loxone" href="index.php?form=loxone"><?= ww_e(ww_t('REITER.LOXONE')) ?></a>
+	<a class="sm-tab<?= $ww_tab === 'tab-test' ? ' sm-active' : '' ?>" data-ziel="tab-test" href="index.php?form=test"><?= ww_e(ww_t('REITER.TEST')) ?></a>
+	<a class="sm-tab<?= $ww_tab === 'tab-log' ? ' sm-active' : '' ?>" data-ziel="tab-log" href="index.php?form=log"><?= ww_e(ww_t('REITER.LOG')) ?></a>
 </div>
 
 <!-- ================= Reiter: Einstellungen ================= -->
@@ -642,7 +760,7 @@ foreach ($ww_reiter_ids as $ww_r) {
 </div>
 <div class="sm-feld">
   <label for="wartezeit"><?= ww_e(ww_t('EINST.L_WARTEZEIT')) ?></label>
-  <input data-role="none" type="number" id="wartezeit" name="wartezeit" value="<?= (int) $ww_cfg['wartezeit'] ?>" min="0" max="60">
+  <input data-role="none" type="number" id="wartezeit" name="wartezeit" value="<?= (int) $ww_cfg['wartezeit'] ?>" min="0" max="<?= (int) WW_WARTEN_WEB ?>">
   <div class="sm-hilfe"><?= ww_t('EINST.H_WARTEZEIT') ?></div>
 </div>
 
@@ -654,6 +772,34 @@ foreach ($ww_reiter_ids as $ww_r) {
     <?= ww_e(ww_t('ANSAGE.L_EIN')) ?>
   </label>
   <div class="sm-hilfe"><?= ww_t('ANSAGE.H_EIN') ?></div>
+</div>
+<?php /* Je Ereignis ein eigener Haken, alle ab Werk aus. */ ?>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="ansage_stoerung" value="1" <?= !empty($ww_cfg['ansage_stoerung']) ? 'checked' : '' ?>>
+    <?= ww_e(ww_t('ANSAGE.L_STOERUNG')) ?>
+  </label>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="ansage_fernstart" value="1" <?= !empty($ww_cfg['ansage_fernstart']) ? 'checked' : '' ?>>
+    <?= ww_e(ww_t('ANSAGE.L_FERNSTART')) ?>
+  </label>
+  <div class="sm-hilfe"><?= ww_t('ANSAGE.H_FERNSTART') ?></div>
+</div>
+<div class="sm-row">
+    <div>
+        <label><?= ww_e(ww_t('ANSAGE.L_RUHE_VON')) ?></label>
+        <input data-role="none" type="text" name="ansage_ruhe_von" value="<?= ww_e($ww_cfg['ansage_ruhe_von']) ?>" placeholder="22:00">
+    </div>
+    <div>
+        <label><?= ww_e(ww_t('ANSAGE.L_RUHE_BIS')) ?></label>
+        <input data-role="none" type="text" name="ansage_ruhe_bis" value="<?= ww_e($ww_cfg['ansage_ruhe_bis']) ?>" placeholder="07:00">
+    </div>
+    <div>
+        <label>&nbsp;</label>
+        <div class="sm-hilfe"><?= ww_t('ANSAGE.H_RUHE') ?></div>
+    </div>
 </div>
 <div class="sm-row">
     <div>
@@ -746,10 +892,21 @@ foreach ($ww_reiter_ids as $ww_r) {
 </div>
 
 <div class="sm-step"><b>Miele</b><br>
-<?php if ($ww_ang['miele']) { ?>
-<span class="sm-an"><?= ww_e(ww_t('EINST.ANGEMELDET')) ?></span>
-<?php } ?>
+<?php
+/* Bis 0.9.7 stand hier das Wort "angemeldet" als kurze Einblendung, und
+ * unmittelbar dahinter - ohne Punkt, ohne Absatz - die vollstaendige
+ * Anleitung zum Anmelden. Wer angemeldet war, las trotzdem drei Zeilen
+ * darueber, wie man sich anmeldet, und der eine entscheidende Hinweis ging
+ * darin unter. Home Connect macht es zwei Kaesten weiter oben richtig: eine
+ * Verzweigung, nicht eine Einblendung vor unveraendertem Text. */
+if ($ww_ang['miele']) { ?>
+<p><span class="sm-an"><?= ww_e(ww_t('EINST.ANGEMELDET')) ?></span>
+&middot; <?= ww_t('EINST.MIELE_SCHON_ANGEMELDET') ?></p>
+<?php } else { ?>
 <?= ww_t('EINST.MIELE_SCHRITTE') ?>
+<?php } ?>
+<?php /* Die Anmeldeadresse steht in beiden Faellen da: auch wer angemeldet
+         ist, braucht sie zum erneuten Anmelden. */ ?>
 <?php if ($ww_zg['miele_client_id'] !== '') { ?>
 <p><span class="sm-mono"><?= ww_e($ww_miele_adresse) ?></span></p>
 <?php } else { ?>
@@ -886,7 +1043,7 @@ foreach ($ww_reiter_ids as $ww_r) {
 <tr><th><?= ww_e(ww_t('LOX.T_TITEL')) ?></th><th><?= ww_e(ww_t('LOX.T_BEFEHL')) ?></th>
     <th><?= ww_e(ww_t('LOX.T_EINHEIT')) ?></th><th><?= ww_e(ww_t('LOX.T_BEDEUTUNG')) ?></th></tr>
 <?php foreach (ww_status_felder() as $ww_feld => $ww_info) { ?>
-<tr><td><span class="sm-mono">WW_1_<?= ww_e($ww_feld) ?></span></td>
+<tr><td><span class="sm-mono"><?= ww_e(ww_titel(1, $ww_feld)) ?></span></td>
     <td><span class="sm-mono">\i<?= ww_e($ww_feld) ?>=\i\v</span></td>
     <td><?= $ww_info[0] ?></td><td><?= ww_t($ww_info[1]) ?></td></tr>
 <?php } ?>
@@ -895,20 +1052,59 @@ foreach ($ww_reiter_ids as $ww_r) {
 <?php if (count($ww_geraete) > 1) { ?>
 <p><b><?= ww_e(ww_t('LOX.MEHRERE_GERAETE')) ?></b></p>
 <table class="sm-tbl">
-<tr><th><?= ww_e(ww_t('ALLG.GERAET')) ?></th><th><?= ww_e(ww_t('EINST.T_MODELL')) ?></th><th><?= ww_e(ww_t('LOX.T_ADRESSE')) ?></th></tr>
+<?php /* Spalte 2 fuehrte bis 0.9.6 das Feld 'modell'. Das gibt es im
+         gemeinsamen Geraetemodell nicht - dort heissen die Felder 'name',
+         'typ' und 'marke' (bin/weissware.py, hc_abbilden/miele_abbilden/
+         st_abbilden). Die Spalte blieb deshalb leer, und PHP 8 schrieb je
+         Geraet eine Warnung in die Zelle. Sichtbar war das nur mit mehr als
+         einem Geraet. Gezeigt wird jetzt der Name, denn diese Tabelle
+         beantwortet: welche Adresse gehoert zu welchem Geraet. */ ?>
+<tr><th><?= ww_e(ww_t('ALLG.GERAET')) ?></th><th><?= ww_e(ww_t('EINST.T_NAME')) ?></th><th><?= ww_e(ww_t('LOX.T_ADRESSE')) ?></th></tr>
 <?php foreach ($ww_geraete as $ww_nr => $ww_fz) { ?>
-<tr><td><?= ww_e($ww_nr) ?></td><td><?= ww_e($ww_fz['modell']) ?></td>
+<tr><td><?= ww_e($ww_nr) ?></td><td><?= ww_e(isset($ww_fz['name']) ? $ww_fz['name'] : '') ?></td>
     <td><span class="sm-mono"><?= ww_e($ww_basis) ?>?token=<?= ww_e($ww_token) ?>&amp;aktion=status&amp;geraet=<?= ww_e($ww_nr) ?></span></td></tr>
 <?php } ?>
 </table>
 <?php } ?>
+<?php
+/* Je erkanntem Geraet eine Knopfreihe. Ist noch keines erkannt, wird die Reihe
+ * fuer Geraet 1 angeboten - dann enthaelt die Datei alle Felder, und der
+ * Hinweis in der Datei sagt, sie nach dem ersten Abruf erneut zu holen. */
+$ww_vnrn = $ww_geraete ? array_keys($ww_geraete) : array('1');
+foreach ($ww_vnrn as $ww_vnr) {
+    $ww_vname = isset($ww_geraete[$ww_vnr]['name']) ? $ww_geraete[$ww_vnr]['name'] : '';
+?>
+<p><b><?= ww_e(sprintf(ww_t('LOX.VORLAGEN_FUER'), $ww_vnr)) ?></b><?= $ww_vname !== '' ? ' &middot; ' . ww_e($ww_vname) : '' ?></p>
+<div class="sm-knopfreihe">
+<?php /* Ausgeschrieben, nicht als Schleife ueber Schluesselnamen: der
+         Sprachpruefer sucht woertliche Aufrufe und meldete die drei sonst als
+         "definiert, aber nie benutzt" - dieselbe Blindstelle wie bei der
+         Reiterleiste. */ ?>
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <input data-role="none" type="hidden" name="vorlage_nr" value="<?= ww_e($ww_vnr) ?>">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="vorlage" value="status"><?= ww_e(ww_t('LOX.K_VORLAGE_STATUS')) ?></button>
+  </form>
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <input data-role="none" type="hidden" name="vorlage_nr" value="<?= ww_e($ww_vnr) ?>">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="vorlage" value="verbrauch"><?= ww_e(ww_t('LOX.K_VORLAGE_VERBRAUCH')) ?></button>
+  </form>
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <input data-role="none" type="hidden" name="vorlage_nr" value="<?= ww_e($ww_vnr) ?>">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="vorlage" value="ausgang"><?= ww_e(ww_t('LOX.K_VORLAGE_BEFEHLE')) ?></button>
+  </form>
+</div>
+<?php } ?>
+<p><b><?= ww_e(ww_t('LOX.VORLAGEN_MQTT')) ?></b></p>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-    <input data-role="none" type="hidden" name="vorlage" value="1">
-    <button data-role="none" class="sm-btn sm-b-lesen" type="submit"><?= ww_e(ww_t('LOX.K_VORLAGE')) ?></button>
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="vorlage" value="mqtt"><?= ww_e(ww_t('LOX.K_VORLAGE_MQTT')) ?></button>
   </form>
 </div>
+<div class="sm-hilfe"><?= ww_t('LOX.VORLAGEN_HINWEIS') ?></div>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-lesen"></i> <?= ww_t('LEGENDE.LESEN') ?></span>
 </div>
@@ -1004,28 +1200,47 @@ function ww_bausteine()
         array(10, 'BAUSTEIN.T_VE',      'BAUSTEIN.N10', 'BAUSTEIN.P10', '&mdash;'),
         array(11, 'BAUSTEIN.T_VE',      'BAUSTEIN.N11', 'BAUSTEIN.P11', '&mdash;'),
         array(12, 'BAUSTEIN.T_VE',      'BAUSTEIN.N12', 'BAUSTEIN.P12', '&mdash;'),
-        array(13, 'BAUSTEIN.T_SWS',   'BAUSTEIN.N13', 'BAUSTEIN.P13',   'I &larr; ' . ww_t('BAUSTEIN.PVUEBERSCHUSS') . ''),
-        array(14, 'BAUSTEIN.T_NICHT', 'BAUSTEIN.N14', '',               'I &larr; #2'),
-        array(15, 'BAUSTEIN.T_UND',   'BAUSTEIN.N15', 'BAUSTEIN.P15',   'I1 &larr; #13, I2 &larr; #14, I3 &larr; #6, I4 &larr; #28'),
-        array(16, 'BAUSTEIN.T_EVZ',   'BAUSTEIN.N16', 'BAUSTEIN.P16',   'I &larr; #15'),
-        array(17, 'BAUSTEIN.T_IMPULS', 'BAUSTEIN.N17', 'BAUSTEIN.P17',   'I &larr; #16'),
-        array(18, 'BAUSTEIN.T_TASTER', 'BAUSTEIN.N18', 'BAUSTEIN.P18',   '&mdash;'),
-        array(19, 'BAUSTEIN.T_ODER',  'BAUSTEIN.N19', '',               'I1 &larr; #17, I2 &larr; #18'),
-        array(20, 'BAUSTEIN.T_UND',   'BAUSTEIN.N20', 'BAUSTEIN.P20',   'I1 &larr; #19, I2 &larr; #6'),
-        array(21, 'BAUSTEIN.T_VA',    'BAUSTEIN.N21', 'BAUSTEIN.P21',   'I &larr; #20'),
-        array(22, 'BAUSTEIN.T_SWS',   'BAUSTEIN.N22', 'BAUSTEIN.P22',   'I &larr; #5'),
-        array(23, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N23', 'BAUSTEIN.P23',   'I &larr; #22'),
-        array(24, 'BAUSTEIN.T_SWS',   'BAUSTEIN.N24', 'BAUSTEIN.P24',   'I &larr; #7'),
-        array(25, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N25', 'BAUSTEIN.P25',   'I &larr; #24'),
-        array(26, 'BAUSTEIN.T_SWS',   'BAUSTEIN.N26', 'BAUSTEIN.P26',   'I &larr; #11'),
-        array(27, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N27', 'BAUSTEIN.P27',   'I &larr; #26'),
-        array(28, 'BAUSTEIN.T_WOCHE', 'BAUSTEIN.N28', 'BAUSTEIN.P28',   '&mdash;'),
-        array(29, 'BAUSTEIN.T_SWS',   'BAUSTEIN.N29', 'BAUSTEIN.P29',   'I &larr; ' . ww_t('BAUSTEIN.HAUSAKKU') . ''),
-        array(30, 'BAUSTEIN.T_SWS',   'BAUSTEIN.N30', 'BAUSTEIN.P30',   'I &larr; ' . ww_t('BAUSTEIN.SPOTPREIS') . ''),
-        array(31, 'BAUSTEIN.T_ODER',  'BAUSTEIN.N31', '',               'I1 &larr; #13, I2 &larr; #30'),
-        array(32, 'BAUSTEIN.T_STATUS', 'BAUSTEIN.N32', 'BAUSTEIN.P32',   'I1 &larr; #1, I2 &larr; #3, I3 &larr; #5'),
-        array(33, 'BAUSTEIN.T_VA',    'BAUSTEIN.N33', 'BAUSTEIN.P33',   '' . ww_t('BAUSTEIN.MANUELL') . ''),
-        array(34, 'BAUSTEIN.T_VA',    'BAUSTEIN.N34', 'BAUSTEIN.P34',   '' . ww_t('BAUSTEIN.MANUELL') . ''),
+        /* Zeilen 13-34 neu gelegt. Bis 0.9.6 stammten Typ- und Eingangsspalte
+         * wortgleich aus AudiConnect 0.9.6, waehrend Name und Parameter fuer
+         * Weissware neu geschrieben worden waren - um eine Zeile versetzt.
+         * Dadurch trug etwa #21 den Typ "Virtueller Ausgang Befehl" und den
+         * Parameter "Ein > 0,5, Aus < 0,5", #23 eine Benachrichtigung mit
+         * Schwellwerten. Dieselbe Altlastquelle wie das AUDI_-Praefix, das in
+         * 0.9.1 behoben wurde.
+         *
+         * Zwei Bedingungen bestimmen den Neuaufbau:
+         *   - UND und ODER haben ZWEI Eingaenge (REGELN_3, A4: I1=00, I2=01,
+         *     Q=02). Drei Bedingungen brauchen zwei Bausteine, keine dritte
+         *     Klemme. Die alte Zeile #15 fuehrte vier Eingaenge.
+         *   - Kein Vorwaertsverweis: jede Zeile bezieht sich nur auf kleinere
+         *     Nummern. Wer die Tabelle von oben nach unten abarbeitet, hat nie
+         *     einen Eingang ohne Quelle.
+         *
+         * Die Namen sind unveraendert die 22 aus den Sprachdateien - keiner
+         * ist hinzugekommen, keiner entfallen; sie stehen nur in Baureihenfolge.
+         */
+        array(13, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N13', 'BAUSTEIN.P13', 'I &larr; ' . ww_t('BAUSTEIN.PVUEBERSCHUSS')),
+        array(14, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N14', 'BAUSTEIN.P14', 'I &larr; ' . ww_t('BAUSTEIN.HAUSAKKU')),
+        array(15, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N15', 'BAUSTEIN.P15', 'I &larr; ' . ww_t('BAUSTEIN.SPOTPREIS')),
+        array(16, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N16', '',             'I1 &larr; #14, I2 &larr; #15'),
+        array(17, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N17', '',             'I1 &larr; #13, I2 &larr; #16'),
+        array(18, 'BAUSTEIN.T_EVZ',     'BAUSTEIN.N18', 'BAUSTEIN.P18', 'I &larr; #17'),
+        array(19, 'BAUSTEIN.T_WOCHE',   'BAUSTEIN.N19', 'BAUSTEIN.P19', '&mdash;'),
+        array(20, 'BAUSTEIN.T_UND',     'BAUSTEIN.N20', 'BAUSTEIN.P20', 'I1 &larr; #18, I2 &larr; #19'),
+        array(21, 'BAUSTEIN.T_TASTER',  'BAUSTEIN.N21', 'BAUSTEIN.P21', '&mdash;'),
+        array(22, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N22', '',             'I1 &larr; #20, I2 &larr; #21'),
+        array(23, 'BAUSTEIN.T_UND',     'BAUSTEIN.N23', 'BAUSTEIN.P23', 'I1 &larr; #22, I2 &larr; #6'),
+        array(24, 'BAUSTEIN.T_IMPULS',  'BAUSTEIN.N24', 'BAUSTEIN.P24', 'I &larr; #23'),
+        array(25, 'BAUSTEIN.T_VA',      'BAUSTEIN.N25', 'BAUSTEIN.P25', 'I &larr; #24'),
+        array(26, 'BAUSTEIN.T_VA',      'BAUSTEIN.N26', 'BAUSTEIN.P26', ww_t('BAUSTEIN.MANUELL')),
+        array(27, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N27', 'BAUSTEIN.P27', 'I &larr; #5'),
+        array(28, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N28', 'BAUSTEIN.P28', 'I &larr; #27'),
+        array(29, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N29', 'BAUSTEIN.P29', 'I &larr; #7'),
+        array(30, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N30', 'BAUSTEIN.P30', 'I &larr; #29'),
+        array(31, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N31', 'BAUSTEIN.P31', 'I &larr; #11'),
+        array(32, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N32', 'BAUSTEIN.P32', 'I &larr; #31'),
+        array(33, 'BAUSTEIN.T_STATUS',  'BAUSTEIN.N33', 'BAUSTEIN.P33', 'I1 &larr; #1, I2 &larr; #3, I3 &larr; #5'),
+        array(34, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N34', 'BAUSTEIN.P34', 'I &larr; #24'),
     );
 }
 ?>
@@ -1048,7 +1263,11 @@ function ww_bausteine()
 <table class="sm-tbl">
 <tr><th><?= ww_e(ww_t('LOX.T_PRUEFUNG')) ?></th><th><?= ww_e(ww_t('LOX.T_ERWARTUNG')) ?></th></tr>
 <tr><td><span class="sm-mono"><?= ww_e($ww_basis) ?>?token=<?= ww_e($ww_token) ?>&amp;aktion=status</span></td>
-    <td><span class="sm-mono">WEISSWARE;OK=1;SOC=...</span></td></tr>
+    <?php /* Hier stand bis 0.9.6 "WEISSWARE;OK=1;SOC=..." - SOC ist ein
+             Batteriewert und kommt in diesem Plugin nirgends vor. Eine
+             Altlast wie das AUDI_-Praefix. Der Anwender haette gegen eine
+             Erwartung geprueft, die es nie gab. */ ?>
+    <td><span class="sm-mono">WEISSWARE;OK=1;ZUSTAND=...</span></td></tr>
 <tr><td><span class="sm-mono"><?= ww_e($ww_basis) ?>?aktion=status</span></td>
     <td><span class="sm-mono">FEHLER;OK=0;GRUND=TOKEN</span> (HTTP 403)</td></tr>
 <tr><td><span class="sm-mono"><?= ww_e($ww_basis) ?>?token=<?= ww_e($ww_token) ?>&amp;aktion=quatsch</span></td>
@@ -1092,7 +1311,21 @@ function ww_bausteine()
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="selbsttest" value="1"><?= ww_e(ww_t('TEST.K_SELBSTTEST')) ?></button>
   </form>
   <a class="sm-btn sm-b-technik" href="<?= ww_e($ww_basis) ?>?token=<?= ww_e($ww_token) ?>&amp;aktion=roh" target="_blank"><?= ww_e(ww_t('TEST.K_ROH')) ?></a>
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="mitschnitt" value="300"><?= ww_e(ww_t('TEST.K_MITSCHNITT_EIN')) ?></button>
+  </form>
+<?php if (ww_mitschnitt_rest() > 0) { ?>
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="mitschnitt" value="0"><?= ww_e(ww_t('TEST.K_MITSCHNITT_AUS')) ?></button>
+  </form>
+<?php } ?>
 </div>
+<div class="sm-hilfe"><?= ww_t('TEST.H_MITSCHNITT') ?></div>
+<?php $ww_mz = ww_mitschnitt_zeilen(120); if ($ww_mz) { ?>
+<div class="sm-log"><?= ww_e(implode("\n", $ww_mz)) ?></div>
+<?php } ?>
 
 <h3><?= ww_e(ww_t('ANSAGE.H_TEST')) ?></h3>
 <div class="sm-knopfreihe">
@@ -1122,6 +1355,16 @@ function ww_bausteine()
   <input data-role="none" type="text" id="test_programm" name="test_programm" value="">
   <div class="sm-hilfe"><?= ww_t('TEST.H_PROGRAMM') ?></div>
 </div>
+<?php /* Der Trockenlauf steht in einer EIGENEN Reihe ueber den orangen Knoepfen:
+         lesende und schaltende Knoepfe werden nie gemischt. Er benutzt
+         dieselben beiden Felder darueber, deshalb steht er im selben
+         Formular. */ ?>
+<div class="sm-legende"><span><i class="sm-punkt sm-b-technik"></i> <?= ww_t('LEGENDE.TECHNIK') ?></span></div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="trockenlauf" value="start"><?= ww_e(ww_t('TEST.K_TROCKEN')) ?></button>
+</div>
+<div class="sm-hilfe"><?= ww_t('TEST.H_TROCKEN') ?></div>
+<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= ww_t('LEGENDE.AKTION') ?></span></div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="abruf"><?= ww_e(ww_t('TEST.K_ABRUF')) ?></button>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="start"><?= ww_e(ww_t('TEST.K_START')) ?></button>
@@ -1132,6 +1375,28 @@ function ww_bausteine()
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="aus"><?= ww_e(ww_t('TEST.K_AUS')) ?></button>
 </div>
 </form>
+
+<h3><?= ww_e(ww_t('LAUF.H')) ?></h3>
+<p class="sm-hilfe"><?= ww_t('LAUF.ERKLAERUNG') ?></p>
+<?php $ww_laeufe = ww_laeufe(20); if (!$ww_laeufe) { ?>
+<div class="sm-hinweis"><?= ww_t('LAUF.LEER') ?></div>
+<?php } else { ?>
+<table class="sm-tbl">
+<tr><th><?= ww_e(ww_t('LAUF.T_ENDE')) ?></th><th><?= ww_e(ww_t('ALLG.GERAET')) ?></th>
+    <th><?= ww_e(ww_t('LAUF.T_PROGRAMM')) ?></th><th><?= ww_e(ww_t('LAUF.T_DAUER')) ?></th>
+    <th><?= ww_e(ww_t('LAUF.T_ENERGIE')) ?></th><th><?= ww_e(ww_t('LAUF.T_WASSER')) ?></th></tr>
+<?php foreach ($ww_laeufe as $ww_l) {
+    // Ein Strich heisst: dieser Wert lag nicht vor. Nie eine 0.
+    $ww_w = function ($v) { return ($v === null || $v === '') ? '&ndash;' : ww_e($v); }; ?>
+<tr><td><?= ww_e(date('d.m.Y H:i', (int) $ww_l['ts'])) ?></td>
+    <td><?= ww_e($ww_l['name'] !== '' ? $ww_l['name'] : $ww_l['geraet']) ?></td>
+    <td><?= $ww_w(isset($ww_l['programm']) ? $ww_l['programm'] : null) ?></td>
+    <td><?= $ww_w(isset($ww_l['laufmin']) ? $ww_l['laufmin'] : null) ?></td>
+    <td><?= $ww_w(isset($ww_l['energie_kwh']) ? $ww_l['energie_kwh'] : null) ?></td>
+    <td><?= $ww_w(isset($ww_l['wasser_l']) ? $ww_l['wasser_l'] : null) ?></td></tr>
+<?php } ?>
+</table>
+<?php } ?>
 
 <div class="sm-warnung"><b><?= ww_e(ww_t('TEST.H_UNGEPRUEFT')) ?></b><br><?= ww_t('TEST.UNGEPRUEFT') ?></div>
 </div>

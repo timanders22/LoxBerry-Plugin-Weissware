@@ -141,7 +141,21 @@ function ww_vorgaben()
         // Ansage bewusst AUS als Vorgabe: ein Update soll nicht ungefragt
         // anfangen zu sprechen, womoeglich nachts.
         'ansage_ein'     => 0,
+        // Je Ereignis ein eigener Haken, alle ab Werk AUS. Ein Update soll
+        // nicht ungefragt anfangen zu sprechen.
+        'ansage_stoerung'  => 0,
+        'ansage_fernstart' => 0,
+        // Ruhezeit. Bis 0.9.6 gab es keine: der Kommentar begruendete den
+        // Vorgabewert ausdruecklich mit "womoeglich nachts", und genau dagegen
+        // half nichts, sobald jemand die Ansage einschaltete.
+        // Gleiche Werte = keine Ruhezeit.
+        'ansage_ruhe_von'  => '22:00',
+        'ansage_ruhe_bis'  => '07:00',
         'wartezeit'      => 12,
+        // Mitschnitt: Unixzeit, bis zu der mitgeschrieben wird. 0 = aus, und
+        // das ist die Werkseinstellung. Muss zu VORGABEN in bin/weissware.py
+        // passen; der Reiter Test misst die Uebereinstimmung nach.
+        'mitschnitt_bis' => 0,
     );
 }
 
@@ -298,6 +312,167 @@ function ww_dienst_schalter($schalter, $wert = '')
     $code = 0;
     @exec($befehl . ' 2>&1', $ausgabe, $code);
     return array($code, implode("\n", $ausgabe));
+}
+
+/* ---------------- Trockenlauf und Mitschnitt ---------------- */
+
+/**
+ * Trockenlauf: zeigt, WAS der Befehl taete. Sendet nichts.
+ *
+ * Laeuft ueber dasselbe Skript wie die Selbstpruefung, nicht ueber die
+ * Warteschlange: der Trockenlauf soll gerade dann etwas sagen, wenn der Dienst
+ * NICHT laeuft. Rueckgabe: array(rueckgabewert, ausgabe).
+ */
+function ww_trockenlauf($aktion, $nummer, $programm = '')
+{
+    $p = ww_paths();
+    $py = $p['bindir'] . '/venv/bin/python3';
+    $skript = $p['bindir'] . '/weissware.py';
+    if (!is_file($py) || !is_file($skript)) {
+        return array(1, ww_t('TEST.A_VENV_FEHLT'));
+    }
+    $befehl = escapeshellcmd($py) . ' ' . escapeshellarg($skript)
+            . ' --trockenlauf ' . escapeshellarg($aktion) . ' ' . escapeshellarg($nummer);
+    if ($programm !== '') {
+        $befehl .= ' ' . escapeshellarg($programm);
+    }
+    $ausgabe = array();
+    $code = 0;
+    @exec($befehl . ' 2>&1', $ausgabe, $code);
+    return array($code, implode("\n", $ausgabe));
+}
+
+/**
+ * Die zuletzt beendeten Programmlaeufe, neueste zuerst.
+ *
+ * Geschrieben werden sie vom Dienst im Augenblick des Uebergangs
+ * laeuft -> fertig; danach sind die Verbrauchswerte beim Anbieter fort.
+ */
+function ww_laeufe($anzahl = 20)
+{
+    $d = ww_json_lesen(ww_paths()['datadir'] . '/laeufe.json');
+    $l = isset($d['laeufe']) && is_array($d['laeufe']) ? $d['laeufe'] : array();
+    return array_slice(array_reverse($l), 0, max(1, (int) $anzahl));
+}
+
+/** Laeuft gerade ein Mitschnitt? Rueckgabe: verbleibende Sekunden oder 0. */
+function ww_mitschnitt_rest()
+{
+    $cfg = ww_config();
+    return max(0, (int) $cfg['mitschnitt_bis'] - time());
+}
+
+/**
+ * Schaltet den Mitschnitt fuer $sekunden ein, 0 schaltet ihn ab.
+ *
+ * Eine FRIST, kein Schalter: ein vergessener Mitschnitt schriebe sonst
+ * wochenlang auf die Speicherkarte, und log/plugins liegt auf einer Ramdisk.
+ */
+function ww_mitschnitt_schalten($sekunden)
+{
+    $sekunden = max(0, min(3600, (int) $sekunden));
+    $cfg = ww_config();
+    $cfg['mitschnitt_bis'] = $sekunden > 0 ? time() + $sekunden : 0;
+    return ww_config_speichern($cfg) ? $sekunden : -1;
+}
+
+/** Die letzten Zeilen des Mitschnitts. */
+function ww_mitschnitt_zeilen($anzahl = 200)
+{
+    $f = ww_paths()['logdir'] . '/mitschnitt.log';
+    return is_file($f) ? array_reverse(ww_log_ende($f, $anzahl)) : array();
+}
+
+/* ---------------- Der eigene Endpunkt ----------------
+ *
+ * Alle uebrigen Pruefzeilen sehen sich Dateien an. Nur diese eine spricht die
+ * Stelle an, die spaeter der Miniserver anspricht - und nur sie findet die
+ * Klasse, bei der html/ und htmlauth/ installiert in getrennten Baeumen liegen
+ * und der Endpunkt mit HTTP 500 antwortet, ohne dass es jemand merkt. Der
+ * Miniserver liest kein Protokoll.
+ *
+ * Serverseitig ist 127.0.0.1 dabei die RICHTIGE Adresse. Das widerspricht
+ * nicht der Regel "ein Knopf auf 127.0.0.1 kann nie funktionieren" - die gilt
+ * fuer einen Verweis, den ein Mensch im Browser anklickt.
+ *
+ * Drei Ausgaenge, und der dritte ist der wichtige:
+ *   1 geantwortet und plausibel
+ *   0 geantwortet und falsch (mit Code und Rumpfanfang)
+ *  -1 NICHT FESTSTELLBAR - weder allow_url_fopen noch curl, oder ein
+ *     Webserver, der waehrend des Seitenaufbaus keine zweite Anfrage annimmt.
+ *     "Ich kann es nicht messen" darf nicht wie "in Ordnung" aussehen.
+ *
+ * Das Ergebnis wird zwischengespeichert: alle Reiter werden bei jedem Klick
+ * mitgerendert, und ohne Speicher riefe sich der Webserver bei jedem Klick
+ * selbst auf.
+ */
+define('WW_ENDPUNKT_SPEICHER_S', 120);
+
+function ww_endpunkt_pruefen($frisch = false)
+{
+    $p = ww_paths();
+    $speicher = $p['datadir'] . '/endpunkt_pruefung.json';
+    if (!$frisch) {
+        $alt = ww_json_lesen($speicher);
+        if (isset($alt['ts']) && (time() - (int) $alt['ts']) < WW_ENDPUNKT_SPEICHER_S) {
+            $alt['alter'] = time() - (int) $alt['ts'];
+            return $alt;
+        }
+    }
+    $geraete = ww_geraete();
+    $nr = $geraete ? (string) array_keys($geraete)[0] : '1';
+    $url = 'http://127.0.0.1/plugins/' . $p['plugin'] . '/index.php?token='
+         . rawurlencode(ww_token()) . '&aktion=status&geraet=' . rawurlencode($nr);
+
+    $rumpf = false;
+    $stand = 0;
+    if (function_exists('curl_init')) {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, array(CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 5,
+                                     CURLOPT_CONNECTTIMEOUT => 3, CURLOPT_FOLLOWLOCATION => false));
+        $rumpf = curl_exec($ch);
+        $stand = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        curl_close($ch);
+    } elseif (ini_get('allow_url_fopen')) {
+        $ctx = stream_context_create(array('http' => array(
+            'timeout' => 5, 'ignore_errors' => true)));
+        $rumpf = @file_get_contents($url, false, $ctx);
+        if (isset($http_response_header[0])
+            && preg_match('# (\d{3}) #', ' ' . $http_response_header[0] . ' ', $m)) {
+            $stand = (int) $m[1];
+        }
+    } else {
+        $erg = array('stand' => -1, 'http' => 0, 'text' => ww_t('TEST.A_EP_UNMESSBAR'),
+                     'ts' => time(), 'alter' => 0);
+        ww_endpunkt_merken($speicher, $erg);
+        return $erg;
+    }
+
+    if ($rumpf === false || $rumpf === '') {
+        // Kein Kreuz: im Pruefaufbau faellt genau dieser Fall an.
+        $erg = array('stand' => -1, 'http' => $stand,
+                     'text' => sprintf(ww_t('TEST.A_EP_KEINE_ANTWORT'), $stand));
+    } elseif ($stand === 200 && strpos($rumpf, 'WEISSWARE;OK=') === 0) {
+        $erg = array('stand' => 1, 'http' => $stand,
+                     'text' => substr(trim(strtok($rumpf, "\n")), 0, 120));
+    } else {
+        $erg = array('stand' => 0, 'http' => $stand,
+                     'text' => sprintf(ww_t('TEST.A_EP_FALSCH'), $stand,
+                                       substr(trim($rumpf), 0, 120)));
+    }
+    $erg['ts'] = time();
+    $erg['alter'] = 0;
+    ww_endpunkt_merken($speicher, $erg);
+    return $erg;
+}
+
+function ww_endpunkt_merken($datei, $erg)
+{
+    $json = json_encode($erg, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($json !== false) {
+        @mkdir(dirname($datei), 0775, true);
+        @file_put_contents($datei, $json);
+    }
 }
 
 /** Zufallstoken fuer den unangemeldeten Endpunkt. */
@@ -548,6 +723,12 @@ function ww_mqtt_themen()
 {
     return array(
         'ok'                        => 'WW_MQTT.OK',
+        // Der Zeitstempel des letzten ERFOLGREICHEN Abrufs und der Zaehler
+        // fehlgeschlagener Versuche in Folge gehen bei jedem Durchlauf hinaus,
+        // auch bei einer Stoerung. Ueber MQTT gibt es kein "Alter" - beim
+        // Senden ist es immer null; die Gegenseite rechnet es aus ts.
+        'ts'                        => 'WW_MQTT.TS',
+        'fehler_folge'              => 'WW_MQTT.FEHLER_FOLGE',
         'geraete'                   => 'WW_MQTT.GERAETE',
         'geraetN/name'              => 'WW_MQTT.NAME',
         'geraetN/anbieter'          => 'WW_MQTT.ANBIETER',
@@ -569,7 +750,29 @@ function ww_mqtt_themen()
         'geraetN/temperatur'        => 'WW_MQTT.TEMPERATUR',
         'geraetN/schleuderdrehzahl' => 'WW_MQTT.SCHLEUDER',
         'geraetN/programm_text'     => 'WW_MQTT.PROGRAMM',
+        'geraetN/fertig_um'         => 'WW_MQTT.FERTIGUM',
+        'geraetN/gewaehlt_text'     => 'WW_MQTT.GEWAEHLT',
+        'ausfaelle'                 => 'WW_MQTT.AUSFAELLE',
+        'ausfall/homeconnect'       => 'WW_MQTT.AUSFALL_HC',
+        'ausfall/miele'             => 'WW_MQTT.AUSFALL_MIELE',
+        'ausfall/smartthings'       => 'WW_MQTT.AUSFALL_ST',
     );
+}
+
+/**
+ * Die Grenze, ab der ein Abbild als zu alt gilt.
+ *
+ * Sie hat zwei Verbraucher - den Waechter in bin/dienst.sh und die
+ * Selbstpruefung - und steht deshalb in EINER Funktion. Der Waechter holt sie
+ * ueber php -r; faellt das aus, gilt dort die Untergrenze.
+ *
+ * Fuenffacher Ruhetakt, mindestens 180 s: ein einzelner langsamer Durchlauf
+ * soll nichts ausloesen.
+ */
+function ww_wache_grenze()
+{
+    $cfg = ww_config();
+    return max(180, 5 * (int) $cfg['takt_ruhe']);
 }
 
 /* ==================================================================
@@ -577,9 +780,19 @@ function ww_mqtt_themen()
  *
  * Nachbau der Bausteine aus LoxBerry::LoxoneTemplateBuilder; das Modul gibt es
  * nur in Perl. Attributreihenfolge, CRLF als Zeilenende und der Tabulator vor
- * den Kindelementen entsprechen dem Original. Wortgleich uebernommen aus
- * LoxBerry-Plugin-APC-UPS-1.0.0 (ap_xml_virtual_in_http) - nicht neu
- * geschrieben, weil die Fassung dort geprueft ist.
+ * den Kindelementen entsprechen dem Original.
+ *
+ * Der Erzeuger stammte urspruenglich aus LoxBerry-Plugin-APC-UPS-1.0.0. Diese
+ * Fassung ist auf den Stand von EVCC 0.9.18 (ev_xml_virtual_in_http /
+ * ev_xml_virtual_out) gezogen; dort fehlten dieselben Bestandteile, und sie
+ * wurden gegen Ausfuhren aus einer laufenden Anlage nachgetragen:
+ *
+ *   - HintText="" am Wurzelelement, bei VirtualOut zusaetzlich CmdInit=""
+ *   - als erstes Kindelement <Info templateType="2" .../>, bei VirtualOut "3"
+ *   - je Befehl Unit="<v.1> <Einheit>" und HintText=""
+ *   - je VirtualOutCmd CmdOnMethod, CmdOffMethod, Repeat="0", RepeatRate="0"
+ *   - eigene MinVal/MaxVal statt pauschal +/-2147483647: Loxone zieht daraus
+ *     die Reglergrenzen und die Plausibilitaetspruefung.
  * ================================================================== */
 
 function ww_x($s)
@@ -592,28 +805,81 @@ function ww_xml_virtual_in_http($kopf, $cmds)
     $crlf = "\r\n";
     $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
     $o .= '<VirtualInHttp ';
+    $o .= 'HintText="" ';
     $o .= 'Title="' . ww_x($kopf['title']) . '" ';
     $o .= 'Comment="' . ww_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
     $o .= 'Address="' . ww_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
     $o .= 'PollingTime="' . ww_x(isset($kopf['polling']) ? $kopf['polling'] : '60') . '"';
     $o .= '>' . $crlf;
+    $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf;
     foreach ($cmds as $c) {
+        $min = isset($c['min']) ? (int) $c['min'] : -2147483647;
+        $max = isset($c['max']) ? (int) $c['max'] : 2147483647;
+        $einheit = isset($c['unit']) ? trim((string) $c['unit']) : '';
         $o .= "\t" . '<VirtualInHttpCmd ';
         $o .= 'Title="' . ww_x($c['title']) . '" ';
         $o .= 'Comment="' . ww_x(isset($c['comment']) ? $c['comment'] : '') . '" ';
         $o .= 'Check="' . ww_x(isset($c['check']) ? $c['check'] : ' ') . '" ';
-        $o .= 'Signed="true" ';
-        $o .= 'Analog="true" ';
+        $o .= 'Signed="' . ($min < 0 ? 'true' : 'false') . '" ';
+        // Ein Wert, der nur 0 oder 1 kennt, gehoert als DIGITALER Eingang nach
+        // Loxone - dann laesst er sich unmittelbar an ein UND oder einen
+        // Merker haengen, ohne Schwellwertschalter davor.
+        $o .= 'Analog="' . (!empty($c['analog']) ? 'true' : 'false') . '" ';
         $o .= 'SourceValLow="0" ';
         $o .= 'DestValLow="0" ';
-        $o .= 'SourceValHigh="100" ';
-        $o .= 'DestValHigh="100" ';
+        $o .= 'SourceValHigh="1" ';
+        $o .= 'DestValHigh="1" ';
         $o .= 'DefVal="0" ';
-        $o .= 'MinVal="-2147483647" ';
-        $o .= 'MaxVal="2147483647"';
+        $o .= 'MinVal="' . $min . '" ';
+        $o .= 'MaxVal="' . $max . '" ';
+        $o .= 'Unit="' . ww_x($einheit !== '' ? '<v.1> ' . $einheit : '<v.1>') . '" ';
+        $o .= 'HintText=""';
         $o .= '/>' . $crlf;
     }
     $o .= '</VirtualInHttp>' . $crlf;
+    return $o;
+}
+
+/**
+ * Virtuelle AUSGAENGE - die Befehle, die Loxone an das Plugin schickt.
+ *
+ * Ein Zustand gehoert an EINEN Ausgang mit Ein- UND Ausbefehl, nicht an zwei
+ * Ausgaenge: "Programm starten" und "Programm abbrechen" sind die beiden
+ * Flanken derselben Sache. Wo es keinen Ausbefehl gibt, bleibt CmdOff leer -
+ * das Attribut fehlt nicht, es ist leer.
+ *
+ * Und: der Titel eines Ausgangs darf kein '=' tragen. Beim EVCC-Plugin wurde
+ * aus '&lp=1' durch blosses Ersetzen von '&' der Name 'EVCC_MODUS_LP=1'.
+ */
+function ww_xml_virtual_out($kopf, $cmds)
+{
+    $crlf = "\r\n";
+    $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
+    $o .= '<VirtualOut ';
+    $o .= 'HintText="" ';
+    $o .= 'Title="' . ww_x($kopf['title']) . '" ';
+    $o .= 'Comment="' . ww_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
+    $o .= 'Address="' . ww_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
+    $o .= 'CmdInit="" ';
+    $o .= 'CloseAfterSend="false" ';
+    $o .= 'CmdSep=""';
+    $o .= '>' . $crlf;
+    $o .= "\t" . '<Info templateType="3" minVersion="17010727"/>' . $crlf;
+    foreach ($cmds as $c) {
+        $o .= "\t" . '<VirtualOutCmd ';
+        $o .= 'Title="' . ww_x($c['title']) . '" ';
+        $o .= 'Comment="' . ww_x(isset($c['comment']) ? $c['comment'] : '') . '" ';
+        $o .= 'CmdOnMethod="GET" ';
+        $o .= 'CmdOn="' . ww_x(isset($c['on']) ? $c['on'] : '') . '" ';
+        $o .= 'CmdOffMethod="GET" ';
+        $o .= 'CmdOff="' . ww_x(isset($c['off']) ? $c['off'] : '') . '" ';
+        $o .= 'Analog="false" ';
+        $o .= 'Repeat="0" ';
+        $o .= 'RepeatRate="0" ';
+        $o .= 'HintText=""';
+        $o .= '/>' . $crlf;
+    }
+    $o .= '</VirtualOut>' . $crlf;
     return $o;
 }
 
@@ -623,36 +889,103 @@ function ww_xml_virtual_in_http($kopf, $cmds)
  * Reihenfolge und Namen sind zugleich die Reihenfolge der Befehlserkennungen
  * in der Loxone-Vorlage. Wer hier etwas einfuegt, aendert die Vorlage mit.
  */
+/*
+ * Zu 'min' und 'max': das sind GEWAEHLTE Grenzen, keine gemessenen. Kein
+ * Anbieter dokumentiert eine Obergrenze fuer eine Restzeit. Loxone zieht aus
+ * ihnen die Reglergrenzen und die Plausibilitaetspruefung; pauschal
+ * +/-2147483647 macht aus jedem Eingang einen, bei dem jeder Wert plausibel
+ * aussieht. Wo eine Grenze knapp werden koennte, ist sie bewusst weit gesetzt.
+ *
+ * 'analog' => false heisst: DIGITALER Eingang in Loxone. Das gilt fuer jeden
+ * Wert, der nur 0 oder 1 kennt - der laesst sich dann unmittelbar an ein UND
+ * haengen, ohne Schwellwertschalter davor.
+ *
+ * 'feld' ist der Name im Abbild. Daran haengt die Filterung in
+ * ww_vorlage_felder(): eine Vorlage soll nur anlegen, was das Geraet auch
+ * liefert.
+ */
 function ww_status_felder()
 {
     return array(
-        'ZUSTAND'   => array('',    'WW_FELD.ZUSTAND'),
-        'LAEUFT'    => array('',    'WW_FELD.LAEUFT'),
-        'FERTIG'    => array('',    'WW_FELD.FERTIG'),
-        'VERBUNDEN' => array('',    'WW_FELD.VERBUNDEN'),
-        'TUER'      => array('',    'WW_FELD.TUER'),
-        'FORTSCHR'  => array('%',   'WW_FELD.FORTSCHR'),
-        'RESTMIN'   => array('min', 'WW_FELD.RESTMIN'),
-        'STARTMIN'  => array('min', 'WW_FELD.STARTMIN'),
-        'LAUFMIN'   => array('min', 'WW_FELD.LAUFMIN'),
-        'FERNSTART' => array('',    'WW_FELD.FERNSTART'),
-        'FERNBED'   => array('',    'WW_FELD.FERNBED'),
-        'NETZ'      => array('',    'WW_FELD.NETZ'),
-        'ALTER'     => array('s',   'WW_FELD.ALTER'),
-        'OK'        => array('',    'WW_FELD.OK'),
+        'ZUSTAND'   => array('',    'WW_FELD.ZUSTAND',   'min' => 0, 'max' => 5,    'analog' => true,  'feld' => 'zustand'),
+        'LAEUFT'    => array('',    'WW_FELD.LAEUFT',    'min' => 0, 'max' => 1,    'analog' => false, 'feld' => 'laeuft'),
+        'FERTIG'    => array('',    'WW_FELD.FERTIG',    'min' => 0, 'max' => 1,    'analog' => false, 'feld' => 'fertig'),
+        'VERBUNDEN' => array('',    'WW_FELD.VERBUNDEN', 'min' => 0, 'max' => 1,    'analog' => false, 'feld' => 'verbunden'),
+        'TUER'      => array('',    'WW_FELD.TUER',      'min' => 0, 'max' => 1,    'analog' => false, 'feld' => 'tuer_offen'),
+        'FORTSCHR'  => array('%',   'WW_FELD.FORTSCHR',  'min' => 0, 'max' => 100,  'analog' => true,  'feld' => 'fortschritt'),
+        'RESTMIN'   => array('min', 'WW_FELD.RESTMIN',   'min' => 0, 'max' => 1440, 'analog' => true,  'feld' => 'restzeit_min'),
+        'STARTMIN'  => array('min', 'WW_FELD.STARTMIN',  'min' => 0, 'max' => 1440, 'analog' => true,  'feld' => 'startzeit_min'),
+        'LAUFMIN'   => array('min', 'WW_FELD.LAUFMIN',   'min' => 0, 'max' => 1440, 'analog' => true,  'feld' => 'laufzeit_min'),
+        'FERNSTART' => array('',    'WW_FELD.FERNSTART', 'min' => 0, 'max' => 1,    'analog' => false, 'feld' => 'fernstart_frei'),
+        'FERNBED'   => array('',    'WW_FELD.FERNBED',   'min' => 0, 'max' => 1,    'analog' => false, 'feld' => 'fernbedienung_frei'),
+        'NETZ'      => array('',    'WW_FELD.NETZ',      'min' => 0, 'max' => 1,    'analog' => false, 'feld' => 'netz_ein'),
+        // ALTER ist -1, solange es kein Abbild gibt - die Untergrenze muss das
+        // zulassen, sonst wird aus "nie abgerufen" eine 0 und damit "frisch".
+        'ALTER'     => array('s',   'WW_FELD.ALTER',     'min' => -1, 'max' => 2147483647, 'analog' => true,  'feld' => ''),
+        'OK'        => array('',    'WW_FELD.OK',        'min' => 0, 'max' => 1,    'analog' => false, 'feld' => ''),
+        /* Neue Groessen werden HINTEN angehaengt, nie dazwischen: Loxone sucht
+         * den Suchtext woertlich und nimmt den ersten Treffer in der Zeile;
+         * bestehende Projekte finden sonst nicht mehr, was sie suchen.
+         *
+         * Gegengeprueft, ob 'FERTIGUM=' als Zeichenfolge in einem anderen
+         * Feldnamen dieser Zeile vorkommt: nein. Und 'FERTIG=' steckt NICHT
+         * in 'FERTIGUM=', weil dort auf FERTIG ein U folgt und kein
+         * Gleichheitszeichen. Beide Suchmuster bleiben eindeutig. */
+        'FERTIGUM'  => array('s',   'WW_FELD.FERTIGUM',  'min' => 0, 'max' => 2147483647, 'analog' => true,  'feld' => 'fertig_um'),
     );
 }
 
-/** Die Werte des Verbrauchs-Endpunkts. */
+/** Die Werte des Verbrauchs-Endpunkts. Grenzen gewaehlt, siehe oben. */
 function ww_verbrauch_felder()
 {
     return array(
-        'ENERGIE'   => array('kWh', 'WW_VFELD.ENERGIE'),
-        'WASSER'    => array('l',   'WW_VFELD.WASSER'),
-        'TEMP'      => array('&deg;C', 'WW_VFELD.TEMP'),
-        'SCHLEUDER' => array('U/min', 'WW_VFELD.SCHLEUDER'),
-        'OK'        => array('',    'WW_VFELD.OK'),
+        'ENERGIE'   => array('kWh', 'WW_VFELD.ENERGIE',   'min' => 0, 'max' => 1000,  'analog' => true,  'feld' => 'energie_kwh'),
+        'WASSER'    => array('l',   'WW_VFELD.WASSER',    'min' => 0, 'max' => 10000, 'analog' => true,  'feld' => 'wasser_l'),
+        'TEMP'      => array('&deg;C', 'WW_VFELD.TEMP',   'min' => 0, 'max' => 300,   'analog' => true,  'feld' => 'temperatur'),
+        'SCHLEUDER' => array('U/min', 'WW_VFELD.SCHLEUDER', 'min' => 0, 'max' => 2000, 'analog' => true, 'feld' => 'schleuderdrehzahl'),
+        'OK'        => array('',    'WW_VFELD.OK',        'min' => 0, 'max' => 1,     'analog' => false, 'feld' => ''),
     );
+}
+
+/**
+ * Filtert eine Feldtabelle auf das, was dieses Geraet wirklich liefert.
+ *
+ * Eine Importdatei, die alle Messgroessen anlegt, legt auch die an, die kein
+ * Anbieter je fuellt: Home Connect liefert weder Energie noch Wasser,
+ * SmartThings keinen Fortschritt und keine Schleuderdrehzahl. Loxone traegt
+ * dort DefVal="0" ein - und eine 0 sieht aus wie ein Messwert.
+ *
+ * Massgeblich ist die letzte ERFOLGREICHE Messung, nicht eine handgepflegte
+ * Liste: eine dritte Stelle liefe mit dem Code auseinander. Felder ohne
+ * Geraetebezug (OK, ALTER) bleiben immer drin.
+ *
+ * Hat das Geraet noch NIE geantwortet, wird alles ausgeliefert - dann sagt der
+ * Hinweis in der Oberflaeche, die Datei nach dem ersten Abruf erneut zu holen.
+ *
+ * Rueckgabe: array(gefilterte Tabelle, wie viele Felder weggefallen sind)
+ */
+function ww_vorlage_felder($tabelle, $nummer)
+{
+    $geraete = ww_geraete();
+    $g = isset($geraete[(string) $nummer]) ? $geraete[(string) $nummer] : null;
+    if (!is_array($g)) {
+        return array($tabelle, -1);   // -1 = noch nie geantwortet
+    }
+    $aus = array();
+    $weg = 0;
+    foreach ($tabelle as $name => $info) {
+        $feld = isset($info['feld']) ? $info['feld'] : '';
+        if ($feld === '') {
+            $aus[$name] = $info;
+            continue;
+        }
+        if (array_key_exists($feld, $g) && $g[$feld] !== null && $g[$feld] !== '') {
+            $aus[$name] = $info;
+        } else {
+            $weg++;
+        }
+    }
+    return array($aus, $weg);
 }
 
 /**
@@ -691,42 +1024,274 @@ function ww_log_ende($datei, $anzahl = 400, $block = 8192)
     return array_slice(array_reverse($zeilen), 0, $anzahl);
 }
 
-/** Vorlage fuer den Import in Loxone Config. Rueckgabe: array(name, inhalt) */
-function ww_vorlage($nummer = 1)
+/**
+ * Der Name, unter dem ein Baustein in Loxone Config steht.
+ *
+ * Bis 0.9.8 hiess er WW_1_CMD_NETZ - eindeutig, aber niemand liest das gern.
+ * Der SUCHTEXT bleibt unveraendert; es aendert sich nur der Name. Das Praefix
+ * bleibt, damit die Bausteine in der Bausteinsuche beieinander stehen.
+ *
+ * Ist ein Name unbekannt, wird der Rohschluessel genommen - dann faellt beim
+ * Durchsehen auf, was fehlt, statt dass ein Baustein namenlos bleibt.
+ */
+function ww_titel($nummer, $schluessel)
 {
-    $p = ww_paths();
-    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
+    $t = ww_t('WW_NAME.' . $schluessel);
+    if ($t === 'WW_NAME.' . $schluessel) {
+        $t = $schluessel;
+    }
+    // Der Sofortabruf gilt der Anlage, nicht einem Geraet - deshalb ohne Nummer.
+    return ($schluessel === 'CMD_ABRUF') ? 'WW ' . $t : 'WW ' . (int) $nummer . ' ' . $t;
+}
+
+/** Der Name, unter dem der Miniserver diesen LoxBerry erreicht. */
+function ww_host()
+{
+    return isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
         ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
         : (gethostname() ?: 'loxberry');
-    $token = ww_token();
+}
+
+/**
+ * Ein Text aus den Sprachdateien, wie er in eine XML-Datei gehoert.
+ *
+ * Er laeuft gleich durch ww_x() und wuerde dort ein zweites Mal maskiert.
+ * Deshalb erst Auszeichnung entfernen und Entitaeten aufloesen - sonst stuende
+ * in Loxone Config wortwoertlich 'l&auml;dt' statt 'laedt'.
+ */
+function ww_klartext($schluessel_oder_text)
+{
+    return trim(strip_tags(html_entity_decode(
+        (string) $schluessel_oder_text, ENT_QUOTES, 'UTF-8')));
+}
+
+/** Gemeinsamer Kopftext aller erzeugten Importdateien. */
+function ww_vorlage_fussnote($weg)
+{
+    /* KURZ halten. Am Geraet gemessen (18.08.2026): Loxone Config setzt den
+     * Kommentar eines Rahmens als ANZEIGENAME ein - beim virtuellen Eingang
+     * genauso wie beim Ausgang. Bei einem Anwender stand deshalb
+     * "Erzeugt vom LoxBerry-Plugin Weissware Cloud (...)" als Name eines
+     * Bausteins. Ein Dokumentationsfeld, das den Import uebersteht, gibt es
+     * nicht; die ausfuehrlichen Hinweise stehen im Reiter "Einbindung in
+     * Loxone". Hier nur ein Merkmal, das man als Namen lesen kann. */
+    $t = 'vom LoxBerry-Plugin, ' . date('d.m.Y');
+    if ($weg === -1) {
+        $t .= ' - alle Felder, Geraet hat noch nie geantwortet';
+    } elseif ($weg > 0) {
+        $t .= ' - ohne ' . $weg . ' nicht gelieferte Felder';
+    }
+    return $t;
+}
+
+/**
+ * Vorlage fuer die STATUS-Eingaenge eines Geraets.
+ * Rueckgabe: array(dateiname, inhalt)
+ */
+function ww_vorlage_status($nummer = 1)
+{
+    $p = ww_paths();
+    $nummer = (int) $nummer;
+    list($tabelle, $weg) = ww_vorlage_felder(ww_status_felder(), $nummer);
     $cmds = array();
-    foreach (ww_status_felder() as $feld => $info) {
-        // Der Text laeuft gleich durch ww_x() und wuerde dort ein zweites Mal
-        // maskiert. Deshalb erst Auszeichnung entfernen und Entitaeten
-        // aufloesen - sonst stuende in Loxone Config wortwoertlich
-        // 'l&auml;dt' statt 'laedt'.
-        $bedeutung = trim(strip_tags(html_entity_decode(ww_t($info[1]), ENT_QUOTES, 'UTF-8')));
-        $einheit = trim(strip_tags(html_entity_decode($info[0], ENT_QUOTES, 'UTF-8')));
+    foreach ($tabelle as $feld => $info) {
+        $einheit = ww_klartext($info[0]);
         $cmds[] = array(
-            // WW_, nicht AUDI_. Der Rest stammte aus dem Plugin, aus dem
-            // die Vorlagenfunktion uebernommen wurde - in Loxone Config
-            // standen die Bausteine damit unter fremdem Namen.
-            'title'   => 'WW_' . $nummer . '_' . $feld,
-            'comment' => $bedeutung . ($einheit !== '' ? ' [' . $einheit . ']' : ''),
+            // WW_, nicht AUDI_. Der Rest stammte aus dem Plugin, aus dem die
+            // Vorlagenfunktion uebernommen wurde - in Loxone Config standen
+            // die Bausteine damit unter fremdem Namen.
+            'title'   => ww_titel($nummer, $feld),
+            'comment' => ww_klartext(ww_t($info[1])) . ($einheit !== '' ? ' [' . $einheit . ']' : ''),
             'check'   => '\i' . $feld . '=\i\v',
+            'unit'    => $einheit,
+            'min'     => isset($info['min']) ? $info['min'] : 0,
+            'max'     => isset($info['max']) ? $info['max'] : 2147483647,
+            'analog'  => !empty($info['analog']),
         );
     }
-    $adresse = 'http://' . $host . '/plugins/' . $p['plugin']
-             . '/index.php?token=' . $token . '&aktion=status&geraet=' . (int) $nummer;
     return array(
-        'weissware_geraet' . (int) $nummer . '.xml',
+        'VI_weissware_geraet' . $nummer . '_status.xml',
         ww_xml_virtual_in_http(array(
-            'title'   => 'Weissware ' . (int) $nummer,
-            'address' => $adresse,
+            'title'   => 'Weissware ' . $nummer . ' Status',
+            'address' => 'http://' . ww_host() . '/plugins/' . $p['plugin']
+                       . '/index.php?token=' . ww_token() . '&aktion=status&geraet=' . $nummer,
             'polling' => '60',
-            'comment' => 'Erzeugt vom LoxBerry-Plugin Weissware Cloud (' . date('d.m.Y') . ')',
+            'comment' => ww_vorlage_fussnote($weg),
         ), $cmds),
     );
+}
+
+/** Vorlage fuer die VERBRAUCHS-Eingaenge eines Geraets. */
+function ww_vorlage_verbrauch($nummer = 1)
+{
+    $p = ww_paths();
+    $nummer = (int) $nummer;
+    list($tabelle, $weg) = ww_vorlage_felder(ww_verbrauch_felder(), $nummer);
+    $cmds = array();
+    foreach ($tabelle as $feld => $info) {
+        $einheit = ww_klartext($info[0]);
+        /* 'OK' heisst in BEIDEN Zeilen so. Wer Status- und Verbrauchsvorlage
+         * einliest, haette sonst zweimal den Eingang WW_1_OK im Projekt und
+         * saehe keinem der beiden an, wozu er gehoert. Der Suchtext bleibt
+         * derselbe - nur der Baustein heisst anders. */
+        $titel = ww_titel($nummer, $feld === 'OK' ? 'VOK' : $feld);
+        $cmds[] = array(
+            'title'   => $titel,
+            'comment' => ww_klartext(ww_t($info[1])) . ($einheit !== '' ? ' [' . $einheit . ']' : ''),
+            'check'   => '\i' . $feld . '=\i\v',
+            'unit'    => $einheit,
+            'min'     => isset($info['min']) ? $info['min'] : 0,
+            'max'     => isset($info['max']) ? $info['max'] : 2147483647,
+            'analog'  => !empty($info['analog']),
+        );
+    }
+    return array(
+        'VI_weissware_geraet' . $nummer . '_verbrauch.xml',
+        ww_xml_virtual_in_http(array(
+            'title'   => 'Weissware ' . $nummer . ' Verbrauch',
+            'address' => 'http://' . ww_host() . '/plugins/' . $p['plugin']
+                       . '/index.php?token=' . ww_token() . '&aktion=verbrauch&geraet=' . $nummer,
+            'polling' => '300',
+            'comment' => ww_vorlage_fussnote($weg),
+        ), $cmds),
+    );
+}
+
+/**
+ * Die Befehle als virtuelle AUSGAENGE.
+ *
+ * Drei Ausgaenge je Geraet, jeder mit Ein- UND Ausbefehl, weil das die beiden
+ * Flanken derselben Sache sind. Zwei getrennte Ausgaenge fuer "start" und
+ * "stop" waeren zwei Bausteine fuer einen Zustand.
+ *
+ * 'abruf' bekommt einen eigenen Ausgang ohne Ausbefehl: er loest nur aus.
+ */
+function ww_vorlage_ausgang($nummer = 1)
+{
+    $p = ww_paths();
+    $nummer = (int) $nummer;
+    $frage = '/plugins/' . $p['plugin'] . '/index.php?token=' . ww_token() . '&aktion=';
+    $ziel = '&geraet=' . $nummer;
+
+    /* Titel ohne '=' - siehe ww_xml_virtual_out(). Und mit dem Zusatz CMD:
+     * WW_1_NETZ gibt es bereits als EINGANG (Geraet eingeschaltet ja/nein).
+     * Ein Ausgang gleichen Namens waere ein zweiter Baustein, dem man nicht
+     * ansieht, ob er misst oder schaltet. */
+    $cmds = array(
+        array('title' => ww_titel($nummer, 'CMD_PROGRAMM'),
+              'comment' => ww_klartext(ww_t('LOX.VA_PROGRAMM')),
+              'on'  => $frage . 'start' . $ziel,
+              'off' => $frage . 'stop' . $ziel),
+        array('title' => ww_titel($nummer, 'CMD_PAUSE'),
+              'comment' => ww_klartext(ww_t('LOX.VA_PAUSE')),
+              'on'  => $frage . 'pause' . $ziel,
+              'off' => $frage . 'fortsetzen' . $ziel),
+        array('title' => ww_titel($nummer, 'CMD_NETZ'),
+              'comment' => ww_klartext(ww_t('LOX.VA_NETZ')),
+              'on'  => $frage . 'ein' . $ziel,
+              'off' => $frage . 'aus' . $ziel),
+    );
+    /* 'abruf' gilt fuer die ganze Anlage, nicht fuer ein Geraet - und der
+     * Baustein heisst deshalb ohne Nummer. Er darf nur in EINE der Dateien,
+     * sonst hat wer beide importiert den Ausgang WW_ABRUF zweimal im Projekt.
+     * Genommen wird die kleinste bekannte Geraetenummer. */
+    $ww_erste = ww_geraete();
+    $ww_erste = $ww_erste ? (int) min(array_map('intval', array_keys($ww_erste))) : 1;
+    if ($nummer === $ww_erste) {
+        $cmds[] = array('title' => ww_titel(0, 'CMD_ABRUF'),
+                        'comment' => ww_klartext(ww_t('LOX.VA_ABRUF')),
+                        'on'  => $frage . 'abruf',
+                        'off' => '');
+    }
+    return array(
+        'VQ_weissware_geraet' . $nummer . '_befehle.xml',
+        ww_xml_virtual_out(array(
+            'title'   => 'Weissware ' . $nummer . ' Befehle',
+            'address' => 'http://' . ww_host(),
+            /* KURZ halten. Loxone Config setzt den Kommentar eines virtuellen
+             * AUSGANGS als Anzeigenamen ein - am Geraet gemessen am
+             * 18.08.2026: dort stand der ganze Satz "Schreibende Befehle
+             * muessen im Reiter Einstellungen freigegeben sein ..." als Name
+             * des Bausteins. Bei einem virtuellen EINGANG landet derselbe Text
+             * dagegen in der Beschreibung, wo er richtig aufgehoben ist.
+             * Die ausfuehrliche Erklaerung steht deshalb an den einzelnen
+             * Befehlen, nicht am Rahmen. */
+            'comment' => ww_klartext(ww_t('LOX.VA_KURZ')),
+        ), $cmds),
+    );
+}
+
+/**
+ * Vorlage fuer die Eingaenge des MQTT-Gateways.
+ *
+ * Gateway-Eingaenge sind nackte VirtualIn - dafuer kennt Loxone Config kein
+ * Vorlagenformat ("Als Vorlage speichern" ist nicht waehlbar), das Gateway
+ * legt sie beim ersten Empfang selbst an. Der Kunstgriff, mit dem sechs
+ * Plugins im Bestand trotzdem einen Knopf anbieten: ein VirtualInHttp mit
+ * Scheinadresse http://localhost und PollingTime 604800 (eine Woche). Loxone
+ * legt daraus die richtig benannten Eingaenge an; die Werte kommen danach vom
+ * Gateway, nicht ueber diese Adresse. Check ist deshalb ein Leerzeichen.
+ *
+ * Textthemen (Name, Anbieter, Zustandstext, Programm) bleiben AUSSEN VOR:
+ * das nachgebaute Format ist nur fuer Zahlenwerte belegt.
+ */
+function ww_vorlage_mqtt()
+{
+    $cfg = ww_config();
+    $praefix = trim((string) $cfg['mqtt_topic'], '/');
+    if ($praefix === '') {
+        $praefix = 'weissware';
+    }
+    $text = array('name', 'anbieter', 'zustand_text', 'programm_text');
+    $geraete = ww_geraete();
+    $nummern = $geraete ? array_keys($geraete) : array('1');
+
+    $cmds = array();
+    $ohne = 0;
+    foreach (ww_mqtt_themen() as $thema => $schluessel) {
+        $blatt = substr($thema, strrpos($thema, '/') === false ? 0 : strrpos($thema, '/') + 1);
+        if (in_array($blatt, $text, true)) {
+            $ohne++;
+            continue;
+        }
+        $liste = (strpos($thema, 'geraetN/') === 0)
+            ? array_map(function ($n) use ($thema) {
+                return str_replace('geraetN/', 'geraet' . (int) $n . '/', $thema);
+            }, $nummern)
+            : array($thema);
+        foreach ($liste as $t) {
+            $cmds[] = array(
+                'title'   => str_replace('/', '_', $praefix . '/' . $t),
+                'comment' => ww_klartext(ww_t($schluessel)),
+                'check'   => ' ',
+                'unit'    => '',
+                'min'     => -2147483647,
+                'max'     => 2147483647,
+                'analog'  => true,
+            );
+        }
+    }
+    return array(
+        'VI_weissware_mqtt.xml',
+        ww_xml_virtual_in_http(array(
+            'title'   => 'Weissware MQTT',
+            'address' => 'http://localhost',
+            'polling' => '604800',
+            'comment' => ww_klartext(ww_t('LOX.MQTT_VORLAGE_HINWEIS')) . ' '
+                       . $ohne . ' Textthema(en) sind bewusst nicht enthalten. '
+                       . ww_vorlage_fussnote(0),
+        ), $cmds),
+    );
+}
+
+/** Waehlt die Vorlage nach Art. Rueckgabe: array(dateiname, inhalt) oder null. */
+function ww_vorlage($art = 'status', $nummer = 1)
+{
+    if ($art === 'verbrauch') { return ww_vorlage_verbrauch($nummer); }
+    if ($art === 'ausgang')   { return ww_vorlage_ausgang($nummer); }
+    if ($art === 'mqtt')      { return ww_vorlage_mqtt(); }
+    if ($art === 'status')    { return ww_vorlage_status($nummer); }
+    return null;
 }
 
 /* ==================================================================
@@ -964,27 +1529,88 @@ function ww_ansage_text($name)
  * Ansage aus: wer nachts hochfaehrt, soll nicht verkuenden, dass die
  * Waschmaschine von gestern fertig ist.
  */
+/**
+ * Ist gerade Ruhezeit?
+ *
+ * Gleiche Zeiten heissen: keine Ruhezeit. Ueber Mitternacht hinweg wird
+ * richtig gerechnet (22:00 bis 07:00 ist ein Fenster, keine leere Menge).
+ */
+function ww_ansage_ruhe($cfg = null, $jetzt = null)
+{
+    $cfg = is_array($cfg) ? $cfg : ww_config();
+    $lies = function ($w) {
+        return preg_match('/^([0-9]{1,2}):([0-9]{2})$/', trim((string) $w), $m)
+            ? ((int) $m[1]) * 60 + (int) $m[2] : -1;
+    };
+    $von = $lies($cfg['ansage_ruhe_von']);
+    $bis = $lies($cfg['ansage_ruhe_bis']);
+    if ($von < 0 || $bis < 0 || $von === $bis) {
+        return false;
+    }
+    $jetzt = $jetzt === null ? ((int) date('G')) * 60 + (int) date('i') : (int) $jetzt;
+    return ($von < $bis) ? ($jetzt >= $von && $jetzt < $bis)
+                         : ($jetzt >= $von || $jetzt < $bis);
+}
+
+/** Ansagetext zu einem Ereignis. */
+function ww_ansage_text_zu($ereignis, $name)
+{
+    $name = trim((string) $name);
+    $name = $name === '' ? ww_t('ANSAGE.EIN_GERAET')
+                         : preg_replace('/[^\p{L}\p{N} .,:!?\-]/u', ' ', $name);
+    if ($ereignis === 'stoerung') {
+        return sprintf(ww_t('ANSAGE.T_STOERUNG'), $name);
+    }
+    if ($ereignis === 'fernstart') {
+        return sprintf(ww_t('ANSAGE.T_FERNSTART'), $name);
+    }
+    return sprintf(ww_t('ANSAGE.T_FERTIG'), $name);
+}
+
 function ww_ansage_check()
 {
     $cfg = ww_config();
     if (empty($cfg['ansage_ein'])) {
         return;
     }
+    /* Ruhezeit: geprueft wird VOR dem Sprechen, aber der Stand wird trotzdem
+     * fortgeschrieben. Sonst spraeche das Plugin um sieben Uhr alles nach, was
+     * in der Nacht geschehen ist - und der Uebergang ist dann laengst kalt. */
+    $ruhe = ww_ansage_ruhe($cfg);
     $merk = ww_paths()['datadir'] . '/ansage_stand.json';
     $alt = ww_json_lesen($merk);
     $alt = is_array($alt) ? $alt : array();
     $neu = array();
     $erstlauf = !is_file($merk);
+
+    // Je Ereignis: Merkfeld, Haken, und woran der Uebergang haengt.
+    $ereignisse = array(
+        'fertig'    => array('ansage_ein',       'fertig',         1),
+        'stoerung'  => array('ansage_stoerung',  'zustand',        5),
+        // Die Freigabe erlischt meist mit dem Programmende. Gesprochen wird
+        // beim Uebergang 1 -> 0, also genau umgekehrt zu den anderen beiden.
+        'fernstart' => array('ansage_fernstart', 'fernstart_frei', 0),
+    );
+
     foreach (ww_geraete() as $nr => $g) {
         $kennung = isset($g['anbieter'], $g['name']) ? $g['anbieter'] . '|' . $g['name'] : (string) $nr;
-        $fertig = isset($g['fertig']) ? $g['fertig'] : null;
-        $neu[$kennung] = ($fertig === 1 || $fertig === '1') ? 1 : 0;
-        if ($erstlauf) {
-            continue;
-        }
-        $vorher = isset($alt[$kennung]) ? (int) $alt[$kennung] : null;
-        if ($neu[$kennung] === 1 && $vorher === 0) {
-            ww_say(ww_ansage_text(isset($g['name']) ? $g['name'] : ''));
+        foreach ($ereignisse as $ereignis => $wie) {
+            list($haken, $feld, $ausloeser) = $wie;
+            $wert = isset($g[$feld]) ? $g[$feld] : null;
+            // Ein unbekannter Wert ist kein Ereignis - und auch kein Gegenteil.
+            $ist = ($wert === null || $wert === '') ? null
+                 : (((int) $wert === (int) $ausloeser) ? 1 : 0);
+            $schluessel = $kennung . '#' . $ereignis;
+            $neu[$schluessel] = $ist;
+            if ($erstlauf || $ruhe || empty($cfg[$haken])) {
+                continue;
+            }
+            $vorher = array_key_exists($schluessel, $alt) ? $alt[$schluessel] : null;
+            // Nur der echte Uebergang spricht. Ein unbekannter Vorzustand
+            // (Erstlauf, Neustart) loest bewusst nichts aus.
+            if ($ist === 1 && $vorher === 0) {
+                ww_say(ww_ansage_text_zu($ereignis, isset($g['name']) ? $g['name'] : ''));
+            }
         }
     }
     // json_encode liefert bei ungueltigem UTF-8 false - dann lieber die alte

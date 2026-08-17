@@ -19,6 +19,12 @@
  *   ein                              aus
  *   abruf                            sofortiger Abruf statt Warten auf den Takt
  *
+ * Der Programmschluessel wirkt NUR bei Home Connect - nur dort setzt ihn
+ * hc_befehl() in den Rumpf von PUT /programs/active ein. Miele und
+ * SmartThings kennen an dieser Stelle keinen; ein Start mit
+ * Programmschluessel wird dort abgewiesen, statt stillschweigend ohne ihn
+ * ausgefuehrt zu werden und OK=1 zu melden.
+ *
  * Statt der laufenden Nummer darf ueberall auch die Kennung des Anbieters
  * stehen (haId bei Home Connect, fabNumber bei Miele, deviceId bei
  * SmartThings).
@@ -56,7 +62,7 @@ if (!hash_equals($ww_soll, $ww_ist)) {
 }
 
 /* ---------------- Aktion (Weissliste) ---------------- */
-$ww_lesend = array('status', 'verbrauch', 'geraete', 'roh');
+$ww_lesend = array('status', 'verbrauch', 'geraete', 'roh', 'dienst');
 $ww_schaltend = array('start', 'stop', 'pause', 'fortsetzen', 'ein', 'aus', 'abruf');
 $ww_aktion = isset($_GET['aktion']) ? (string) $_GET['aktion'] : 'status';
 if (!in_array($ww_aktion, array_merge($ww_lesend, $ww_schaltend), true)) {
@@ -136,6 +142,30 @@ if ($ww_aktion === 'roh') {
     exit;
 }
 
+if ($ww_aktion === 'dienst') {
+    /* Sammelwerte fuer EINEN virtuellen Eingang: wie viele Geraete laufen,
+     * wie viele sind fertig, wie oft ist der Abruf in Folge gescheitert, wie
+     * viele Anbieter schweigen. Ohne das braucht man je Geraet einen eigenen
+     * Eingang, nur um "irgendwas laeuft" zu bilden.
+     *
+     * fehler_folge stand bis 0.9.6 nur in zustand.json und kam an keinem
+     * Ausgabeweg an, obwohl der Dienst ihn in jedem Durchlauf rechnet. */
+    $ww_zu = ww_zustand();
+    $ww_laeuft = 0;
+    $ww_fertig = 0;
+    foreach ($ww_alle as $ww_g) {
+        if (!empty($ww_g['laeuft'])) { $ww_laeuft++; }
+        if (!empty($ww_g['fertig'])) { $ww_fertig++; }
+    }
+    $ww_aus = (isset($ww_zu['ausfaelle']) && is_array($ww_zu['ausfaelle']))
+        ? count($ww_zu['ausfaelle']) : 0;
+    printf("DIENST;OK=%d;GERAETE=%d;LAEUFT=%d;FERTIG=%d;FEHLERFOLGE=%d;AUSFAELLE=%d;ALTER=%d\n",
+        $ww_ok, count($ww_alle), $ww_laeuft, $ww_fertig,
+        (int) (isset($ww_zu['fehler_folge']) ? $ww_zu['fehler_folge'] : 0),
+        $ww_aus, $ww_alter);
+    exit;
+}
+
 if ($ww_aktion === 'geraete') {
     echo 'GERAETE;OK=' . $ww_ok . ';N=' . count($ww_alle) . ';ALTER=' . $ww_alter . "\n";
     foreach ($ww_alle as $ww_nr => $ww_g) {
@@ -162,9 +192,14 @@ function ww_v($f, $name)
 }
 
 if ($ww_aktion === 'status') {
+    /* FERTIGUM steht HINTEN, nicht zwischen den bestehenden Feldern: Loxone
+     * sucht woertlich und nimmt den ersten Treffer, und ein Projekt, das
+     * bisher lief, soll nach dem Update dieselben Werte finden. Der Wert ist
+     * der voraussichtliche Fertigzeitpunkt als Unixzeit; Loxone rechnet in
+     * Sekunden seit dem 01.01.2009, dort also ts - 1230768000. */
     printf("WEISSWARE;OK=%d;ZUSTAND=%s;LAEUFT=%s;FERTIG=%s;VERBUNDEN=%s;TUER=%s;"
          . "FORTSCHR=%s;RESTMIN=%s;STARTMIN=%s;LAUFMIN=%s;FERNSTART=%s;FERNBED=%s;"
-         . "NETZ=%s;ALTER=%d\n",
+         . "NETZ=%s;ALTER=%d;FERTIGUM=%s\n",
         $ww_ok,
         ww_w(ww_v($ww_f, 'zustand')), ww_w(ww_v($ww_f, 'laeuft')),
         ww_w(ww_v($ww_f, 'fertig')), ww_w(ww_v($ww_f, 'verbunden')),
@@ -172,7 +207,7 @@ if ($ww_aktion === 'status') {
         ww_w(ww_v($ww_f, 'restzeit_min')), ww_w(ww_v($ww_f, 'startzeit_min')),
         ww_w(ww_v($ww_f, 'laufzeit_min')), ww_w(ww_v($ww_f, 'fernstart_frei')),
         ww_w(ww_v($ww_f, 'fernbedienung_frei')), ww_w(ww_v($ww_f, 'netz_ein')),
-        $ww_alter);
+        $ww_alter, ww_w(ww_v($ww_f, 'fertig_um')));
     // Name, Zustandstext und Programm stehen in einer zweiten Zeile, damit die
     // erste fuer Loxone rein aus Zahlen besteht.
     echo 'TEXT;' . str_replace(array("\r", "\n", ';'), ' ',

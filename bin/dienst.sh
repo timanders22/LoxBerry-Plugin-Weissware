@@ -119,10 +119,52 @@ case "$1" in
     waechter)
         # Nur neu starten, wenn der Dienst laufen SOLL. Ein bewusst
         # angehaltener Dienst bleibt angehalten.
-        if [ -f "$SOLL" ] && ! laeuft; then
+        [ -f "$SOLL" ] || exit 0
+        if ! laeuft; then
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waechter: Dienst lief nicht, wird neu gestartet." >> "$LOGDATEI"
             starten >> "$LOGDATEI" 2>&1
+            exit 0
         fi
+        # Der Prozess steht - aber arbeitet er auch? Eine PID-Datei beantwortet
+        # das nicht, genauso wenig wie "systemctl is-active". Massgeblich ist,
+        # was der Dienst HINTERLAESST: das Abbild wird in JEDEM Durchlauf
+        # geschrieben, auch ohne eingerichtetes Geraet.
+        #
+        # Drei Bedingungen, alle drei noetig:
+        #  * Fail safe. Kein Abbild, kein stat, keine Auskunft -> NICHT neu
+        #    starten. Ein Waechter, der im Zweifel zuschlaegt, ist schlimmer
+        #    als keiner.
+        #  * Deutlich ueber dem Takt. Die Grenze steht in ww_wache_grenze()
+        #    und hat zwei Verbraucher; hier wird sie geholt, nicht
+        #    abgeschrieben.
+        #  * Eine Bremse. Hilft der Neustart nicht, darf der Waechter nicht im
+        #    Minutentakt nachsetzen und das Protokoll fluten.
+        ABBILD="$PDATA/loxone.json"
+        [ -f "$ABBILD" ] || exit 0
+        JETZT=$(date +%s 2>/dev/null) || exit 0
+        STAND=$(stat -c %Y "$ABBILD" 2>/dev/null) || exit 0
+        [ -n "$STAND" ] || exit 0
+        LIB="$LBHOMEDIR/webfrontend/html/plugins/$PNAME/ww_lib.php"
+        GRENZE=""
+        [ -f "$LIB" ] && GRENZE=$(php -r "require '$LIB'; echo ww_wache_grenze();" 2>/dev/null)
+        case "$GRENZE" in
+            ''|*[!0-9]*) GRENZE=180 ;;   # Auskunft nicht zu bekommen: Untergrenze
+        esac
+        ALTER=$((JETZT - STAND))
+        [ "$ALTER" -gt "$GRENZE" ] || exit 0
+        # Bremse: hoechstens ein Neustart je Grenzfenster.
+        BREMSE="$PDATA/wache_letzter_neustart"
+        if [ -f "$BREMSE" ]; then
+            LETZT=$(cat "$BREMSE" 2>/dev/null)
+            case "$LETZT" in
+                ''|*[!0-9]*) LETZT=0 ;;
+            esac
+            [ $((JETZT - LETZT)) -gt "$GRENZE" ] || exit 0
+        fi
+        echo "$JETZT" > "$BREMSE"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waechter: der Dienst laeuft, hat aber seit ${ALTER} s kein Abbild geschrieben (Grenze ${GRENZE} s) - Neustart." >> "$LOGDATEI"
+        anhalten >> "$LOGDATEI" 2>&1
+        starten >> "$LOGDATEI" 2>&1
         ;;
     *)
         echo "Aufruf: $0 {start|stop|restart|status|waechter}"

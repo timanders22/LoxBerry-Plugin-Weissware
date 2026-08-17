@@ -93,12 +93,12 @@ der laufenden Nummer darf überall die Kennung des Anbieters stehen.
 
 | Aufruf | Zweck |
 |---|---|
-| `?token=T&aktion=status&geraet=N` | `WEISSWARE;OK=..;ZUSTAND=..;LAEUFT=..;FERTIG=..;VERBUNDEN=..;TUER=..;FORTSCHR=..;RESTMIN=..;STARTMIN=..;LAUFMIN=..;FERNSTART=..;FERNBED=..;NETZ=..;ALTER=..` plus eine Textzeile |
+| `?token=T&aktion=status&geraet=N` | `WEISSWARE;OK=..;ZUSTAND=..;LAEUFT=..;FERTIG=..;VERBUNDEN=..;TUER=..;FORTSCHR=..;RESTMIN=..;STARTMIN=..;LAUFMIN=..;FERNSTART=..;FERNBED=..;NETZ=..;ALTER=..;FERTIGUM=..` plus eine Textzeile |
 | `?token=T&aktion=verbrauch&geraet=N` | `VERBRAUCH;OK=..;ENERGIE=..;WASSER=..;TEMP=..;SCHLEUDER=..;ALTER=..` |
 | `?token=T&aktion=geraete` | Liste aller erkannten Geräte |
 | `?token=T&aktion=roh` | vollständiges Abbild als JSON |
 | `?token=T&aktion=start&geraet=N` | am Gerät gewähltes Programm starten |
-| `?token=T&aktion=start&geraet=N&programm=…` | bestimmtes Programm starten |
+| `?token=T&aktion=start&geraet=N&programm=…` | bestimmtes Programm starten — **nur Home Connect** |
 | `?token=T&aktion=stop` / `pause` / `fortsetzen` | Programm abbrechen, anhalten, fortsetzen |
 | `?token=T&aktion=ein` / `aus` | Gerät ein- und ausschalten |
 | `?token=T&aktion=abruf` | sofort abrufen statt auf den Takt zu warten |
@@ -263,6 +263,62 @@ Deinstallieren nur das Verzeichnis. Sie wären für immer auf der Karte
 geblieben. `uninstall/uninstall` gibt es jetzt; es hält den Dienst an,
 überschreibt Sicherungen, Anmeldemarken und die halbe Anmeldung und entfernt
 sie.
+
+## Fassung 0.9.7 — Befunde behoben, acht Funktionen ergänzt
+
+### Vier schwere Befunde
+
+* **Die Baustein-Liste widersprach sich.** Typ- und Eingangsspalte stammten
+  wörtlich aus AudiConnect, Namen und Parameter waren für Weissware neu
+  geschrieben — um eine Zeile versetzt. Zehn von 34 Zeilen trugen dadurch
+  einen Typ, der nicht zu ihrem Parameter passte (ein virtueller Ausgang mit
+  Schwellwerten, eine Benachrichtigung mit „Ein > 0,5"). Die Kette ist neu
+  gelegt: streng zweieingängige UND/ODER, keine Vorwärtsverweise. Alle 22
+  Namen sind die bisherigen.
+* `htmlauth/index.php` gab `$ww_fz['modell']` aus — das Feld gibt es nicht.
+  Unter PHP 8 stand die Warnung **in der Tabellenzelle**.
+* Die Prüfzeile „Wie frisch ist das Abbild?" rechnete mit `$cfg['intervall']`,
+  einem Schlüssel, den es nirgends gibt. Die Schwelle lag damit unabhängig vom
+  eingestellten Takt immer bei 600 s — ein rotes Kreuz, das nichts bedeutet.
+* **Ein Programmschlüssel wurde bei Miele und SmartThings verworfen** und der
+  Befehl trotzdem mit `OK=1` quittiert. Er wird jetzt abgewiesen; er wirkt nur
+  bei Home Connect.
+
+Dazu: `SOC=` in der Gegenprobe-Tabelle, `ST_BEFEHL` fest auf
+`washerOperatingState` (SmartThings-Geschirrspüler wurden gelesen, aber nicht
+geschaltet), die stillschweigend auf 12 s gedeckelte Wartezeit, die Reiterleiste
+als Schleife — und „aus der **Audi**-Schnittstelle" im Reiter Einstellungen.
+
+### Neue Funktionen
+
+* **Feste Gerätenummern.** Die Nummer entstand aus der Position in einer
+  sortierten Liste. Fiel ein Anbieter aus, rückten die übrigen Geräte auf, und
+  virtueller Eingang, MQTT-Thema und Ausgangsadresse zeigten still auf ein
+  anderes Gerät. Die Zuordnung steht jetzt in
+  `data/plugins/weissware/geraetenummern.json`; der erste Lauf nummeriert
+  genau so, wie bisher gezählt wurde, damit bestehende Anlagen ihre Adressen
+  behalten.
+* **Nachfass-Abruf** nach jedem angenommenen Schaltbefehl statt Warten auf den
+  Takt.
+* **`FERTIGUM`** — der voraussichtliche Fertigzeitpunkt wurde gerechnet und
+  nirgends ausgeliefert.
+* **`ts`, `fehler_folge` und Ausfälle über MQTT**, auch bei einer Störung. Über
+  MQTT gibt es kein Alter; die Gegenseite rechnet es aus dem Zeitstempel.
+* **Trockenlauf** — zeigt, welche Sperre greift und welche Anfrage hinausginge,
+  und sendet nichts. Er läuft durch denselben Code wie ein echter Befehl.
+* **Mitschnitt** des Datenverkehrs: ab Werk aus, feste Frist, 500 kB Grenze,
+  Zugangsdaten und Token werden vor dem Schreiben entfernt.
+* **Vorlagen** für Status, Verbrauch, virtuelle **Ausgänge** und den MQTT-Weg,
+  je erkanntem Gerät ein Knopf. Angelegt wird nur, was das Gerät beim letzten
+  Abruf geliefert hat — sonst trägt Loxone `DefVal="0"` ein, und eine 0 sieht
+  aus wie ein Messwert.
+* **Ansage** auch bei Störung und erloschener Fernstart-Freigabe, mit
+  Ruhezeit. **Beendete Programmläufe** mit Verbrauch werden festgehalten.
+* Der **Wächter** misst das Erzeugnis statt der Prozessnummer, der **Reiter
+  Test** ruft den eigenen Endpunkt wirklich auf und führt 21 statt 15
+  Prüfzeilen.
+
+`?aktion=dienst` ist neu: `DIENST;OK=..;GERAETE=..;LAEUFT=..;FERTIG=..;FEHLERFOLGE=..;AUSFAELLE=..;ALTER=..`
 
 ## Lizenz
 
