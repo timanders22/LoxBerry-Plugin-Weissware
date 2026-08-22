@@ -762,9 +762,21 @@ function ww_mqtt_themen()
 /**
  * Die Grenze, ab der ein Abbild als zu alt gilt.
  *
- * Sie hat zwei Verbraucher - den Waechter in bin/dienst.sh und die
- * Selbstpruefung - und steht deshalb in EINER Funktion. Der Waechter holt sie
- * ueber php -r; faellt das aus, gilt dort die Untergrenze.
+ * ACHTUNG, WER HIER AUFRAEUMT: diese Funktion wird von einem SHELL-Skript
+ * gerufen, nicht nur aus PHP -
+ *
+ *     bin/dienst.sh, Waechterzweig:  php -r "require ...; echo ww_wache_grenze();"
+ *
+ * In 0.9.11 wurde sie als vermeintlich toter Helfer entfernt, weil das
+ * Suchwerkzeug nur .php-Dateien durchsucht hatte. Der Fatalfehler des
+ * php -r geht im Waechter nach /dev/null, die Grenze fiel auf die
+ * Untergrenze zurueck, und der Waechter startete den Dienst im Ruhebetrieb
+ * etwa alle drei Minuten neu. In JEDER fremden Anlage, per Auto-Update.
+ *
+ * Der zweite Verbraucher steht in webfrontend/htmlauth/ww_test.php und ist
+ * absichtlich einer aus PHP: so sieht jedes Werkzeug und jeder Leser, dass
+ * die Funktion benutzt wird - und die Pruefzeile misst gegen dieselbe Zahl
+ * wie der Waechter, statt gegen eine zweite Formel.
  *
  * Fuenffacher Ruhetakt, mindestens 180 s: ein einzelner langsamer Durchlauf
  * soll nichts ausloesen.
@@ -1507,17 +1519,6 @@ function ww_say($text)
     $r = ww_http_get($url, 10);
     ww_ansage_log('Ansage gesendet: "' . $text . '" -> ' . ($r !== false ? 'OK' : 'FEHLER'));
     return $r !== false;
-}
-
-/** Ansagetext fuer ein fertiges Geraet. Name kommt aus dem Abbild. */
-function ww_ansage_text($name)
-{
-    $name = trim((string) $name);
-    if ($name === '') {
-        return 'Hallo! Ein Haushaltsgeraet ist fertig.';
-    }
-    $name = preg_replace('/[^\p{L}\p{N} .,:!?\-]/u', ' ', $name); // TTS-sichere Zeichen
-    return 'Hallo! ' . $name . ' ist fertig.';
 }
 
 /**

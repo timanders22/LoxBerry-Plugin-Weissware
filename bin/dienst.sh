@@ -146,10 +146,38 @@ case "$1" in
         [ -n "$STAND" ] || exit 0
         LIB="$LBHOMEDIR/webfrontend/html/plugins/$PNAME/ww_lib.php"
         GRENZE=""
-        [ -f "$LIB" ] && GRENZE=$(php -r "require '$LIB'; echo ww_wache_grenze();" 2>/dev/null)
+        if command -v php >/dev/null 2>&1 && [ -f "$LIB" ]; then
+            GRENZE=$(php -r "require '$LIB'; echo ww_wache_grenze();" 2>/dev/null)
+        fi
+        # FAIL SAFE, und diesmal wirklich. Bis 0.9.11 galt hier bei fehlender
+        # Auskunft die Untergrenze von 180 s - der Kommentar oben sagte das
+        # Gegenteil. Bei einem Ruhetakt von 300 s ist das Abbild routinemaessig
+        # aelter als 180 s, der Waechter startete den Dienst also etwa alle
+        # drei Minuten neu. Genau so ist es passiert, als ww_wache_grenze() aus
+        # der Bibliothek entfernt wurde: der Fatalfehler ging nach /dev/null.
+        #
+        # Eine Untergrenze IST ein Zuschlagen, sobald der Takt groesser ist.
+        # Wer die Grenze nicht kennt, laesst den Dienst in Ruhe - und sagt es.
         case "$GRENZE" in
-            ''|*[!0-9]*) GRENZE=180 ;;   # Auskunft nicht zu bekommen: Untergrenze
+            ''|*[!0-9]*)
+                MERK="$PDATA/wache_keine_auskunft"
+                MELDEN=1
+                if [ -f "$MERK" ]; then
+                    L=$(cat "$MERK" 2>/dev/null)
+                    case "$L" in
+                        ''|*[!0-9]*) L=0 ;;
+                    esac
+                    [ $((JETZT - L)) -gt 3600 ] || MELDEN=0
+                fi
+                if [ "$MELDEN" -eq 1 ]; then
+                    echo "$JETZT" > "$MERK"
+                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waechter: die Grenze laesst sich nicht ermitteln (php oder $LIB nicht verfuegbar, oder ww_wache_grenze() fehlt). Es wird NICHT neu gestartet - der Waechter ist bis auf Weiteres wirkungslos." >> "$LOGDATEI"
+                fi
+                exit 0 ;;
         esac
+        rm -f "$PDATA/wache_keine_auskunft" 2>/dev/null
+        # Die Untergrenze gilt weiterhin nach OBEN hin absichernd.
+        [ "$GRENZE" -ge 180 ] || GRENZE=180
         ALTER=$((JETZT - STAND))
         [ "$ALTER" -gt "$GRENZE" ] || exit 0
         # Bremse: hoechstens ein Neustart je Grenzfenster.

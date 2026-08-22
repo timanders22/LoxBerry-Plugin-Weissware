@@ -305,7 +305,19 @@ function ww_pruefungen()
          * bekam ein rotes Kreuz, das nichts bedeutet - und sucht dann dort.
          * Massgeblich ist der Ruhetakt: laeuft nichts, wird in diesem Abstand
          * abgerufen, und ein Abbild darf entsprechend alt sein. */
-        $frisch = $alter <= max(600, 3 * (int) $cfg['takt_ruhe']);
+        /* DIESELBE Grenze wie der Waechter in bin/dienst.sh, aus DERSELBEN
+         * Funktion. Bis 0.9.11 stand hier eine zweite Formel (dreifacher
+         * Takt, mindestens 600 s), waehrend der Waechter mit dem fuenffachen
+         * rechnete: die Zeile konnte gruen sein, waehrend der Waechter den
+         * Dienst neu startete - und umgekehrt.
+         *
+         * Und dieser Aufruf ist der Grund, warum ww_wache_grenze() sichtbar
+         * benutzt wird. Ein Helfer, den nur ein Shell-Skript ruft, sieht fuer
+         * jedes Suchwerkzeug tot aus. Genau so ist er in 0.9.11 entfernt
+         * worden.
+         */
+        $grenze = ww_wache_grenze();
+        $frisch = $alter <= $grenze;
         $zeilen[] = ww_pruefzeile($frisch ? 1 : 0, ww_t('TEST.F_ABRUF'),
             sprintf(ww_t('TEST.A_ABRUF_ALTER'), $alter));
     }
