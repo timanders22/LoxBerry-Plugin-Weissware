@@ -74,6 +74,23 @@ $ww_fehler = array();      // Beanstandungen - gesammelt, nicht ueberschrieben
 $ww_testausgabe = '';
 $ww_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
 
+/* ==================================================================
+ * DIE HANDLER STEHEN VOR lbheader() - DAS IST BAUVORSCHRIFT
+ * ==================================================================
+ *
+ * Stand der Kopf davor, war er beim Aufruf von header() schon
+ * geschrieben - "Cannot modify header information", und der Knopf
+ * "Einstellungen sichern" lieferte eine Seite mit angehaengtem JSON
+ * statt einer Datei.
+ *
+ * Am PHP-CLI ist das unsichtbar: header() ist dort wirkungslos und
+ * headers_sent() immer falsch. Und wer OHNE gueltiges Formularmerkmal
+ * misst, wird vom Wachposten abgewiesen, bevor der Handler anlaeuft.
+ * Beides hat den Fehler lange verdeckt.
+ *
+ * Reihenfolge: Bibliothek, Konfiguration, Wachposten, Reiterwahl,
+ * ALLE Handler samt Downloads, dann erst lbheader(), dann HTML.
+ * ================================================================== */
 /* ---------------- Vorlage herunterladen ---------------- */
 if ($ww_post && isset($_POST['vorlage'])) {
     /* Bis 0.9.6 gab es genau einen Knopf mit fest verdrahteter 1 - bei zwei
@@ -441,9 +458,6 @@ if (is_file($ww_p['log'])) {
 }
 
 $ww_rahmen = class_exists('LBWeb', false);
-if ($ww_rahmen) {
-    LBWeb::lbheader('Weissware Cloud', 'https://wiki.loxberry.de/', 'help.html');
-}
 
 /* ---------------- Einstellungen sichern ----------------
  *
@@ -490,6 +504,11 @@ if ($ww_post && isset($_POST['ww_zurueck'])) {
             $ww_fehler[] = ww_t('EINST.SICH_SCHREIBFEHLER');
         }
     }
+}
+
+
+if ($ww_rahmen) {
+    LBWeb::lbheader('Weissware Cloud', 'https://wiki.loxberry.de/', 'help.html');
 }
 
 ?>
