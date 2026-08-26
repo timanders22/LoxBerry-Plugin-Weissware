@@ -444,6 +444,54 @@ $ww_rahmen = class_exists('LBWeb', false);
 if ($ww_rahmen) {
     LBWeb::lbheader('Weissware Cloud', 'https://wiki.loxberry.de/', 'help.html');
 }
+
+/* ---------------- Einstellungen sichern ----------------
+ *
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
+ * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
+ * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
+ * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
+if ($ww_post && isset($_POST['ww_sichern'])) {
+    $ww_js = json_encode(ww_config(),
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($ww_js !== false) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="weissware_einstellungen_'
+               . date('Ymd_His') . '.json"');
+        echo $ww_js;
+        exit;
+    }
+    $ww_fehler[] = ww_t('EINST.SICH_SCHREIBFEHLER');
+}
+
+/* ---------------- Einstellungen zurueckspielen ----------------
+ *
+ * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
+ * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
+ * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
+if ($ww_post && isset($_POST['ww_zurueck'])) {
+    if (!isset($_FILES['ww_sicherung']) || !is_array($_FILES['ww_sicherung'])
+        || !isset($_FILES['ww_sicherung']['tmp_name'])
+        || !@is_uploaded_file($_FILES['ww_sicherung']['tmp_name'])) {
+        $ww_fehler[] = ww_t('EINST.SICH_KEINE_DATEI');
+    } elseif ((int) $_FILES['ww_sicherung']['size'] > 262144) {
+        $ww_fehler[] = ww_t('EINST.SICH_ZU_GROSS');
+    } else {
+        list($ww_neu, $ww_mangel, $ww_n) = ww_sicherung_lesen(
+            (string) @file_get_contents($_FILES['ww_sicherung']['tmp_name']));
+        if ($ww_neu === null) {
+            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
+             * nichts. */
+            $ww_fehler[] = ww_t('EINST.SICH_ABGELEHNT') . ' '
+                            . implode(' ', $ww_mangel);
+        } elseif (ww_config_speichern($ww_neu)) {
+            $ww_meldungen[] = sprintf(ww_t('EINST.SICH_UEBERNOMMEN'), $ww_n);
+        } else {
+            $ww_fehler[] = ww_t('EINST.SICH_SCHREIBFEHLER');
+        }
+    }
+}
+
 ?>
 <style>
 /* Hausstandard, wortgetreu aus VORLAGE_hausstandard.css.html uebernommen.
@@ -952,6 +1000,25 @@ if ($ww_ang['miele']) { ?>
 </table>
 <p class="sm-hilfe"><?= ww_t('EINST.KENNUNG_HINWEIS') ?></p>
 <?php } ?>
+
+<h2><?= ww_t('EINST.H_SICHERUNG') ?></h2>
+<div class="sm-hinweis"><?= ww_t('EINST.SICH_ERKLAERUNG') ?></div>
+<div class="sm-warnung"><?= ww_t('EINST.SICH_WARNUNG') ?></div>
+<div class="sm-knopfreihe">
+  <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
+       exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
+       Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
+       einen Download, der das Speichern verschluckt. -->
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="ww_sichern" value="1"><?= ww_t('EINST.K_SICHERN') ?></button>
+  </form>
+  <form action="index.php" method="post" enctype="multipart/form-data">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="file" name="ww_sicherung" accept=".json">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ww_zurueck" value="1"><?= ww_t('EINST.K_ZURUECK') ?></button>
+  </form>
+</div>
 </div>
 
 <!-- ================= Reiter: MQTT ================= -->
@@ -997,7 +1064,7 @@ if ($ww_ang['miele']) { ?>
 </table>
 
 <h2><?= ww_e(ww_t('MQTT.H_ABO')) ?></h2>
-<div class="sm-warnung"><?= ww_t('MQTT.ABO_WARNUNG') ?></div>
+<div class="sm-warnung"><?= ww_abo_text() ?></div>
 <div class="sm-step">
 <?= ww_t('MQTT.ABO_SCHRITTE') ?>
 <p><span class="sm-mono"><?= ww_e($ww_cfg['mqtt_topic']) ?>/#</span></p>
@@ -1027,7 +1094,7 @@ if ($ww_ang['miele']) { ?>
 <div class="sm-step"><b><?= ww_e(ww_t('LOX.S2_TITEL')) ?></b><br>
 <?= ww_t('LOX.S2_TEXT') ?>
 <p><span class="sm-mono"><?= ww_e($ww_cfg['mqtt_topic']) ?>/#</span></p>
-<div class="sm-warnung"><?= ww_t('LOX.S2_WARNUNG') ?></div>
+<div class="sm-warnung"><?= ww_abo_text() ?></div>
 </div>
 
 <div class="sm-step"><b><?= ww_e(ww_t('LOX.S3_TITEL')) ?></b><br>
