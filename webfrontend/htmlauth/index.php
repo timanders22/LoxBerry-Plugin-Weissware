@@ -71,6 +71,24 @@ if (isset($_POST['activetab']) && in_array((string) $_POST['activetab'], $ww_rei
 
 $ww_meldungen = array();   // Erfolgsmeldungen
 $ww_fehler = array();      // Beanstandungen - gesammelt, nicht ueberschrieben
+
+/* ---------------------------------------------------------------- *
+ * Der Wachposten - EIN Posten, vor allen Handlern.
+ * Abgewiesen heisst gemeldet, und es wird NICHTS ausgefuehrt: $_POST
+ * wird geleert, nur der aktive Reiter bleibt stehen, damit der Bediener
+ * nach der Abweisung dort steht, wo er war.
+ * ---------------------------------------------------------------- */
+$ww_wache = ww_wachposten();
+if ($ww_wache !== '') {
+    $ww_reiter_merk = isset($_POST['activetab']) && is_string($_POST['activetab'])
+        ? (string) $_POST['activetab'] : null;
+    $_POST = array();
+    if ($ww_reiter_merk !== null) {
+        $_POST['activetab'] = $ww_reiter_merk;
+    }
+    $ww_fehler[] = $ww_wache;
+}
+
 $ww_testausgabe = '';
 $ww_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
 
@@ -715,24 +733,29 @@ if (!empty($ww_zustand['fehler'])) { ?>
 </div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
+    <?php echo ww_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="dienst" value="start"><?= ww_e(ww_t('EINST.K_START')) ?></button>
   </form>
   <form action="index.php" method="post">
+    <?php echo ww_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="dienst" value="restart"><?= ww_e(ww_t('EINST.K_NEUSTART')) ?></button>
   </form>
   <form action="index.php" method="post">
+    <?php echo ww_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="dienst" value="stop"><?= ww_e(ww_t('EINST.K_STOPP')) ?></button>
   </form>
   <form action="index.php" method="post">
+    <?php echo ww_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="anmelden" value="verwerfen"><?= ww_e(ww_t('EINST.K_SITZUNG')) ?></button>
   </form>
 </div>
 
 <form action="index.php" method="post" autocomplete="off">
+  <?php echo ww_fmt(); ?>
 <input data-role="none" type="hidden" name="speichern" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 
@@ -948,10 +971,12 @@ if (!empty($ww_zustand['fehler'])) { ?>
 <?php } ?>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
+    <?php echo ww_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="anmelden" value="hc_start"><?= ww_e(ww_t('EINST.K_HC_START')) ?></button>
   </form>
   <form action="index.php" method="post">
+    <?php echo ww_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="anmelden" value="hc_fertig"><?= ww_e(ww_t('EINST.K_HC_FERTIG')) ?></button>
   </form>
@@ -980,6 +1005,7 @@ if ($ww_ang['miele']) { ?>
 <div class="sm-warnung"><?= ww_t('EINST.MIELE_OHNE_ID') ?></div>
 <?php } ?>
 <form action="index.php" method="post">
+  <?php echo ww_fmt(); ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 <div class="sm-feld">
   <label for="miele_code"><?= ww_e(ww_t('EINST.L_MIELE_CODE')) ?></label>
@@ -1029,10 +1055,12 @@ if ($ww_ang['miele']) { ?>
        Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
        einen Download, der das Speichern verschluckt. -->
   <form action="index.php" method="post">
+    <?php echo ww_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="ww_sichern" value="1"><?= ww_t('EINST.K_SICHERN') ?></button>
   </form>
   <form action="index.php" method="post" enctype="multipart/form-data">
+    <?php echo ww_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="file" name="ww_sicherung" accept=".json">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ww_zurueck" value="1"><?= ww_t('EINST.K_ZURUECK') ?></button>
@@ -1045,6 +1073,7 @@ if ($ww_ang['miele']) { ?>
 
 <h2>MQTT</h2>
 <form action="index.php" method="post">
+  <?php echo ww_fmt(); ?>
 <input data-role="none" type="hidden" name="save_mqtt" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
 <div class="sm-feld">
@@ -1167,16 +1196,19 @@ foreach ($ww_vnrn as $ww_vnr) {
          "definiert, aber nie benutzt" - dieselbe Blindstelle wie bei der
          Reiterleiste. */ ?>
   <form action="index.php" method="post">
+    <?php echo ww_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
     <input data-role="none" type="hidden" name="vorlage_nr" value="<?= ww_e($ww_vnr) ?>">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="vorlage" value="status"><?= ww_e(ww_t('LOX.K_VORLAGE_STATUS')) ?></button>
   </form>
   <form action="index.php" method="post">
+    <?php echo ww_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
     <input data-role="none" type="hidden" name="vorlage_nr" value="<?= ww_e($ww_vnr) ?>">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="vorlage" value="verbrauch"><?= ww_e(ww_t('LOX.K_VORLAGE_VERBRAUCH')) ?></button>
   </form>
   <form action="index.php" method="post">
+    <?php echo ww_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
     <input data-role="none" type="hidden" name="vorlage_nr" value="<?= ww_e($ww_vnr) ?>">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="vorlage" value="ausgang"><?= ww_e(ww_t('LOX.K_VORLAGE_BEFEHLE')) ?></button>
@@ -1186,6 +1218,7 @@ foreach ($ww_vnrn as $ww_vnr) {
 <p><b><?= ww_e(ww_t('LOX.VORLAGEN_MQTT')) ?></b></p>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
+    <?php echo ww_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="vorlage" value="mqtt"><?= ww_e(ww_t('LOX.K_VORLAGE_MQTT')) ?></button>
   </form>
@@ -1246,6 +1279,7 @@ foreach ($ww_vnrn as $ww_vnr) {
 <?= ww_t('LOX.S6_TEXT') ?>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
+    <?php echo ww_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?= ww_e(ww_t('LOX.K_TOKEN_NEU')) ?></button>
   </form>
@@ -1393,16 +1427,19 @@ function ww_bausteine()
 <h3><?= ww_e(ww_t('TEST.H_TECHNIK')) ?></h3>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
+    <?php echo ww_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="selbsttest" value="1"><?= ww_e(ww_t('TEST.K_SELBSTTEST')) ?></button>
   </form>
   <a class="sm-btn sm-b-technik" href="<?= ww_e($ww_basis) ?>?token=<?= ww_e($ww_token) ?>&amp;aktion=roh" target="_blank"><?= ww_e(ww_t('TEST.K_ROH')) ?></a>
   <form action="index.php" method="post">
+    <?php echo ww_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="mitschnitt" value="300"><?= ww_e(ww_t('TEST.K_MITSCHNITT_EIN')) ?></button>
   </form>
 <?php if (ww_mitschnitt_rest() > 0) { ?>
   <form action="index.php" method="post">
+    <?php echo ww_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="mitschnitt" value="0"><?= ww_e(ww_t('TEST.K_MITSCHNITT_AUS')) ?></button>
   </form>
@@ -1416,6 +1453,7 @@ function ww_bausteine()
 <h3><?= ww_e(ww_t('ANSAGE.H_TEST')) ?></h3>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
+    <?php echo ww_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_test" value="1"><?= ww_e(ww_t('ANSAGE.K_TEST')) ?></button>
   </form>
@@ -1431,6 +1469,7 @@ function ww_bausteine()
 <div class="sm-hinweis"><?= ww_t('TEST.SCHALTEN_GESPERRT') ?></div>
 <?php } ?>
 <form action="index.php" method="post">
+  <?php echo ww_fmt(); ?>
 <input data-role="none" type="hidden" name="activetab" value="tab-test">
 <div class="sm-feld">
   <label for="test_geraet"><?= ww_e(ww_t('TEST.L_GERAET')) ?></label>
@@ -1507,6 +1546,7 @@ if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) {
 </div>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
+    <?php echo ww_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-log">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="log_leeren" value="1"><?= ww_e(ww_t('LOG.K_LEEREN')) ?></button>
   </form>
