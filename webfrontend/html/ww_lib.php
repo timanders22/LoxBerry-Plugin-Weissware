@@ -1452,6 +1452,7 @@ function ww_ansage_log($msg)
      * bleiben die letzten 200 Zeilen stehen. Ohne sie waechst die Datei
      * unbegrenzt - auf einem LoxBerry mit SD-Karte ist das kein
      * Schoenheitsfehler. */
+    clearstatcache(true, $ww_al);
     if (is_file($ww_al) && filesize($ww_al) > 512000) {
         $rest = array_slice(file($ww_al, FILE_IGNORE_NEW_LINES) ?: array(), -200);
         @file_put_contents($ww_al, implode("\n", $rest) . "\n");
