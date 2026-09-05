@@ -102,7 +102,10 @@ rm -f "$PIDDATEI" "$PDATA/soll_laufen" 2>/dev/null
 # ---------------------------------------------------------------
 # 2. Sicherungsdateien ausserhalb der Plugin-Ordner
 # ---------------------------------------------------------------
-for f in weissware.json zugang.json; do
+# Seit 0.9.18 legt preupgrade.sh auch die Dateien aus dem Datenordner
+# hier ab (token.json traegt die Anmeldung an drei Herstellerclouds)
+# sowie den Merker .backup.lief.
+for f in weissware.json zugang.json token.json geraetenummern.json laeufe.json lief; do
     BK="$PCONFIG/$PFOLDER.backup.$f"
     if [ -f "$BK" ]; then
         # Ueberschreiben, dann entfernen: nur unlink liesse den Inhalt

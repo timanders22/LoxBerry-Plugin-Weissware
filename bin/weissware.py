@@ -94,6 +94,10 @@ if len(SELF.parents) >= 3:
     LBHOME = SELF.parents[2]
 else:
     LBHOME = Path(os.environ.get("LBHOMEDIR") or lb_wurzel_ermitteln())
+# Fassung an EINER Stelle. Bis 0.9.17 stand im User-Agent fest "0.9.1" -
+# genau der Fehler, den die README fuer 0.9.1 als behoben fuehrt, nur eine
+# Nummer weiter. Wird von Werkzeuge/fassung_setzen.py mitgezogen.
+FASSUNG = "0.9.18"
 PDATA = LBHOME / "data" / "plugins" / PNAME
 PLOG = LBHOME / "log" / "plugins" / PNAME
 PCONFIG = LBHOME / "config" / "plugins" / PNAME
@@ -636,7 +640,7 @@ def kopfzeilen(token: str, sprache: str = "") -> dict:
         "Authorization": "Bearer " + token,
         "Accept": "application/vnd.bsh.sdk.v1+json, application/json",
         "Accept-Encoding": "gzip, deflate",
-        "User-Agent": "LoxBerry-Weissware/0.9.1",
+        "User-Agent": "LoxBerry-Weissware/" + FASSUNG,
     }
     if sprache:
         h["Accept-Language"] = sprache

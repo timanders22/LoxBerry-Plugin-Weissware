@@ -58,6 +58,24 @@ for f in weissware.json zugang.json; do
     fi
 done
 chmod 600 "$PCONFIG/zugang.json"
+# weissware.json traegt das Aktionstoken, mit dem der Endpunkt schaltende
+# Befehle annimmt. Bis 0.9.17 bekam nur zugang.json 0600 - wer auf dem
+# LoxBerry lesen durfte, konnte damit Geraete schalten.
+chmod 600 "$PCONFIG/weissware.json"
+
+# ---------- Daten aus dem Upgrade zuruecklegen ----------
+# plugininstall.pl raeumt data/plugins/<ordner>/ beim Upgrade ab. preupgrade.sh
+# hat diese drei Dateien danebengelegt; ohne sie waere nach jedem Update die
+# Anmeldung an drei Herstellerclouds fort und die Geraetenummern - also die
+# Adressen in Loxone - wuerden neu vergeben.
+for f in token.json geraetenummern.json laeufe.json; do
+    BK="$BASE/config/plugins/$PFOLDER.backup.$f"
+    DF="$PDATA/$f"
+    if [ -f "$BK" ] && [ ! -s "$DF" ]; then
+        cp -p "$BK" "$DF" && echo "<OK> $f aus Sicherung wiederhergestellt."
+    fi
+done
+chmod 600 "$PDATA/token.json" 2>/dev/null || true
 
 # ---------- Python suchen ----------
 PY=""
@@ -126,6 +144,23 @@ chmod 755 "$PBIN/dienst.sh" 2>/dev/null
 chown -R loxberry:loxberry "$PBIN" "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
 chmod 600 "$PCONFIG/zugang.json"
 chmod 600 "$PDATA/token.json" 2>/dev/null
+
+# ---------- Dienst wieder anwerfen ----------
+# Der Merker stammt aus preupgrade.sh und sagt, dass der Dienst vor dem
+# Upgrade laufen sollte. Bis 0.9.17 gab es ihn nicht: nach jedem Auto-Update
+# lag das Plugin still, bis jemand von Hand auf "Dienst starten" drueckte -
+# und weil 'soll_laufen' im abgeraeumten Datenordner lag, griff auch der
+# minuetliche Waechter nicht.
+LIEF="$BASE/config/plugins/$PFOLDER.backup.lief"
+if [ -f "$LIEF" ]; then
+    if [ -x "$PBIN/dienst.sh" ] && "$PBIN/dienst.sh" start >/dev/null 2>&1; then
+        echo "<OK> Der Dienst wurde wieder gestartet."
+    else
+        echo "<INFO> Der Dienst lief vor dem Upgrade, liess sich aber nicht"
+        echo "<INFO> starten. Bitte im Reiter Einstellungen nachsehen."
+    fi
+    rm -f "$LIEF"
+fi
 
 echo "<OK> Installation abgeschlossen."
 echo "<INFO> Naechste Schritte in der Plugin-Oberflaeche, Reiter Einstellungen:"

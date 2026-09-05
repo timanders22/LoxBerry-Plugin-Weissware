@@ -156,6 +156,21 @@ function ww_vorgaben()
         // das ist die Werkseinstellung. Muss zu VORGABEN in bin/weissware.py
         // passen; der Reiter Test misst die Uebereinstimmung nach.
         'mitschnitt_bis' => 0,
+        /* Sprachausgabe. Stand bis 0.9.17 NICHT in den Vorgaben, obwohl
+         * die Oberflaeche den Schluessel bei jedem Speichern schreibt.
+         * Folge: ww_sicherung_lesen() pruefte gegen diese Liste und wies
+         * die vom Plugin selbst erzeugte Sicherungsdatei als "unbekannte
+         * Einstellung: tts" ab - der Umzug auf einen zweiten LoxBerry,
+         * der erklaerte Zweck der beiden Knoepfe, war nie moeglich. */
+        'tts' => array(
+            'mode'     => 'musicserver',
+            'ip'       => '',
+            'port'     => 7091,
+            'zones'    => '1',
+            'volume'   => 8,
+            'lang'     => 'de',
+            'template' => '',
+        ),
     );
 }
 
@@ -168,13 +183,30 @@ function ww_json_lesen($pfad)
     return is_array($d) ? $d : array();
 }
 
-function ww_config()
+/**
+ * Liest die Konfiguration und ergaenzt sie um die Vorgaben.
+ *
+ * $erzeugen = false schaltet die Selbstheilung ab. Der UNANGEMELDETE
+ * Endpunkt ruft so - er darf nichts anlegen.
+ *
+ * Bis 0.9.17 heilte diese Funktion bedingungslos, und webfrontend/html/
+ * index.php rief sie VOR der Tokenpruefung. Gemessen unter PHP 7.4.33 und
+ * 8.4.24: ein Aufruf ohne Token wurde richtig mit GRUND=TOKEN abgewiesen -
+ * und legte dabei config/plugins/<ordner>/weissware.json aus der
+ * Zweitschrift an. Wer die Adresse kennt, schaltete damit eine alte
+ * Sicherung wieder scharf, samt steuerung_ein und altem Aktionstoken.
+ */
+function ww_config($erzeugen = true)
 {
     $p = ww_paths();
-    // Selbstheilung: fehlende oder leere Konfiguration aus der Sicherung holen.
     $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
-    if (($roh === '' || $roh === '{}') && is_file($p['sicherung'])) {
-        @mkdir($p['configdir'], 0775, true);
+    if ($erzeugen && ($roh === '' || $roh === '{}') && is_file($p['sicherung'])) {
+        // is_dir() davor: @mkdir mit einem vorhandenen Verzeichnis ruft den
+        // Fehleraufnehmer trotzdem ("File exists") und faerbt jeden Pruef-
+        // lauf mit einer Warnung, die keine ist.
+        if (!is_dir($p['configdir'])) {
+            @mkdir($p['configdir'], 0775, true);
+        }
         @copy($p['sicherung'], $p['config']);
     }
     $cfg = ww_json_lesen($p['config']);
@@ -190,10 +222,35 @@ function ww_config_speichern($cfg)
     $json = json_encode($cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     // json_encode liefert bei ungueltigem UTF-8 false, und file_put_contents
     // schriebe dann eine Datei mit NULL Bytes - und meldete das als Erfolg.
-    if ($json === false || @file_put_contents($p['config'], $json) === false) {
+    if ($json === false) {
         return false;
     }
-    @copy($p['config'], $p['sicherung']);
+    /* Wie ww_zugang_speichern(): Nebendatei, Laengenvergleich, Rechte VOR
+     * dem Umbenennen. Diese Datei traegt das Aktionstoken, mit dem der
+     * Endpunkt schaltende Befehle annimmt - sie gehoert auf 0600, so wie
+     * zugang.json. Bis 0.9.17 wurde sie mit den Rechten aus der umask
+     * geschrieben und nie gechmoddet.
+     *
+     * === false allein genuegt nicht: ein Kurzschreiben (volle Ramdisk)
+     * liefert die Byte-Zahl, nicht false. */
+    $tmp = $p['config'] . '.tmp.' . getmypid();
+    if (@file_put_contents($tmp, $json) !== strlen($json)) {
+        @unlink($tmp);
+        return false;
+    }
+    @chmod($tmp, 0600);
+    if (!@rename($tmp, $p['config'])) {
+        @unlink($tmp);
+        return false;
+    }
+    /* Die Zweitschrift wird NUR mitgezogen, wenn der Stand ein Aktionstoken
+     * traegt. Sonst ueberschreibt ein Stand ohne Token die einzige Kopie,
+     * die ihn noch hat - und mit ihr jede im Miniserver eingetragene
+     * Adresse, still. */
+    if (trim((string) (isset($cfg['aktionstoken']) ? $cfg['aktionstoken'] : '')) !== '') {
+        @copy($p['config'], $p['sicherung']);
+        @chmod($p['sicherung'], 0600);
+    }
     return true;
 }
 
@@ -302,14 +359,21 @@ function ww_dienst_schalter($schalter, $wert = '')
     $py = $p['bindir'] . '/venv/bin/python3';
     $skript = $p['bindir'] . '/weissware.py';
     if (!is_file($py) || !is_file($skript)) {
-        return array(0, 'Die virtuelle Python-Umgebung oder weissware.py fehlt.');
+        // -1, nicht 0: die Aufrufer pruefen auf === 0 und meldeten sonst
+        // "Home Connect ist angemeldet", waehrend gar nichts lief.
+        return array(-1, 'Die virtuelle Python-Umgebung oder weissware.py fehlt.');
+    }
+    if (!function_exists('exec')) {
+        return array(-1, 'Die PHP-Funktion exec ist auf diesem System gesperrt. '
+                       . 'Anmeldung und Selbsttest lassen sich darueber nicht ausfuehren.');
     }
     $befehl = escapeshellcmd($py) . ' ' . escapeshellarg($skript) . ' ' . escapeshellarg($schalter);
     if ($wert !== '') {
         $befehl .= ' ' . escapeshellarg($wert);
     }
     $ausgabe = array();
-    $code = 0;
+    // Vorbelegung -1: bleibt exec wirkungslos, ist das KEIN Erfolg.
+    $code = -1;
     @exec($befehl . ' 2>&1', $ausgabe, $code);
     return array($code, implode("\n", $ausgabe));
 }
@@ -337,7 +401,8 @@ function ww_trockenlauf($aktion, $nummer, $programm = '')
         $befehl .= ' ' . escapeshellarg($programm);
     }
     $ausgabe = array();
-    $code = 0;
+    // Vorbelegung -1, siehe ww_dienst_schalter().
+    $code = -1;
     @exec($befehl . ' 2>&1', $ausgabe, $code);
     return array($code, implode("\n", $ausgabe));
 }
@@ -470,7 +535,9 @@ function ww_endpunkt_merken($datei, $erg)
 {
     $json = json_encode($erg, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($json !== false) {
-        @mkdir(dirname($datei), 0775, true);
+        if (!is_dir(dirname($datei))) {
+            @mkdir(dirname($datei), 0775, true);
+        }
         @file_put_contents($datei, $json);
     }
 }
@@ -555,8 +622,15 @@ function ww_dienst($befehl)
     if (!is_file($skript)) {
         return array(0, 'dienst.sh nicht gefunden: ' . $skript);
     }
+    if (!function_exists('exec')) {
+        return array(0, 'Die PHP-Funktion exec ist auf diesem System gesperrt - '
+                      . 'der Dienst laesst sich von der Oberflaeche aus nicht schalten.');
+    }
     $ausgabe = array();
-    $code = 0;
+    // Vorbelegung -1: sonst ergaebe ein wirkungsloses exec unten
+    // ($code === 0 ? 1 : 0) eine gemeldete 1 - "Dienst gestartet", ohne dass
+    // etwas gestartet wurde.
+    $code = -1;
     @exec(escapeshellcmd($skript) . ' ' . escapeshellarg($befehl) . ' 2>&1', $ausgabe, $code);
     return array($code === 0 ? 1 : 0, implode("\n", $ausgabe));
 }
@@ -1285,7 +1359,12 @@ function ww_vorlage_mqtt()
     if ($praefix === '') {
         $praefix = 'weissware';
     }
-    $text = array('name', 'anbieter', 'zustand_text', 'programm_text');
+    /* Textthemen bekommen keinen virtuellen Eingang - das nachgebaute
+     * Vorlagenformat ist nur fuer Zahlenwerte belegt. 'gewaehlt_text'
+     * fehlte bis 0.9.17 in dieser Liste; Loxone bekam dafuer einen
+     * analogen Eingang, der dauerhaft auf 0 stand. */
+    $text = array('name', 'anbieter', 'zustand_text', 'programm_text',
+                  'gewaehlt_text');
     $geraete = ww_geraete();
     $nummern = $geraete ? array_keys($geraete) : array('1');
 
@@ -1669,21 +1748,218 @@ function ww_ansage_check()
  *
  * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
  */
+/**
+ * Taugt der Wert ueberhaupt fuer eine Konfigurationsdatei?
+ *
+ * Erste von zwei Stufen. Hier faellt heraus, was in KEINEN Schluessel passt:
+ * Felder, Objekte, Wahrheitswerte, null, ueberlange Zeichenketten und
+ * Steuerzeichen. 'tts' ist als einziger Schluessel ein Feld und wird gesondert
+ * geprueft.
+ */
+function ww_wert_taugt($w)
+{
+    if (is_array($w) || is_object($w) || is_bool($w) || is_null($w)) {
+        return false;
+    }
+    $s = (string) $w;
+    if (strlen($s) > 4096) {
+        return false;
+    }
+    return preg_match('/[\x00-\x08\x0A-\x1F\x7F]/', $s) !== 1;
+}
+
+/**
+ * Ist der Wert fuer DIESEN Schluessel zulaessig?
+ *
+ * Zweite Stufe, mit denselben Mustern und Grenzen wie das Formular in
+ * webfrontend/htmlauth/index.php. Bis 0.9.17 prueften beide Knoepfe nur die
+ * SCHLUESSELNAMEN; jeder Wert wurde ungeprueft uebernommen. Gemessen unter 7.4
+ * und 8.4: eine Sicherung mit takt_ruhe = {"a":1} und aktionstoken als Feld
+ * ging ohne eine einzige Beanstandung durch, und aus dem Feld wurde im
+ * Endpunkt die Zeichenkette "Array" - ein Token, das jeder kennt.
+ */
+function ww_wert_pruefen($schluessel, $w)
+{
+    switch ($schluessel) {
+        case 'takt_betrieb':
+            return preg_match('/^[0-9]+$/', (string) $w) === 1
+                   && (int) $w >= 60 && (int) $w <= 3600;
+        case 'takt_ruhe':
+            return preg_match('/^[0-9]+$/', (string) $w) === 1
+                   && (int) $w >= 60 && (int) $w <= 7200;
+        case 'wartezeit':
+            return preg_match('/^[0-9]+$/', (string) $w) === 1
+                   && (int) $w >= 0 && (int) $w <= WW_WARTEN_WEB;
+        case 'mitschnitt_bis':
+            return preg_match('/^[0-9]+$/', (string) $w) === 1;
+        case 'mqtt_ein':
+        case 'steuerung_ein':
+        case 'hc_ein':
+        case 'hc_simulator':
+        case 'miele_ein':
+        case 'st_ein':
+        case 'ansage_ein':
+        case 'ansage_stoerung':
+        case 'ansage_fernstart':
+            return (string) $w === '0' || (string) $w === '1';
+        case 'ansage_ruhe_von':
+        case 'ansage_ruhe_bis':
+            return preg_match('/^([01][0-9]|2[0-3]):[0-5][0-9]$/', (string) $w) === 1;
+        case 'mqtt_topic':
+            return preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', (string) $w) === 1;
+        case 'sprache':
+            return preg_match('/^[a-z]{2}-[A-Z]{2}$/', (string) $w) === 1;
+        case 'aktionstoken':
+            /* Weit gefasst und ausdruecklich mit der Laenge 0: ein leeres
+             * Token in einer Sicherungsdatei heisst "kein Token gesichert" und
+             * ist kein unzulaessiger Wert. Ob eines FEHLT, entscheidet die
+             * Lesefunktion unten an der Lage, nicht diese Wertpruefung.
+             * Zugelassen wird, was ohne Kodierung in eine Adresse passt. */
+            return preg_match('/^[A-Za-z0-9_.\-]{0,64}$/', (string) $w) === 1;
+    }
+    return true;
+}
+
+/** Die Sprachausgabe ist der einzige Schluessel mit einem Unterbau. */
+function ww_tts_pruefen($w, &$mangel)
+{
+    if (!is_array($w)) {
+        $mangel[] = sprintf(ww_t('EINST.SICH_WERT'), 'tts');
+        return false;
+    }
+    $ok = true;
+    $regeln = array(
+        'mode'     => '/^(musicserver|ms4h|audioserver|custom)$/',
+        'ip'       => '/^[A-Za-z0-9_.\-]{0,80}$/',
+        'port'     => '/^[0-9]{1,5}$/',
+        'zones'    => '/^[0-9 ,~]{0,120}$/',
+        'volume'   => '/^[0-9]{1,3}$/',
+        'lang'     => '/^[a-z]{1,8}$/',
+        'template' => '#^[^\x00-\x1F\x7F]{0,300}$#',
+    );
+    foreach ($regeln as $f => $muster) {
+        if (!array_key_exists($f, $w)) {
+            continue;
+        }
+        if (!ww_wert_taugt($w[$f]) || preg_match($muster, (string) $w[$f]) !== 1) {
+            $mangel[] = sprintf(ww_t('EINST.SICH_WERT'), 'tts.' . $f);
+            $ok = false;
+        }
+    }
+    foreach (array_keys($w) as $f) {
+        if (!isset($regeln[$f])) {
+            $mangel[] = sprintf(ww_t('EINST.SICH_FREMD'),
+                                 htmlspecialchars('tts.' . (string) $f, ENT_QUOTES, 'UTF-8'));
+            $ok = false;
+        }
+    }
+    return $ok;
+}
+
+/**
+ * Baut den Inhalt der Sicherungsdatei.
+ *
+ * Zweck der beiden Knoepfe ist der UMZUG auf einen zweiten LoxBerry. Deshalb
+ * gehoeren die Zugangsdaten hinein - ohne sie stuenden dort alle Felder
+ * richtig, und das Plugin kaeme trotzdem an keinen Anbieter. Bis 0.9.17 gab
+ * die Ausfuhr nur ww_config() aus; der Warntext am Knopf versprach dennoch
+ * "Die Datei enthaelt Ihre Zugangsdaten", und das stimmte nicht.
+ *
+ * Der Formulartoken gehoert NICHT hinein: er ist ein Sitzungsmerkmal und
+ * wohnt ohnehin im Datenverzeichnis, nicht in der Konfiguration.
+ */
+function ww_sicherung_bauen()
+{
+    $cfg = ww_config();
+    $cfg['_hinweis'] = 'Sicherung des Plugins Weissware Cloud. Enthaelt das '
+                     . 'Aktionstoken und die Zugangsdaten der Anbieter - wie ein '
+                     . 'Passwort behandeln.';
+    $cfg['_stand']   = date('Y-m-d H:i:s');
+    $cfg['zugang']   = ww_json_lesen(ww_paths()['zugang']);
+    return $cfg;
+}
+
+/**
+ * Liest eine Sicherungsdatei.
+ *
+ * Die sieben Punkte aus REGELN_2, und der wichtigste ist der dritte: eine
+ * halb gueltige Datei ueberschreibt GAR NICHTS. Wer eine Sicherung
+ * zurueckspielt, will entweder den ganzen Stand oder gar keinen - eine zur
+ * Haelfte uebernommene Konfiguration ist schlimmer als die alte, und man
+ * sieht es ihr nicht an.
+ *
+ * Grundlage ist der BESTAND, nicht die Werkseinstellung. Bis 0.9.17 begann
+ * die Funktion mit ww_vorgaben(); alles, was in der Datei fehlte, kam damit
+ * aus den Vorgaben. Gemessen: eine Sicherung ohne 'aktionstoken' wurde
+ * angenommen, meldete "17 Werte uebernommen" - und setzte das Token auf leer.
+ * Der Endpunkt antwortet danach KEIN_TOKEN_GESETZT, jeder Virtuelle Eingang
+ * bekommt 403 und wertet ihn nicht aus, und beim naechsten Oeffnen der
+ * Oberflaeche wird ein neues Token gewuerfelt: jede im Miniserver eingetragene
+ * Adresse ist still tot.
+ *
+ * Rueckgabe: array(Konfiguration|null, Zugangsdaten|null, Beanstandungen[],
+ *                  uebernommene Werte).
+ */
 function ww_sicherung_lesen($roh)
 {
     $mangel = array();
     $daten = json_decode((string) $roh, true);
     if (!is_array($daten)) {
-        return array(null, array(ww_t('EINST.SICH_KEIN_JSON')), 0);
+        return array(null, null, array(ww_t('EINST.SICH_KEIN_JSON')), 0);
     }
-    $neu = ww_vorgaben();
-    $bekannt = array_keys($neu);
+    $neu = ww_config();
+    $bekannt = array_keys(ww_vorgaben());
+    $zugang = null;
     $anzahl = 0;
+    $hatte_token = false;
     foreach ($daten as $k => $w) {
+        // Der lesbare Kopf wird UEBERGANGEN, nicht beanstandet.
+        if ($k !== '' && $k[0] === '_') {
+            continue;
+        }
+        if ($k === 'zugang') {
+            if (!is_array($w)) {
+                $mangel[] = sprintf(ww_t('EINST.SICH_WERT'), 'zugang');
+                continue;
+            }
+            $zfelder = array('hc_client_id', 'hc_client_secret', 'miele_client_id',
+                             'miele_client_secret', 'st_token');
+            $zneu = array();
+            foreach ($w as $zk => $zw) {
+                if (!in_array($zk, $zfelder, true)) {
+                    $mangel[] = sprintf(ww_t('EINST.SICH_FREMD'),
+                        htmlspecialchars('zugang.' . (string) $zk, ENT_QUOTES, 'UTF-8'));
+                    continue;
+                }
+                if (!ww_wert_taugt($zw) || strlen((string) $zw) > 512) {
+                    $mangel[] = sprintf(ww_t('EINST.SICH_WERT'), 'zugang.' . $zk);
+                    continue;
+                }
+                $zneu[$zk] = (string) $zw;
+                $anzahl++;
+            }
+            $zugang = $zneu;
+            continue;
+        }
         if (!in_array($k, $bekannt, true)) {
             $mangel[] = sprintf(ww_t('EINST.SICH_FREMD'),
                                  htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
             continue;
+        }
+        if ($k === 'tts') {
+            if (ww_tts_pruefen($w, $mangel)) {
+                $neu['tts'] = array_merge(ww_vorgaben()['tts'], $w);
+                $anzahl++;
+            }
+            continue;
+        }
+        if (!ww_wert_taugt($w) || !ww_wert_pruefen($k, $w)) {
+            $mangel[] = sprintf(ww_t('EINST.SICH_WERT'),
+                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            continue;
+        }
+        if ($k === 'aktionstoken') {
+            $hatte_token = true;
         }
         $neu[$k] = $w;
         $anzahl++;
@@ -1691,7 +1967,13 @@ function ww_sicherung_lesen($roh)
     if ($anzahl === 0) {
         $mangel[] = ww_t('EINST.SICH_LEER');
     }
-    return array($mangel ? null : $neu, $mangel, $anzahl);
+    /* Fehlt das Aktionstoken, obwohl sonst etwas uebernommen wurde, wird die
+     * Datei ABGEWIESEN statt das Token auf leer zu setzen. Das ist der Fall,
+     * der jede Loxone-Adresse still entwertet hat. */
+    if ($anzahl > 0 && !$hatte_token) {
+        $mangel[] = ww_t('EINST.SICH_OHNE_TOKEN');
+    }
+    return array($mangel ? null : $neu, $mangel ? null : $zugang, $mangel, $anzahl);
 }
 
 

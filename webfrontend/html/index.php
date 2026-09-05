@@ -43,7 +43,12 @@ error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 require_once __DIR__ . '/ww_lib.php';
 header('Content-Type: text/plain; charset=utf-8');
 
-$ww_cfg = ww_config();
+/* ww_config(false): der unangemeldete Endpunkt darf NICHTS anlegen.
+ * Bis 0.9.17 stand hier ww_config(); die Funktion heilte dabei eine
+ * fehlende Konfiguration aus der Zweitschrift - und zwar VOR der
+ * Tokenpruefung. Gemessen unter 7.4.33 und 8.4.24: ein Aufruf ohne
+ * Token wurde richtig abgewiesen und legte weissware.json trotzdem an. */
+$ww_cfg = ww_config(false);
 $ww_p = ww_paths();
 
 /* ---------------- Token ---------------- */

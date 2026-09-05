@@ -224,7 +224,12 @@ if ($ww_post && isset($_POST['speichern'])) {
         $ww_neu[$ww_f2] = isset($_POST[$ww_f2])
             ? trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) $_POST[$ww_f2])) : '';
     }
-    if (!ww_zugang_speichern($ww_neu)) {
+    /* Die Zugangsdaten werden ERST geschrieben, wenn das Formular ohne
+      * Beanstandung ist. Bis 0.9.17 stand dieser Aufruf davor: wer den Takt
+      * vertippte und gleichzeitig ein Client-Geheimnis austauschte, las
+      * "Bitte eine Zahl eintragen", glaubte, nichts sei gespeichert - und
+      * hatte das Geheimnis doch schon ausgetauscht. */
+    if (!$ww_fehler && !ww_zugang_speichern($ww_neu)) {
         $ww_fehler[] = ww_t('EINST.FEHLER_ZUGANG_SPEICHERN');
     }
     $ww_zg = ww_zugang();
@@ -445,6 +450,75 @@ if ($ww_post && isset($_POST['ansage_test'])) {
     $ww_tab = 'tab-test';
 }
 
+/* ---------------- Einstellungen sichern ----------------
+ *
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken UND
+ * Zugangsdaten. Ohne sie stuenden nach dem Zurueckspielen alle Felder
+ * richtig, und das Plugin kaeme trotzdem nicht an die Anlage; die Datei
+ * waere wertlos. Damit traegt sie ein Geheimnis, und der Hinweis am Knopf
+ * sagt das.
+ *
+ * Bis 0.9.17 stand dieser Block samt dem Zurueckspielen HINTER dem
+ * Ladeblock. Folge: nach einem Zurueckspielen zeigte die Seite jedes Feld
+ * im Vorzustand, und der Reiter "Einbindung in Loxone" nannte das ALTE
+ * Aktionstoken - wer die Adressen in diesem Augenblick abschrieb, schrieb
+ * Adressen ab, die schon nicht mehr galten. */
+if ($ww_post && isset($_POST['ww_sichern'])) {
+    $ww_js = json_encode(ww_sicherung_bauen(),
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($ww_js !== false) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="weissware_einstellungen_'
+               . date('Ymd_His') . '.json"');
+        echo $ww_js;
+        exit;
+    }
+    $ww_fehler[] = ww_t('EINST.SICH_SCHREIBFEHLER');
+}
+
+/* ---------------- Einstellungen zurueckspielen ----------------
+ *
+ * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
+ * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
+ * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
+if ($ww_post && isset($_POST['ww_zurueck'])) {
+    if (!isset($_FILES['ww_sicherung']) || !is_array($_FILES['ww_sicherung'])
+        || !isset($_FILES['ww_sicherung']['tmp_name'])
+        || !@is_uploaded_file($_FILES['ww_sicherung']['tmp_name'])) {
+        $ww_fehler[] = ww_t('EINST.SICH_KEINE_DATEI');
+    } elseif ((int) $_FILES['ww_sicherung']['size'] > 262144) {
+        $ww_fehler[] = ww_t('EINST.SICH_ZU_GROSS');
+    } else {
+        list($ww_neu, $ww_zneu, $ww_mangel, $ww_n) = ww_sicherung_lesen(
+            (string) @file_get_contents($_FILES['ww_sicherung']['tmp_name']));
+        if ($ww_neu === null) {
+            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
+             * nichts. */
+            $ww_fehler[] = ww_t('EINST.SICH_ABGELEHNT') . ' '
+                            . implode(' ', $ww_mangel);
+        } elseif (ww_config_speichern($ww_neu)) {
+            $ww_meldungen[] = sprintf(ww_t('EINST.SICH_UEBERNOMMEN'), $ww_n);
+            if (is_array($ww_zneu) && $ww_zneu && !ww_zugang_speichern($ww_zneu)) {
+                $ww_fehler[] = ww_t('EINST.SICH_ZUGANG_FEHL');
+            }
+            /* Den Dienst nachziehen und SAGEN, was mit ihm geschah. Er liest
+             * die Konfiguration beim Start; ohne das arbeitete er mit dem
+             * alten Takt, den alten Anbieterhaken und dem alten Token weiter,
+             * bis ihn jemand von Hand neu startet. */
+            if (ww_dienst_pid() > 0) {
+                list($ww_dok, $ww_daus) = ww_dienst('restart');
+                $ww_meldungen[] = $ww_dok
+                    ? ww_t('EINST.SICH_DIENST_NEU')
+                    : ww_t('EINST.SICH_DIENST_FEHL');
+            } else {
+                $ww_meldungen[] = ww_t('EINST.SICH_DIENST_AUS');
+            }
+        } else {
+            $ww_fehler[] = ww_t('EINST.SICH_SCHREIBFEHLER');
+        }
+    }
+}
+
 /* ---------------- Laden ---------------- */
 $ww_cfg = ww_config();
 $ww_token = ww_token();
@@ -476,53 +550,6 @@ if (is_file($ww_p['log'])) {
 }
 
 $ww_rahmen = class_exists('LBWeb', false);
-
-/* ---------------- Einstellungen sichern ----------------
- *
- * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
- * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
- * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
- * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
-if ($ww_post && isset($_POST['ww_sichern'])) {
-    $ww_js = json_encode(ww_config(),
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($ww_js !== false) {
-        header('Content-Type: application/json; charset=utf-8');
-        header('Content-Disposition: attachment; filename="weissware_einstellungen_'
-               . date('Ymd_His') . '.json"');
-        echo $ww_js;
-        exit;
-    }
-    $ww_fehler[] = ww_t('EINST.SICH_SCHREIBFEHLER');
-}
-
-/* ---------------- Einstellungen zurueckspielen ----------------
- *
- * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
- * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
- * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
-if ($ww_post && isset($_POST['ww_zurueck'])) {
-    if (!isset($_FILES['ww_sicherung']) || !is_array($_FILES['ww_sicherung'])
-        || !isset($_FILES['ww_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['ww_sicherung']['tmp_name'])) {
-        $ww_fehler[] = ww_t('EINST.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['ww_sicherung']['size'] > 262144) {
-        $ww_fehler[] = ww_t('EINST.SICH_ZU_GROSS');
-    } else {
-        list($ww_neu, $ww_mangel, $ww_n) = ww_sicherung_lesen(
-            (string) @file_get_contents($_FILES['ww_sicherung']['tmp_name']));
-        if ($ww_neu === null) {
-            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
-             * nichts. */
-            $ww_fehler[] = ww_t('EINST.SICH_ABGELEHNT') . ' '
-                            . implode(' ', $ww_mangel);
-        } elseif (ww_config_speichern($ww_neu)) {
-            $ww_meldungen[] = sprintf(ww_t('EINST.SICH_UEBERNOMMEN'), $ww_n);
-        } else {
-            $ww_fehler[] = ww_t('EINST.SICH_SCHREIBFEHLER');
-        }
-    }
-}
 
 
 if ($ww_rahmen) {

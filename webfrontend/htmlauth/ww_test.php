@@ -134,8 +134,27 @@ function ww_pruefungen()
      * entsteht aus ww_status_felder() - zwei Stellen, die auseinanderlaufen
      * koennen. Bei der Waermepumpe legte die Vorlage 20 Eingaenge an, die
      * Zeile lieferte 17, und die drei fehlenden standen dauerhaft auf 0. */
-    $ep_datei = dirname(__DIR__) . '/html/index.php';
-    $ep_q = is_file($ep_datei) ? (string) @file_get_contents($ep_datei) : '';
+    /* Kandidatenliste, keine feste Ebenenzahl. Installiert liegen
+     * htmlauth/ und html/ in GETRENNTEN Baeumen:
+     *   <home>/webfrontend/htmlauth/plugins/<ordner>/ww_test.php
+     *   <home>/webfrontend/html/plugins/<ordner>/index.php
+     * dirname(__DIR__).'/html/index.php' trifft nur im ausgepackten
+     * Archiv. Bis 0.9.17 stand genau das hier - diese Pruefzeile
+     * konnte auf keiner Installation je etwas messen und meldete
+     * dort dauerhaft "nicht feststellbar". */
+    $ep_p = ww_paths();
+    $ep_datei = '';
+    foreach (array(
+        $ep_p['home'] . '/webfrontend/html/plugins/' . $ep_p['plugin'] . '/index.php',
+        dirname(dirname(__DIR__)) . '/html/plugins/' . basename(__DIR__) . '/index.php',
+        dirname(__DIR__) . '/html/index.php',
+    ) as $ep_k) {
+        if (is_file($ep_k)) {
+            $ep_datei = $ep_k;
+            break;
+        }
+    }
+    $ep_q = ($ep_datei !== '') ? (string) @file_get_contents($ep_datei) : '';
     if ($ep_q === '') {
         $zeilen[] = ww_pruefzeile(-1, ww_t('TEST.F_FELDER'), ww_t('TEST.A_FELDER_UNLESBAR'));
     } else {

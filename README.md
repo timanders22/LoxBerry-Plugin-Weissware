@@ -10,7 +10,7 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.0 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.18 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
@@ -120,7 +120,7 @@ Gerät anläuft, zeigt erst der nächste Abruf; wer sicher sein will, wertet
 |---|---|---|---|
 | Fortschritt in Prozent | ja | gerechnet aus Rest- und Laufzeit | nein |
 | Restzeit | ja (Sekunden, wird umgerechnet) | ja (Stunden/Minuten) | aus dem Fertigzeitpunkt |
-| Energie und Wasser | **nein** | nur mit EcoFeedback | nein |
+| Energie und Wasser | **nein** | nur mit EcoFeedback | nur Energie |
 | Fernstart-Freigabe | ja | ja (`mobileStart`) | ja |
 
 Was fehlt, ist ein Strich — keine 0.
@@ -130,8 +130,9 @@ Was fehlt, ist ein Strich — keine 0.
 Zugangsdaten und Anmeldemarken liegen in
 `config/plugins/weissware/zugang.json` und
 `data/plugins/weissware/token.json`, beide mit den Rechten 0600, und nie in der
-Loxone-Projektdatei. Verbindungen gibt es nur zu den eingeschalteten Anbietern
-und, bei der Installation, zu PyPI.
+Loxone-Projektdatei. Verbindungen gibt es nur zu den eingeschalteten Anbietern,
+bei der Installation zu PyPI und — wenn die Ansage eingeschaltet ist — zu dem
+Audio-Server, dessen Adresse Sie im Reiter Test eintragen.
 
 ## Fassung 0.9.1 — nachgemessen und korrigiert
 
@@ -178,8 +179,8 @@ Plugins, aus denen Bausteine übernommen wurden. Die waren alle real.
 | `ww_vorlage()` | `'AUDI_' . $nummer . '_' . $feld` | `'WW_' …` |
 | `ww_paths()`, Ersatzzweig | `config/vw.backup.json` | `config/weissware.backup.json` |
 | vor `ww_zugang_speichern()` | zwei PHPDoc-Blöcke übereinander | einer |
-| vor `ww_verbrauch_felder()` | „Die Werte des **Lade**-Endpunkts" *und* „…des Verbrauchs-Endpunkts" | nur der richtige |
-| nach `ww_verbrauch_felder()` | „Die Werte des Wartungs-Endpunkts" ohne Code dahinter | entfernt |
+| vor `ww_verbrauch_felder()` | „Die Werte des **Lade**-Endpunkts“ *und* „…des Verbrauchs-Endpunkts“ | nur der richtige |
+| nach `ww_verbrauch_felder()` | „Die Werte des Wartungs-Endpunkts“ ohne Code dahinter | entfernt |
 | `htmlauth/index.php` | ein `\1` vor `<h2>` — Rest einer Suchen-und-Ersetzen-Aktion | entfernt |
 
 Das `AUDI_` war der folgenreichste: in Loxone Config wären die Bausteine
@@ -188,7 +189,7 @@ unter fremdem Namen gelandet. Das `\1` stand sichtbar in der Oberfläche.
 ### Doppelter Block in der Selbstprüfung
 
 Trifft zu, und die Beschreibung war genau: ohne Ausfälle erschien
-*„keine Ausfälle"* zweimal, mit Ausfällen wurden sie erst einzeln je Anbieter
+*„keine Ausfälle“* zweimal, mit Ausfällen wurden sie erst einzeln je Anbieter
 und danach noch einmal gesammelt aufgeführt. Der zweite Block ist weg — die
 Einzelaufstellung bleibt, sie nennt den Grund.
 
@@ -216,7 +217,7 @@ Anfrage.
 **Nicht löschbare Befehlsdatei.** Der Fehler wurde verschluckt und der Befehl
 trotzdem ausgeführt; die Datei blieb liegen und wurde in jedem weiteren
 Durchgang erneut abgearbeitet. Bei einem Abruf wäre das nur Last — bei
-„Waschmaschine starten" läuft das Gerät jede Runde neu an. Jetzt wird der
+„Waschmaschine starten“ läuft das Gerät jede Runde neu an. Jetzt wird der
 Befehl in diesem Fall **nicht** ausgeführt und der Grund gemeldet.
 
 **Alte PID-Datei** blieb liegen, wenn der Prozess fort war. Sie wird jetzt
@@ -237,10 +238,10 @@ Rückwärtslesen mit `fseek`). Umgestellt auf `fseek`.
 ### Was nicht zutraf
 
 **Fehlende Timeouts bei `requests`.** Jeder einzelne Aufruf in
-`weissware.py` trägt `timeout=30` — vierzehn Stellen, nachgezählt. Richtig
+`weissware.py` trägt `timeout=30` — 17 Stellen, nachgezählt. Richtig
 an dem Punkt ist nur die Folge: 30 s sind lang genug, dass `dienst.sh stop`
-in den harten `kill -9` nach zehn Sekunden laufen kann. Das ist aber ein
-Abwägung zwischen „Abruf abbrechen" und „sauber beenden", kein fehlender
+in den harten `kill -9` nach zehn Sekunden laufen kann. Das ist aber eine
+Abwägung zwischen „Abruf abbrechen“ und „sauber beenden“, kein fehlender
 Timeout.
 
 ### Nebenbefunde
@@ -254,8 +255,10 @@ führt den Pfad ebenfalls als zweites Argument.
 
 **Die fünf Reiter brauchten JavaScript.** `sm-active` wurde ausschließlich
 vom Skript vergeben — ohne JavaScript war keine Fläche sichtbar. Reihenfolge,
-Positivliste und Beschriftung kommen jetzt aus einem einzigen Feld, der
-Server setzt die Klasse selbst.
+Positivliste und Beschriftung kommen jetzt aus einem Feld, der Server setzt
+die Klasse selbst. Die `id` der Bereiche im Rumpf ist die zweite Stelle —
+sie lässt sich nicht miterzeugen, deshalb misst der Reiter Test die
+Übereinstimmung aller drei Stellen nach.
 
 **Es gab kein Uninstall-Skript.** Die Sicherungen mit den Zugangsdaten von bis
 zu drei Herstellerclouds liegen neben dem Konfigordner — gelöscht wird beim
@@ -272,12 +275,12 @@ sie.
   wörtlich aus AudiConnect, Namen und Parameter waren für Weissware neu
   geschrieben — um eine Zeile versetzt. Zehn von 34 Zeilen trugen dadurch
   einen Typ, der nicht zu ihrem Parameter passte (ein virtueller Ausgang mit
-  Schwellwerten, eine Benachrichtigung mit „Ein > 0,5"). Die Kette ist neu
+  Schwellwerten, eine Benachrichtigung mit „Ein > 0,5“). Die Kette ist neu
   gelegt: streng zweieingängige UND/ODER, keine Vorwärtsverweise. Alle 22
   Namen sind die bisherigen.
 * `htmlauth/index.php` gab `$ww_fz['modell']` aus — das Feld gibt es nicht.
   Unter PHP 8 stand die Warnung **in der Tabellenzelle**.
-* Die Prüfzeile „Wie frisch ist das Abbild?" rechnete mit `$cfg['intervall']`,
+* Die Prüfzeile „Wie frisch ist das Abbild?“ rechnete mit `$cfg['intervall']`,
   einem Schlüssel, den es nirgends gibt. Die Schwelle lag damit unabhängig vom
   eingestellten Takt immer bei 600 s — ein rotes Kreuz, das nichts bedeutet.
 * **Ein Programmschlüssel wurde bei Miele und SmartThings verworfen** und der
@@ -287,7 +290,7 @@ sie.
 Dazu: `SOC=` in der Gegenprobe-Tabelle, `ST_BEFEHL` fest auf
 `washerOperatingState` (SmartThings-Geschirrspüler wurden gelesen, aber nicht
 geschaltet), die stillschweigend auf 12 s gedeckelte Wartezeit, die Reiterleiste
-als Schleife — und „aus der **Audi**-Schnittstelle" im Reiter Einstellungen.
+als Schleife — und „aus der **Audi**-Schnittstelle“ im Reiter Einstellungen.
 
 ### Neue Funktionen
 
@@ -315,10 +318,95 @@ als Schleife — und „aus der **Audi**-Schnittstelle" im Reiter Einstellungen.
 * **Ansage** auch bei Störung und erloschener Fernstart-Freigabe, mit
   Ruhezeit. **Beendete Programmläufe** mit Verbrauch werden festgehalten.
 * Der **Wächter** misst das Erzeugnis statt der Prozessnummer, der **Reiter
-  Test** ruft den eigenen Endpunkt wirklich auf und führt 21 statt 15
-  Prüfzeilen.
+  Test** ruft den eigenen Endpunkt wirklich auf und stellt 25 Fragen in 35
+  Prüfzeilen statt 15.
 
 `?aktion=dienst` ist neu: `DIENST;OK=..;GERAETE=..;LAEUFT=..;FERTIG=..;FEHLERFOLGE=..;AUSFAELLE=..;ALTER=..`
+
+## Fassung 0.9.18 — Sicherung, Endpunkt, Update
+
+Eine Durchsicht der veröffentlichten 0.9.17. Fünf schwere Befunde, alle
+gemessen, alle gegen PHP 7.4.33 **und** 8.4.24.
+
+**Die eigene Sicherung war nicht zurückspielbar.** Die Oberfläche schreibt
+bei jedem Speichern den Schlüssel `tts` in die Konfiguration; `ww_vorgaben()`
+kannte ihn nicht, und `ww_sicherung_lesen()` prüft jeden Schlüssel gegen genau
+diese Liste. Ergebnis: der Knopf *Einstellungen sichern* erzeugte eine Datei,
+die der Knopf *Einstellungen zurückspielen* mit „Unbekannte Einstellung: tts“
+grundsätzlich verweigerte — der Umzug auf einen zweiten LoxBerry, der erklärte
+Zweck der beiden Knöpfe, war nie möglich.
+
+**Der unangemeldete Endpunkt legte eine Datei an, bevor er das Token prüfte.**
+`webfrontend/html/index.php` rief `ww_config()`, und die Funktion heilte eine
+fehlende Konfiguration aus der Zweitschrift. Gemessen: ein Aufruf ohne Token
+wurde richtig mit `GRUND=TOKEN` abgewiesen — und legte `weissware.json`
+trotzdem an. Wer die Adresse kannte, schaltete damit eine alte Sicherung
+wieder scharf, samt `steuerung_ein` und altem Aktionstoken. `ww_config()` hat
+jetzt einen Schalter, der Endpunkt ruft `ww_config(false)`.
+
+**Eine Sicherung ohne Aktionstoken leerte das Token — und die Zweitschrift.**
+Die Lesefunktion begann mit `ww_vorgaben()`; alles, was in der Datei fehlte,
+kam aus den Werkseinstellungen. Der Bediener las „17 Werte übernommen“ und
+hatte danach kein Token mehr: der Endpunkt antwortet `KEIN_TOKEN_GESETZT`,
+jeder virtuelle Eingang bekommt 403 und wertet ihn nicht aus, und beim
+nächsten Öffnen der Oberfläche wird ein neues gewürfelt. Grundlage ist jetzt
+der **Bestand**, ein fehlendes Token ist eine Beanstandung, und die
+Zweitschrift wird nur mitgezogen, wenn der Stand ein Token trägt.
+
+**Werte aus der Sicherungsdatei wurden nie geprüft.** Nur die Schlüsselnamen.
+Eine Datei mit `takt_ruhe` als Objekt und `aktionstoken` als Feld ging ohne
+eine einzige Beanstandung durch; aus dem Feld wurde im Endpunkt die
+Zeichenkette `Array` — ein Token, das jeder kennt. Jeder Wert läuft jetzt
+durch dieselben Muster und Grenzen wie das Formular.
+
+**Vier Dateien überlebten kein Update.** `preupgrade.sh` sicherte nur
+`weissware.json` und `zugang.json`. Der Installer räumt beim Upgrade aber auch
+`data/plugins/<ordner>/` ab, und dort liegen `token.json` (die Anmeldung an
+allen drei Herstellerclouds), `geraetenummern.json` (die Adressen in Loxone),
+`laeufe.json` und der Merker `soll_laufen`. Ohne den letzten startete auch der
+Wächter nicht mehr: **das Plugin schaltete sich bei jedem Auto-Update still
+selbst ab.** Alle vier werden jetzt gesichert und zurückgelegt, und der Dienst
+läuft danach wieder an, wenn er vorher lief.
+
+Dazu:
+
+* Die **Sicherungsdatei trägt jetzt die Zugangsdaten** — der Warntext am Knopf
+  behauptete das schon, sie enthielt sie aber nicht. Die Anmeldemarken der
+  Anbieter bleiben draußen; nach einem Umzug ist einmal neu anzumelden.
+* Nach dem Zurückspielen wird der **Dienst nachgezogen**, und es steht dabei,
+  was mit ihm geschah. Die beiden Handler stehen jetzt vor dem Ladeblock —
+  vorher zeigte die Seite nach einem Zurückspielen jedes Feld im Vorzustand
+  und im Reiter *Einbindung in Loxone* das alte Token.
+* **Zugangsdaten werden erst geschrieben, wenn das Formular fehlerfrei ist.**
+  Wer den Takt vertippte und gleichzeitig ein Client-Geheimnis austauschte,
+  las eine Fehlermeldung — und hatte das Geheimnis doch schon ausgetauscht.
+* `weissware.json` bekommt **0600** und wird unteilbar geschrieben. Sie trägt
+  das Aktionstoken, mit dem der Endpunkt schaltende Befehle annimmt; bisher
+  bekam nur `zugang.json` diese Rechte.
+* `ww_dienst_schalter()`, `ww_trockenlauf()` und `ww_dienst()` melden den
+  **Fehlerfall nicht mehr als Erfolg**. Fehlte die virtuelle Umgebung, meldete
+  die Oberfläche „Home Connect ist angemeldet“, während gar nichts lief; ist
+  `exec` gesperrt, blieb der vorbelegte Rückgabewert 0 stehen.
+* Die **Erläuterung zur Baustein-Liste** verwies auf die alte Nummerierung:
+  sechs von sieben Verweisen zeigten auf den falschen Baustein (die
+  UND-Verknüpfung ist #23, nicht #14; die Einschaltverzögerung #18, nicht #15;
+  die Benachrichtigung #28, nicht #21). Wer die Liste abarbeitete, verdrahtete
+  falsch.
+* Die Prüfzeile *Vorlage und Statuszeile* suchte den Endpunkt über
+  `dirname(__DIR__)`. Installiert liegen die Bäume getrennt — sie konnte auf
+  keiner Anlage je etwas messen. Jetzt mit Kandidatenliste.
+* `gewaehlt_text` ist ein **Textthema** und bekommt keinen analogen Eingang
+  mehr; er stand in Loxone dauerhaft auf 0.
+* **19 ASCII-Umschriften** in angezeigtem deutschem Text (`waehrend`,
+  `Oberflaeche`, `heisst`, …) und Reste eines Fahrzeug-Plugins
+  (`carconnectivity`, „mit Fahrzeug prüfen“) sind fort. Der `User-Agent` kommt
+  aus einer Fassungskonstante statt fest aus `0.9.1`.
+* Die englische Hilfe nennt beim MQTT-Abo jetzt wie die deutsche den
+  Unterschied zwischen Gateway **V1** und **V2**.
+
+Nicht behoben, weil ohne Konto und Gerät nicht entscheidbar: ob die Zuordnung
+der Miele-Statuscodes, die SmartThings-Energieeinheit und der
+Home-Connect-Temperatur-Enum stimmen. Das steht weiter unter *ungeprüft*.
 
 ## Fassung 0.9.16 — der Stat-Zwischenspeicher
 Die Protokollkappung (512 000 Byte) stand in
