@@ -10,12 +10,75 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.18 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.19 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.19
+
+- **Der Reiter Test sagt jetzt, ob die MQTT-Veröffentlichung dieses Plugins
+  eingeschaltet ist.** Bis 0.9.18 stand dort nur der Zustand des MQTT-Gateways
+  von LoxBerry — das ist eine Aussage über den LoxBerry, nicht über dieses
+  Plugin. Wer die Veröffentlichung ausgeschaltet hatte, sah trotzdem einen
+  grünen Haken und konnte am Reiter nicht erkennen, dass nichts an den Broker
+  geht. Die neue Zeile steht vor der Gateway-Zeile und ist **grau**, wenn
+  ausgeschaltet — das ist eine Entscheidung, kein Fehler. Anlass: derselbe
+  Befund an BatterieBMS 0.9.17, dort am Gerät gemessen (`Regeln/04`).
+
+- **Das Auswahlfeld zeichnet seinen Pfeil selbst.** Bis 0.9.18 kam er von der
+  Oberfläche des LoxBerry. Am 05.09.2026 am Gerät gemessen (LoxBerry 4.0.0.15,
+  `system/css/components.css`): deren Regel `.lb-content select`
+  gibt es erst seit der neuen Oberfläche, und jede eigene Feldregel mit der
+  Kurzform `background:` löscht sie wieder. Darauf soll sich eine
+  Plugin-Oberfläche nicht verlassen (`Regeln/04`). Sonst ist an dieser
+  Fassung nichts geändert.
+
+### Der Dienst konnte sein Protokoll verlieren, ohne dass es auffiel
+
+`log/plugins` liegt auf einer Ramdisk (`/dev/zram0`). Wird sie geleert — beim
+Neustart, durch LoxBerrys `log_maint`, oder von Hand —, ist die Datei fort. Ein
+`RotatingFileHandler`, der sie beim Start **einmal** geöffnet hat, schreibt
+danach bis zum nächsten Neustart in einen gelöschten Inode: keine
+Fehlermeldung, keine Datei, kein Hinweis. Auch die Rotation greift dann nicht
+mehr.
+
+Diese Fassung benutzt deshalb `WachsameRotation` in `bin/weissware.py` — einen
+umlaufenden Handler, der vor jeder Zeile Gerätenummer und Inode vergleicht und
+nötigenfalls neu öffnet. Die Standardbibliothek hat für den einen Fall den
+`WatchedFileHandler` und für den anderen den `RotatingFileHandler`, aber
+nichts, was beides kann; deshalb die eigene Klasse.
+
+Auf dem LoxBerry geeicht, vier Prüfungen und in beide Richtungen: schreiben,
+nach dem Löschen weiterschreiben, Umlauf bei Überlänge, nach dem Umlauf erneut
+löschen. Mit dem alten Handler ist die Zeile nach dem Löschen verloren und
+bleibt es, mit dem neuen steht sie in der wieder angelegten Datei. Auf einem
+Windows-Arbeitsplatz lässt sich das nicht messen — dort kann eine offene Datei
+gar nicht gelöscht werden.
+
+Aufgefallen ist die Bauart am Heimkino-Plugin, dessen Dienst sieben Stunden
+ohne Protokolldatei lief, und am laufenden Gerät belegt: der
+Midea2Lox-Dienst hielt `midea2lox.log (deleted)` offen, während unter
+demselben Namen längst eine neue Datei fortgeschrieben wurde — von außen sah
+das Plugin gesund aus. Elf Linien tragen dieselbe Bauart; alle elf sind am
+06.09.2026 nachgezogen worden.
+
+**Die zweite Hälfte gehört dem Startskript.** `bin/dienst.sh` hängte die
+Ausgabe des Dienstes mit `nohup … >> "$LOGDATEI"` an **dieselbe** Datei, die
+der Handler führt. Damit hält die Shell einen zweiten, anhängenden Deskriptor
+darauf — und der bleibt auf der gelöschten Datei stehen, gleich wie gut das
+Programm nachfasst. Am Gerät gemessen (06.09.2026): sieben laufende Dienste
+hielten so eine gelöschte Protokolldatei offen. Die Ausgabe geht jetzt in
+`weissware_start.log`, das bei jedem Start geleert wird; das Protokoll gehört
+allein dem Handler. Übernommen von AnkerSolix, das es seit 0.9.6 so macht.
+
+Im Sandkasten am Gerät geprüft, in beide Richtungen: mit dem alten Skript
+steht die Dienstausgabe im Protokoll und es gibt keine Startdatei, mit dem
+neuen ist es umgekehrt — Start, Startdatei, unberührtes Protokoll und Stopp
+je sechs von sechs.
+
 
 ## Warum ein Plugin und nicht der native Baustein
 
