@@ -10,12 +10,24 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.19 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.20 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.20
+
+**Das Installationsprotokoll behauptete, einen Dienst angehalten zu haben, der
+gar nicht lief.** „Laufender Dienst angehalten." stand bedingungslos hinter
+`dienst.sh stop || true`; `anhalten()` gibt ohne laufenden Dienst „laeuft
+nicht" und 0 zurück, und die Antwort ging nach `/dev/null`. Die Meldung hängt
+jetzt am Merker `backup.lief`, den der Abschnitt darüber ohnehin setzt — und
+der auch darüber entscheidet, ob `postinstall.sh` den Dienst wieder startet.
+
+Geprüft mit `Werkzeuge/preupgrade_meldung_pruefen.py`: gegen 0.9.20 grün, gegen
+0.9.19 rot. **Am Verhalten ändert sich nichts.**
 
 ## Neu in 0.9.19
 

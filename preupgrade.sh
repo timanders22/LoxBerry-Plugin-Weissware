@@ -47,9 +47,19 @@ fi
 # kill auf den Inhalt der PID-Datei traefe nach Nummernrecycling einen
 # fremden Prozess - erst TERM, zwei Sekunden spaeter KILL.
 DIENST="$BASE/bin/plugins/$PFOLDER/dienst.sh"
+# Die Meldung haengt am Merker, den der Abschnitt darueber setzt.
+#
+# `anhalten()` in dienst.sh gibt auch ohne laufenden Dienst 0 zurueck,
+# und hier stand die Zeile ohnehin unbedingt: das Protokoll meldete bei
+# jedem Update einen angehaltenen Dienst. Gemessen 11.09.2026 ueber den
+# Bestand; derselbe Fehler steckte in vier Linien.
 if [ -x "$DIENST" ]; then
     "$DIENST" stop >/dev/null 2>&1 || true
-    echo "<INFO> Laufender Dienst angehalten."
+    if [ -f "$SICHER/$PFOLDER.backup.lief" ]; then
+        echo "<INFO> Laufender Dienst angehalten."
+    else
+        echo "<INFO> Der Dienst lief nicht - es war nichts anzuhalten."
+    fi
 elif [ -f "$PDATA/dienst.pid" ]; then
     P=$(cat "$PDATA/dienst.pid" 2>/dev/null)
     case "$P" in
