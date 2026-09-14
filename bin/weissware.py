@@ -1329,11 +1329,28 @@ def hc_token_erneuern(sitzung, cfg: dict, z: dict, marken: dict) -> str:
         return hc["access_token"]
     if not hc.get("refresh_token"):
         raise RuntimeError("Home Connect ist nicht angemeldet.")
+    # client_secret NUR mitsenden, wenn eines hinterlegt ist.
+    #
+    # Eine Anwendung, die bei Home Connect mit dem Device Flow angelegt wurde,
+    # ist ein oeffentlicher Client: das Portal vergibt ihr eine Client-ID und
+    # KEIN Geheimnis. Bis 0.9.21 ging das Feld bedingungslos mit, bei leerem
+    # Feld also "client_secret=" - und eine leere Client-Anmeldung ist etwas
+    # anderes als gar keine; sie kann mit 400 abgewiesen werden. Die Anmeldung
+    # selbst (Device Flow) haette weiter funktioniert, die ERNEUERUNG nach
+    # Ablauf des Zugriffstokens nicht: das Plugin haette rund einen Tag
+    # gearbeitet und dann aufgehoert.
+    #
+    # ABGELEITET, NICHT GEMESSEN: hier gibt es kein Home-Connect-Konto. Der
+    # Weg ist trotzdem der sichere - ein weggelassener optionaler Parameter
+    # ist nie schlechter als ein leerer -, und fuer Anwendungen MIT Geheimnis
+    # aendert sich nichts.
+    daten = {"grant_type": "refresh_token",
+             "refresh_token": hc["refresh_token"],
+             "client_id": z["hc_client_id"]}
+    if z["hc_client_secret"]:
+        daten["client_secret"] = z["hc_client_secret"]
     a = sitzung.post(hc_host(cfg) + "/security/oauth/token",
-                     data={"grant_type": "refresh_token",
-                           "refresh_token": hc["refresh_token"],
-                           "client_secret": z["hc_client_secret"]},
-                     timeout=30)
+                     data=daten, timeout=30)
     a.raise_for_status()
     neu = a.json() or {}
     marken["homeconnect"] = {
@@ -1938,11 +1955,14 @@ def hc_anmeldung_starten() -> int:
               % (a.status_code, (a.text or "")[:300]))
         return 1
     d = a.json() or {}
+    # Leerraum abstreifen: ein Tabulator oder Zeilenumbruch im Benutzercode
+    # macht die fertige Adresse ungueltig - Home Connect antwortet dann mit
+    # "invalid_request: Illegal URI reference ... expected query-char".
     json_schreiben(PDATA / "hc_anmeldung.json", {
-        "device_code": d.get("device_code"),
-        "user_code": d.get("user_code"),
-        "verification_uri": d.get("verification_uri"),
-        "verification_uri_complete": d.get("verification_uri_complete"),
+        "device_code": str(d.get("device_code") or "").strip(),
+        "user_code": str(d.get("user_code") or "").strip(),
+        "verification_uri": str(d.get("verification_uri") or "").strip(),
+        "verification_uri_complete": str(d.get("verification_uri_complete") or "").strip(),
         "laeuft_ab": int(time.time()) + ganz(d.get("expires_in"), 300),
         "intervall": ganz(d.get("interval"), 5),
     }, rechte=0o600)

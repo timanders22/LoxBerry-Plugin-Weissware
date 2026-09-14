@@ -1010,6 +1010,27 @@ if (!empty($ww_zustand['fehler'])) { ?>
 <table class="sm-tbl">
 <tr><td><?= ww_e(ww_t('EINST.HC_CODE')) ?></td><td><b class="sm-mono" style="font-size:1.3em;"><?= ww_e($ww_hc_an['user_code']) ?></b></td></tr>
 <tr><td><?= ww_e(ww_t('EINST.HC_ADRESSE')) ?></td><td><span class="sm-mono"><?= ww_e($ww_hc_an['verification_uri']) ?></span></td></tr>
+<?php
+/*
+ * Die FERTIGE Adresse, wenn Home Connect eine mitgeschickt hat - sie traegt
+ * den Benutzercode bereits in sich.
+ *
+ * Bis 0.9.21 stand sie nur in hc_anmeldung.json und wurde nie angezeigt; wer
+ * sich anmelden wollte, musste den Code aus der Zelle darueber von Hand
+ * herausklauben. Markiert man dabei ueber die Zellgrenze, kopiert der Browser
+ * einen TABULATOR mit, und Home Connect weist die Adresse ab:
+ * "invalid_request: Illegal URI reference ... user_code=\tXXXX-9999".
+ * Genau so ist es am 15.09.2026 passiert.
+ *
+ * Kein Kopieren mehr noetig: ein Klick genuegt. Angezeigt wird sie nur, wenn
+ * sie mit http:// oder https:// beginnt - eine Adresse aus fremder Hand
+ * gehoert geprueft, bevor sie in ein href geht.
+ */
+$ww_hc_fertig = isset($ww_hc_an['verification_uri_complete'])
+    ? trim((string) $ww_hc_an['verification_uri_complete']) : '';
+if ($ww_hc_fertig !== '' && preg_match('#^https?://#', $ww_hc_fertig)) { ?>
+<tr><td><?= ww_e(ww_t('EINST.HC_ADRESSE_DIREKT')) ?></td><td><a class="sm-mono" href="<?= ww_e($ww_hc_fertig) ?>" target="_blank" rel="noopener noreferrer"><?= ww_e($ww_hc_fertig) ?></a></td></tr>
+<?php } ?>
 <tr><td><?= ww_e(ww_t('EINST.HC_GUELTIG')) ?></td><td><?= max(0, (int) $ww_hc_an['laeuft_ab'] - time()) ?> <?= ww_e(ww_t('ALLG.SEKUNDEN')) ?></td></tr>
 </table>
 <?php } else { ?>

@@ -10,12 +10,53 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.21 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.22 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.22
+
+**Die Home-Connect-Anmeldung war zum Abtippen gebaut — und daran gescheitert.**
+Bis 0.9.21 zeigte die Oberfläche den Benutzercode und die Adresse in **zwei
+Tabellenzellen**. Wer den Code mit der Maus markierte und dabei über die
+Zellgrenze geriet, kopierte einen **Tabulator** mit; Home Connect wies die
+Adresse dann ab:
+
+```
+{"error":"invalid_request","error_description":"Illegal URI reference:
+ Invalid input '\t', expected query-char … ?user_code=\tI5JI-9119"}
+```
+
+Dabei liefert Home Connect die **fertige Adresse** mit dem Code darin
+(`verification_uri_complete`), und der Dienst legte sie auch ab — angezeigt
+wurde sie nie. Jetzt steht sie als **anklickbarer Verweis** in der Tabelle:
+ein Klick, kein Kopieren. Angezeigt wird sie nur, wenn sie mit `http://` oder
+`https://` beginnt — eine Adresse aus fremder Hand gehört geprüft, bevor sie
+in ein `href` geht. Zusätzlich streift der Dienst Leerraum von Code und
+Adressen ab, bevor er sie ablegt.
+
+**Das Client Secret ist bei Home Connect optional — jetzt behandelt das Plugin
+es auch so.** Eine Anwendung, die im Entwicklerportal mit dem **Device Flow**
+angelegt wurde, ist ein öffentlicher Client: sie bekommt eine Client-ID und
+**kein** Geheimnis. Die Anmeldung kam damit immer schon aus; die **Erneuerung**
+des Zugriffstokens schickte `client_secret` aber bedingungslos mit, bei leerem
+Feld also `client_secret=`. Eine leere Client-Anmeldung ist etwas anderes als
+gar keine und kann abgewiesen werden — das Plugin hätte rund einen Tag
+gearbeitet und dann aufgehört, Token zu erneuern. Jetzt geht das Geheimnis nur
+mit, wenn eines hinterlegt ist; dafür geht die Client-ID immer mit, wie es für
+einen öffentlichen Client vorgesehen ist. Für Anwendungen **mit** Geheimnis
+ändert sich nichts.
+
+> **Abgeleitet, nicht gemessen.** Zu dieser Linie gibt es hier kein
+> Home-Connect-Konto. Dass ein leeres `client_secret` abgewiesen *wird*, ist
+> nicht nachgemessen — der neue Weg ist aber in jedem Fall der sichere: ein
+> weggelassener optionaler Parameter ist nie schlechter als ein leerer.
+
+Geprüft gegen PHP 7.4.33 und 8.4.24, Sprachdateien 553 Schlüssel DE/EN
+deckungsgleich. Freigabetor: 17 Prüfungen, 0 Beanstandungen.
 
 ## Neu in 0.9.21
 
