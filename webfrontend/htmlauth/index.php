@@ -1167,12 +1167,15 @@ if ($ww_ang['miele']) { ?>
 <h2><?= ww_e(ww_t('MQTT.H_THEMEN')) ?></h2>
 <p class="sm-hilfe"><?= ww_t('MQTT.THEMEN_ERKLAERUNG') ?></p>
 <table class="sm-tbl">
-<tr><th><?= ww_e(ww_t('MQTT.T_THEMA')) ?></th><th><?= ww_e(ww_t('MQTT.T_BEDEUTUNG')) ?></th></tr>
-<?php foreach (ww_mqtt_themen() as $ww_thema => $ww_schluessel) { ?>
+<tr><th><?= ww_e(ww_t('MQTT.T_THEMA')) ?></th><th><?= ww_e(ww_t('MQTT.T_BEDEUTUNG')) ?></th><th><?= ww_e(ww_t('MQTT.T_RETAIN')) ?></th></tr>
+<?php $ww_rt = ww_mqtt_retain();
+foreach (ww_mqtt_themen() as $ww_thema => $ww_schluessel) { ?>
 <tr><td><span class="sm-mono"><?= ww_e($ww_cfg['mqtt_topic'] . '/' . $ww_thema) ?></span></td>
-    <td><?= ww_t($ww_schluessel) ?></td></tr>
+    <td><?= ww_t($ww_schluessel) ?></td>
+    <td><?= ww_e(ww_t(!empty($ww_rt[$ww_thema]) ? 'MQTT.RETAIN_JA' : 'MQTT.RETAIN_NEIN')) ?></td></tr>
 <?php } ?>
 </table>
+<p class="sm-hilfe"><?= ww_t('MQTT.RETAIN_ERKLAERUNG') ?></p>
 <p class="sm-hilfe"><?= ww_t('MQTT.PLATZHALTER') ?></p>
 </div>
 

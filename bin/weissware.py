@@ -423,6 +423,114 @@ def mqtt_zustand() -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Retain je THEMENSTAMM
+#
+# Hausstandard seit 03.09.2026 (Regeln/07): Zustaende retained, Messwerte mit
+# Zeitbezug nicht, das Lebenszeichen nie. Bis 0.9.20 sendete dieses Plugin
+# ALLES mit "publish" - nach einem Neustart von Miniserver oder Gateway stand
+# in Loxone bis zum naechsten Takt (bis 300 s) der alte Wert.
+#
+# Die Entscheidung faellt je STAMM in dieser Tabelle, nicht am Aufruf. Der
+# Grund steht in Regeln/07: ein Aufruf, der Lebenszeichen und Zustand zusammen
+# schickt, kann nur eines von beiden richtig machen (ACTiKamera-Befund).
+#
+# Die Schluessel sind dieselben wie in ww_mqtt_themen() der PHP-Bibliothek;
+# der Reiter Test haelt beide Tabellen und die wirklich gesendeten Staemme
+# gegeneinander.
+#
+# ABWAEGUNGEN, die nicht auf der Hand liegen:
+#
+#   ts              RETAINED. Das ist NICHT das Lebenszeichen "ich lief
+#                   gerade" - der Wert wandert nur bei einem ERFOLGREICHEN
+#                   Abruf weiter und sagt damit genau, wann zuletzt gemessen
+#                   wurde. Ein absoluter Zeitpunkt kann nicht "aktuell
+#                   erscheinen"; ohne Retain koennte Loxone nach einem
+#                   Neustart das Alter gar nicht rechnen, und ein toter Dienst
+#                   waere von einem gesunden nicht zu unterscheiden.
+#                   Gegenbeispiel aus dem Bestand: Spotpreis Tibber 0.9.13
+#                   hatte status/ts retained - dort war es ein Pulsschlag bei
+#                   JEDEM Lauf, und das war falsch.
+#   fertig_um       RETAINED, aus demselben Grund: ein absoluter Zeitpunkt.
+#   restzeit_min    NICHT retained - eine DAUER altert von selbst. Sechzig
+#   startzeit_min   Minuten Restzeit, eine Woche zurueckbehalten, waeren eine
+#   laufzeit_min    stille Falschaussage.
+#   fortschritt     NICHT retained - waechst mit der Zeit, altert also ebenso.
+#   energie_kwh     NICHT retained. Beides sind Momentanwerte des LAUFENDEN
+#   wasser_l        Programms aus ecoFeedback und sind nach dem Quittieren
+#                   fort; zurueckbehalten stuende der Verbrauch des letzten
+#                   Waschgangs dauerhaft da, als liefe er noch. Ein
+#                   ZAEHLERSTAND waere ein Zustand - diese beiden sind keiner.
+#   temperatur      NICHT retained - Messwert.
+#   schleuderdrehzahl  RETAINED: keine Messung, sondern eine Einstellung des
+#                   gewaehlten Programms.
+#
+# Ein LEERER Wert geht immer als "publish" hinaus, egal was hier steht: eine
+# leere Nutzlast mit Retain LOESCHT das Thema im Broker (am 14.09.2026 am
+# Geraet gemessen).
+RETAIN = {
+    # --- anlagenweit ---
+    "ok":                         True,
+    "ts":                         True,
+    "fehler_folge":               True,
+    "geraete":                    True,
+    "ausfaelle":                  True,
+    "ausfall/homeconnect":        True,
+    "ausfall/miele":              True,
+    "ausfall/smartthings":        True,
+    # --- je Geraet ---
+    "geraetN/name":               True,
+    "geraetN/anbieter":           True,
+    "geraetN/zustand":            True,
+    "geraetN/zustand_text":       True,
+    "geraetN/laeuft":             True,
+    "geraetN/fertig":             True,
+    "geraetN/verbunden":          True,
+    "geraetN/tuer_offen":         True,
+    "geraetN/fernstart_frei":     True,
+    "geraetN/fernbedienung_frei": True,
+    "geraetN/netz_ein":           True,
+    "geraetN/schleuderdrehzahl":  True,
+    "geraetN/programm_text":      True,
+    "geraetN/gewaehlt_text":      True,
+    "geraetN/fertig_um":          True,
+    "geraetN/fortschritt":        False,
+    "geraetN/restzeit_min":       False,
+    "geraetN/startzeit_min":      False,
+    "geraetN/laufzeit_min":       False,
+    "geraetN/energie_kwh":        False,
+    "geraetN/wasser_l":           False,
+    "geraetN/temperatur":         False,
+}
+
+
+def thema_stamm(thema: str) -> str:
+    """Bildet aus einem gesendeten Thema seinen Stamm fuer die RETAIN-Tabelle.
+
+    geraet3/zustand -> geraetN/zustand ;  ausfall/miele bleibt ;  ok bleibt.
+    Die Nummer wird nur am ANFANG und nur hinter "geraet" ersetzt - ein Feld,
+    das selbst auf eine Ziffer endet, bleibt unberuehrt.
+    """
+    t = str(thema).strip("/")
+    if t.startswith("geraet"):
+        rest = t[len("geraet"):]
+        ziffern = ""
+        for z in rest:
+            if z.isdigit():
+                ziffern += z
+            else:
+                break
+        if ziffern and rest[len(ziffern):len(ziffern) + 1] == "/":
+            return "geraetN" + rest[len(ziffern):]
+    return t
+
+
+def retain_fuer(thema: str) -> bool:
+    """Fragt die Tabelle. Ein unbekannter Stamm geht als publish hinaus -
+    fail safe: lieber fluechtig als eine falsche Dauerbehauptung im Broker."""
+    return bool(RETAIN.get(thema_stamm(thema), False))
+
+
 def mqtt_senden(paare: dict, praefix: str) -> None:
     z = mqtt_zustand()
     if not z["udpport"]:
@@ -443,7 +551,14 @@ def mqtt_senden(paare: dict, praefix: str) -> None:
         for k, v in paare.items():
             if v is None:
                 continue
-            s.sendto(f"publish {praefix}/{k} {mqtt_wert_saeubern(v)}".encode("utf-8"), ("127.0.0.1", z["udpport"]))
+            wert = mqtt_wert_saeubern(v)
+            # Der UDP-Eingang des Gateways kennt "publish" und "retain"
+            # (mqttgateway.pl:293, Ausfuehrung in :354-357). Ein leerer Wert
+            # geht IMMER als publish hinaus: eine leere Nutzlast mit Retain
+            # loescht das zurueckbehaltene Thema im Broker.
+            befehl = "retain" if (wert != "" and retain_fuer(k)) else "publish"
+            s.sendto(f"{befehl} {praefix}/{k} {wert}".encode("utf-8"),
+                     ("127.0.0.1", z["udpport"]))
     except OSError as err:
         melde_gebremst("mqtt_senden", f"MQTT: Senden fehlgeschlagen ({err}).")
     finally:

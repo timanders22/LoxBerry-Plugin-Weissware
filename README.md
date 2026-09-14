@@ -10,12 +10,71 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.20 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.21 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.21
+
+**Zustände gehen jetzt zurückbehalten (retained) an den Broker.** Bis 0.9.20
+sendete dieses Plugin *alles* mit dem Befehlswort `publish`. Nach einem
+Neustart des Miniservers oder des MQTT-Gateways stand in Loxone deshalb bis
+zum nächsten Takt — bei Ruhetakt **bis zu 300 Sekunden** — der alte Wert, und
+ein virtueller Eingang zeigt einen alten Wert genauso an wie einen frischen.
+
+Der Hausstandard (Regeln/07, seit 03.09.2026) lautet: Zustände zurückbehalten,
+Messwerte mit Zeitbezug nicht, das Lebenszeichen nie. Die Entscheidung fällt
+**je Themenstamm in einer Tabelle**, nicht am einzelnen Aufruf — ein Aufruf,
+der Zustand und Lebenszeichen zusammen verschickt, kann nur eines von beiden
+richtig machen.
+
+**23 von 30 Themenstämmen** sind zurückbehalten. Nicht zurückbehalten sind die
+sieben, die von selbst altern:
+
+| Thema | warum nicht |
+|---|---|
+| `geraetN/fortschritt` | wächst mit der Zeit |
+| `geraetN/restzeit_min` | eine Dauer — 60 Minuten Restzeit, eine Woche aufbewahrt, wären eine stille Falschaussage |
+| `geraetN/startzeit_min` | Dauer |
+| `geraetN/laufzeit_min` | Dauer |
+| `geraetN/energie_kwh` | Momentanwert des laufenden Programms, kein Zählerstand — nach dem Quittieren ist er fort |
+| `geraetN/wasser_l` | ebenso |
+| `geraetN/temperatur` | Messwert |
+
+Zwei Entscheidungen, die nicht auf der Hand liegen, und ihre Begründung:
+
+* **`ts` ist zurückbehalten.** Das ist kein Lebenszeichen „ich lief gerade":
+  der Wert wandert nur bei einem *erfolgreichen* Abruf weiter und sagt damit
+  genau, wann zuletzt gemessen wurde. Ein absoluter Zeitpunkt kann nicht
+  „aktuell erscheinen"; ohne ihn könnte Loxone nach einem Neustart das Alter
+  gar nicht rechnen, und ein toter Dienst wäre von einem gesunden nicht zu
+  unterscheiden. `geraetN/fertig_um` ist aus demselben Grund zurückbehalten.
+* **`geraetN/schleuderdrehzahl` ist zurückbehalten** — sie ist keine Messung,
+  sondern eine Einstellung des gewählten Programms.
+
+**Ein leerer Wert geht immer als `publish` hinaus**, egal was die Tabelle
+sagt: eine leere Nutzlast mit Retain *löscht* das Thema im Broker.
+
+Die Tabelle steht an zwei Stellen — `ww_mqtt_retain()` in der Oberfläche und
+`RETAIN` in `bin/weissware.py` —, weil die eine sie anzeigen und die andere
+sie anwenden muss. Zwei Tabellen sind zwei Wahrheiten, deshalb hält die neue
+Zeile **„Stimmen die beiden Retain-Tabellen überein?"** im Reiter *Test* beide
+samt der Themenliste gegeneinander; sie ist durch Rückbau in beide Richtungen
+geeicht (ein entfernter Eintrag und ein gekippter Wert machen sie rot und
+nennen den Namen). Die Themenliste im Reiter *MQTT* hat eine Spalte **Retain**
+bekommen.
+
+> **Was das für bestehende Anlagen heißt:** nichts, was jemand einstellen
+> müsste. Beim ersten Durchlauf nach dem Update schreibt der Dienst die
+> Zustände zurückbehalten in den Broker; ab da überstehen sie einen Neustart.
+> Alte, nicht zurückbehaltene Werte verschwinden von selbst.
+
+**Nicht am Gerät gemessen:** dass die zurückbehaltenen Themen wirklich im
+Broker stehen. Der UDP-Eingang des Gateways verwirft an dieser Anlage in
+Stößen; „Thema X ist nicht angekommen" ist dort kein Beweis (Regeln/07).
 
 ## Neu in 0.9.20
 

@@ -104,6 +104,39 @@ function ww_pruefungen()
                 : sprintf(ww_t('TEST.A_THEMEN_OK'), count($py_felder)));
     }
 
+    /* Stimmen die beiden Retain-Tabellen ueberein?
+     *
+     * Retain wird je Themenstamm entschieden (Regeln/07). Die Entscheidung
+     * steht an ZWEI Stellen - in ww_mqtt_retain() hier und in RETAIN in
+     * bin/weissware.py -, weil die Oberflaeche sie anzeigen und der Dienst
+     * sie anwenden muss. Zwei Tabellen sind zwei Wahrheiten; diese Zeile
+     * haelt sie samt der Themenliste gegeneinander.
+     *
+     * Geeicht durch Rueckbau: ein entfernter Eintrag und ein gekippter Wert
+     * machen sie rot und nennen den Namen. */
+    $rt_php = ww_mqtt_retain();
+    $rt_py  = ww_py_retain();
+    $rt_th  = array_keys(ww_mqtt_themen());
+    if ($rt_py === null) {
+        $zeilen[] = ww_pruefzeile(-1, ww_t('TEST.F_RETAIN'), ww_t('TEST.A_RETAIN_UNLESBAR'));
+    } else {
+        $rt_ab = array_merge(
+            array_diff(array_keys($rt_php), array_keys($rt_py)),
+            array_diff(array_keys($rt_py), array_keys($rt_php)),
+            array_diff($rt_th, array_keys($rt_php)),
+            array_diff(array_keys($rt_php), $rt_th));
+        foreach ($rt_php as $rt_k => $rt_v) {
+            if (array_key_exists($rt_k, $rt_py) && $rt_py[$rt_k] !== $rt_v) {
+                $rt_ab[] = $rt_k;
+            }
+        }
+        $rt_ab = array_values(array_unique($rt_ab));
+        $zeilen[] = ww_pruefzeile($rt_ab ? 0 : 1, ww_t('TEST.F_RETAIN'),
+            $rt_ab ? sprintf(ww_t('TEST.A_RETAIN_AB'), ww_e(implode(', ', $rt_ab)))
+                   : sprintf(ww_t('TEST.A_RETAIN_OK'),
+                             count(array_filter($rt_php)), count($rt_php)));
+    }
+
     /* Reiterleiste, Bereiche und Positivliste fuehren dieselben Namen.
      * Fehlt einer in der Positivliste, ist der Reiter sichtbar und anklickbar
      * - aber nach jedem Absenden springt die Seite zurueck auf Einstellungen.

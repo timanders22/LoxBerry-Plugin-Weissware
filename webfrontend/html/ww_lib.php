@@ -824,6 +824,87 @@ function ww_abo_text()
 
 
 /** Alle Themen, die der Dienst veroeffentlicht, mit ihrer Bedeutung. */
+/**
+ * Retain je Themenstamm - dieselbe Entscheidung wie RETAIN in
+ * bin/weissware.py, und dieselben Schluessel wie ww_mqtt_themen().
+ *
+ * Hausstandard seit 03.09.2026 (Regeln/07): Zustaende retained, Messwerte mit
+ * Zeitbezug nicht, das Lebenszeichen nie. Bis 0.9.20 sendete dieses Plugin
+ * ALLES mit "publish".
+ *
+ * Zwei Tabellen sind zwei Wahrheiten - deshalb haelt die Zeile
+ * "Stimmen beide Retain-Tabellen ueberein?" im Reiter Test diese hier, die
+ * Tabelle im Dienst UND die Themenliste gegeneinander. Wer hier etwas
+ * aendert, aendert es in bin/weissware.py mit.
+ *
+ * Die Abwaegungen, die nicht auf der Hand liegen, stehen ausfuehrlich am
+ * Kopf der Tabelle in bin/weissware.py: ts und fertig_um sind ABSOLUTE
+ * Zeitpunkte und damit retained; restzeit_min, startzeit_min, laufzeit_min
+ * und fortschritt altern von selbst; energie_kwh und wasser_l sind
+ * Momentanwerte des laufenden Programms, kein Zaehlerstand.
+ */
+function ww_mqtt_retain()
+{
+    return array(
+        'ok'                         => true,
+        'ts'                         => true,
+        'fehler_folge'               => true,
+        'geraete'                    => true,
+        'ausfaelle'                  => true,
+        'ausfall/homeconnect'        => true,
+        'ausfall/miele'              => true,
+        'ausfall/smartthings'        => true,
+        'geraetN/name'               => true,
+        'geraetN/anbieter'           => true,
+        'geraetN/zustand'            => true,
+        'geraetN/zustand_text'       => true,
+        'geraetN/laeuft'             => true,
+        'geraetN/fertig'             => true,
+        'geraetN/verbunden'          => true,
+        'geraetN/tuer_offen'         => true,
+        'geraetN/fernstart_frei'     => true,
+        'geraetN/fernbedienung_frei' => true,
+        'geraetN/netz_ein'           => true,
+        'geraetN/schleuderdrehzahl'  => true,
+        'geraetN/programm_text'      => true,
+        'geraetN/gewaehlt_text'      => true,
+        'geraetN/fertig_um'          => true,
+        'geraetN/fortschritt'        => false,
+        'geraetN/restzeit_min'       => false,
+        'geraetN/startzeit_min'      => false,
+        'geraetN/laufzeit_min'       => false,
+        'geraetN/energie_kwh'        => false,
+        'geraetN/wasser_l'           => false,
+        'geraetN/temperatur'         => false,
+    );
+}
+
+/** Liest die RETAIN-Tabelle aus bin/weissware.py - statisch, ohne Python. */
+function ww_py_retain()
+{
+    $datei = ww_paths()['bindir'] . '/weissware.py';
+    if (!is_file($datei)) {
+        return null;
+    }
+    $q = (string) @file_get_contents($datei);
+    $a = strpos($q, "\nRETAIN = {");
+    if ($a === false) {
+        return null;
+    }
+    $e = strpos($q, "\n}", $a);
+    if ($e === false) {
+        return null;
+    }
+    $block = substr($q, $a, $e - $a);
+    $aus = array();
+    if (preg_match_all('/"([^"]+)"\s*:\s*(True|False)/', $block, $m, PREG_SET_ORDER)) {
+        foreach ($m as $t) {
+            $aus[$t[1]] = ($t[2] === 'True');
+        }
+    }
+    return $aus ? $aus : null;
+}
+
 function ww_mqtt_themen()
 {
     return array(
