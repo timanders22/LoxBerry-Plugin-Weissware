@@ -10,12 +10,73 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.22 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.23 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.23
+
+**Der Wächter startete den gesunden Dienst neu — und hob dabei die
+Fehlerbremse auf.** Am Gerät gemessen:
+
+```
+Waechter: der Dienst laeuft, hat aber seit 1508 s kein Abbild geschrieben
+          (Grenze 1500 s) - Neustart.
+```
+
+Zwei Zahlen aus zwei Stellen, die nichts voneinander wussten:
+
+| | Formel | bei `takt_ruhe = 300` |
+|---|---|---|
+| Wächtergrenze | `max(180, 5 × takt_ruhe)` | **1500 s** |
+| Fehlerbremse | `min(3600, takt_ruhe × min(8, fehler_folge))` | ab 5 Fehlversuchen **1500 s**, dann 1800, 2100 … |
+
+Der Wächter misst, was der Dienst **hinterlässt** — das Abbild, und das
+entsteht nur nach einem abgeschlossenen Durchlauf. Sobald die Bremse die
+Grenze erreichte, schlief der Dienst planmäßig länger, als der Wächter
+Stillstand duldete.
+
+**Schlimmer als der überflüssige Neustart:** er setzt `fehler_folge` zurück.
+Die Bremse, die eine ausgefallene Anbieter-Schnittstelle schonen soll
+(Ratengrenzen, HTTP 429), wurde damit im Takt der Wächtergrenze aufgehoben
+und konnte ihren Zweck **nie** erreichen. Ausgelöst hat es ein ganz
+gewöhnlicher Anlass: das Plugin war eine Stunde lang nicht angemeldet.
+
+**Der Dienst sagt jetzt, bis wann er absichtlich pausiert.** Er schreibt
+`pause_bis` in seinen Zustand, und der Wächter liest es über die neue
+Auskunft `ww_pause_bis()`. Damit kann er unterscheiden, was er vorher nicht
+unterscheiden konnte: *schläft mit Absicht* gegen *hängt*. Gehalten wird
+weiterhin beides — ein wirklich stehengebliebener Dienst wird neu gestartet
+wie bisher.
+
+Drei Vorsichtsmaßnahmen, jede gegen einen Fehler, den es im Haus schon
+gegeben hat:
+
+- `pause_bis` geht bei **jedem** Zustandsschreiben mit, auch als `0`.
+  `zustand_schreiben()` mischt in den Bestand — ein weggelassenes Feld bliebe
+  stehen, und eine liegengebliebene Pause hätte den Wächter dauerhaft
+  stillgelegt. Genau diese Falle hatte 0.9.7 mit der Ausfallliste.
+- Eine Pause, die weiter als **3900 s** in der Zukunft liegt, wird nicht
+  geglaubt: der Dienst deckelt seine Bremse selbst bei 3600 s. Ein Wächter,
+  den eine einzige verdorbene Zahl dauerhaft stilllegen kann, ist keiner.
+- Fehlt das Feld ganz — also bei einer Zustandsdatei aus 0.9.22 oder älter —,
+  verhält sich der Wächter wie bisher.
+
+Der Wächter fragt erst dann nach der Pause, wenn ohnehin ein Neustart
+anstünde; er läuft minütlich, und ein zweiter PHP-Aufruf je Minute wäre
+Verschwendung für einen Fall, der fast nie eintritt.
+
+**Am Gerät in beide Richtungen geeicht** (Wegwerfbaum unter `/tmp`, echter
+Vorgang als laufender Dienst), sechs Fälle, alle wie vorher festgelegt:
+altes Abbild mit echter Pause → kein Neustart; mit `pause_bis = 0`, mit
+verdorbenem Wert und mit fehlendem Feld → Neustart; frisches Abbild mit und
+ohne Pause → nichts.
+
+Geprüft gegen PHP 7.4.33 und 8.4.24, `bash -n` für `dienst.sh`. Freigabetor:
+17 Prüfungen, 0 Beanstandungen.
 
 ## Neu in 0.9.22
 

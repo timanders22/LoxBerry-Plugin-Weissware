@@ -223,6 +223,46 @@ case "$1" in
         [ "$GRENZE" -ge 180 ] || GRENZE=180
         ALTER=$((JETZT - STAND))
         [ "$ALTER" -gt "$GRENZE" ] || exit 0
+        # NEU in 0.9.23: schlaeft der Dienst mit ABSICHT?
+        #
+        # Das Abbild sagt nur, wann zuletzt ein Durchlauf fertig wurde. Ob
+        # niemand mehr arbeitet oder ob die Fehlerbremse laeuft, steht da
+        # nicht drin - und die Bremse erreicht ab dem fuenften Fehlversuch
+        # genau diese Grenze (beide 1500 s bei takt_ruhe 300). Bis 0.9.22
+        # startete der Waechter deshalb einen gesunden Dienst neu, und weil
+        # der Neustart fehler_folge zuruecksetzt, hob er die Bremse gleich
+        # mit auf. Am Geraet gemessen am 15.09.2026.
+        #
+        # Gefragt wird erst HIER, nicht oben: nur wenn ohnehin ein Neustart
+        # anstuende. Der Waechter laeuft minuetlich; ein zweiter
+        # PHP-Aufruf je Minute waere Verschwendung fuer einen Fall, der fast
+        # nie eintritt.
+        PAUSE=$(php -r "require '$LIB'; echo ww_pause_bis();" 2>/dev/null)
+        case "$PAUSE" in
+            ''|*[!0-9]*) PAUSE=0 ;;
+        esac
+        # Obergrenze gegen einen verdorbenen oder liegengebliebenen Wert: der
+        # Dienst deckelt seine Bremse selbst bei 3600 s. Was weiter in der
+        # Zukunft liegt, ist keine Pause, sondern ein Fehler - und ein
+        # Waechter, den man mit einer einzigen Zahl dauerhaft stilllegen kann,
+        # ist keiner.
+        if [ "$PAUSE" -gt "$JETZT" ] && [ $((PAUSE - JETZT)) -le 3900 ]; then
+            MERK="$PDATA/wache_pause_gemeldet"
+            MELDEN=1
+            if [ -f "$MERK" ]; then
+                L=$(cat "$MERK" 2>/dev/null)
+                case "$L" in
+                    ''|*[!0-9]*) L=0 ;;
+                esac
+                [ $((JETZT - L)) -gt 3600 ] || MELDEN=0
+            fi
+            if [ "$MELDEN" -eq 1 ]; then
+                echo "$JETZT" > "$MERK"
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waechter: das Abbild ist ${ALTER} s alt (Grenze ${GRENZE} s), der Dienst pausiert aber mit Absicht noch $((PAUSE - JETZT)) s - kein Neustart." >> "$LOGDATEI"
+            fi
+            exit 0
+        fi
+        rm -f "$PDATA/wache_pause_gemeldet" 2>/dev/null
         # Bremse: hoechstens ein Neustart je Grenzfenster.
         BREMSE="$PDATA/wache_letzter_neustart"
         if [ -f "$BREMSE" ]; then

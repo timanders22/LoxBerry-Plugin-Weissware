@@ -1846,7 +1846,7 @@ def dienst(einmal: bool = False) -> int:
         # eingeschaltet war und seit Tagen niemand mehr gefragt hatte. Eine
         # Aussage ueber die Vergangenheit, die aussieht wie eine ueber die
         # Gegenwart.
-        zustand_schreiben(ok=0, ausfaelle={}, anzahl_geraete=0,
+        zustand_schreiben(ok=0, ausfaelle={}, anzahl_geraete=0, pause_bis=0,
                           fehler="Kein Anbieter eingeschaltet. Reiter Einstellungen: Haken beim Anbieter setzen und speichern.")
         return 1
 
@@ -1897,20 +1897,34 @@ def dienst(einmal: bool = False) -> int:
                 laeufe_fortschreiben(stand.get("geraete") or {}, geraete)
                 stand = {"ts": int(time.time()), "geraete": geraete}
             abbild_schreiben(stand, cfg, ok, fehler, ausfaelle, fehler_folge)
-            zustand_schreiben(ok=ok, fehler=fehler, fehler_folge=fehler_folge,
-                              pid=os.getpid(), anzahl_geraete=len(stand["geraete"]),
-                              ausfaelle=ausfaelle)
-            if einmal:
-                return 0 if ok else 1
-
             # Adaptiver Takt: laeuft ein Geraet, wird enger abgefragt. Das ist
             # der Grund, warum ein Plugin hier besser ist als ein starrer
             # Abfragezyklus - man bekommt eine brauchbare Restzeit, ohne im
             # Leerlauf Anfragen zu verbrennen.
+            #
+            # Die Wartezeit steht seit 0.9.23 VOR dem Zustandsschreiben fest:
+            # der Waechter liest daraus pause_bis und weiss dann, dass ein
+            # stilles Abbild Absicht ist und kein Stillstand.
             laeuft_etwas = any(g.get("laeuft") for g in stand["geraete"].values())
             rest = cfg["takt_betrieb"] if laeuft_etwas else cfg["takt_ruhe"]
-            if fehler_folge >= 3:
+            gebremst = fehler_folge >= 3
+            if gebremst:
                 rest = min(3600, rest * min(8, fehler_folge))
+
+            # pause_bis geht IMMER mit, auch als 0. zustand_schreiben() mischt
+            # in den Bestand: ein weggelassenes Feld bliebe stehen, und eine
+            # liegengebliebene Pause wuerde den Waechter dauerhaft stilllegen -
+            # dieselbe Falle, die 0.9.7 mit der Ausfallliste hatte. Bei
+            # --einmal gibt es keine Pause, dort ist der Wert 0.
+            zustand_schreiben(ok=ok, fehler=fehler, fehler_folge=fehler_folge,
+                              pid=os.getpid(), anzahl_geraete=len(stand["geraete"]),
+                              ausfaelle=ausfaelle,
+                              pause_bis=(int(time.time()) + rest
+                                         if gebremst and not einmal else 0))
+            if einmal:
+                return 0 if ok else 1
+
+            if gebremst:
                 melde_gebremst("bremse",
                                f"{fehler_folge} Fehlversuche - naechster Abruf erst in {rest} s.",
                                1800)
@@ -2203,7 +2217,10 @@ def main() -> int:
         return 0
     except Exception as err:  # noqa: BLE001
         _LOG.error("Dienst abgebrochen: %s", fehlertext(err))
-        zustand_schreiben(ok=0, fehler=fehlertext(err))
+        # pause_bis=0: der Dienst bricht ab, er pausiert nicht. Ohne diese
+        # Null bliebe eine Pause aus dem letzten Durchlauf stehen und der
+        # Waechter liesse einen abgestuerzten Dienst liegen.
+        zustand_schreiben(ok=0, fehler=fehlertext(err), pause_bis=0)
         return 1
 
 

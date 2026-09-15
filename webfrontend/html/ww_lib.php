@@ -973,6 +973,30 @@ function ww_wache_grenze()
     return max(180, 5 * (int) $cfg['takt_ruhe']);
 }
 
+/**
+ * Bis wann pausiert der Dienst ABSICHTLICH? Unixzeit, 0 = er pausiert nicht.
+ *
+ * Der Waechter misst das Alter des Abbilds und kann daran nicht erkennen, ob
+ * ein Dienst haengt oder mit Absicht schlaeft. Bis 0.9.22 war das ein echter
+ * Schaden und kein Schoenheitsfehler: die Fehlerbremse waechst auf
+ * takt_ruhe * fehler_folge (gedeckelt bei 3600 s) und erreicht damit ab dem
+ * fuenften Fehlversuch genau die Wachegrenze max(180, 5 * takt_ruhe). Der
+ * Waechter startete also einen gesunden Dienst neu - und weil der Neustart
+ * fehler_folge zuruecksetzt, wurde die Bremse im Takt der Wachegrenze
+ * aufgehoben und konnte ihren Zweck nie erreichen. Am Geraet gemessen am
+ * 15.09.2026: "seit 1508 s kein Abbild geschrieben (Grenze 1500 s)".
+ *
+ * Der Dienst schreibt den Wert bei JEDEM Zustandsschreiben mit, auch als 0.
+ * zustand_schreiben() mischt in den Bestand - ein weggelassenes Feld bliebe
+ * stehen, und eine liegengebliebene Pause wuerde den Waechter dauerhaft
+ * stilllegen. Dieselbe Falle wie die Ausfallliste in 0.9.7.
+ */
+function ww_pause_bis()
+{
+    $z = ww_zustand();
+    return isset($z['pause_bis']) ? (int) $z['pause_bis'] : 0;
+}
+
 /* ==================================================================
  * Loxone-Vorlagen
  *
