@@ -18,16 +18,15 @@ function ww_pruefzeile($stand, $frage, $antwort)
  *
  * Regeln/07, Hausstandard vom 03.09.2026: "Das Lebenszeichen ist nie
  * retained - retained zeigte es immer 'lebt'; es traegt den Zeitstempel."
- * Hier steht nur, was in JEDER Lesart dieser Regel dazugehoert. Ueber 'ok'
- * widerspricht sich Regeln/07 selbst (Z.108 gegen Z.120, an der Funkwacht
- * 1.0.3 entschieden); diese Linie fuehrt 'ok' als Zustand der Datenlage
- * ("hat der Lauf etwas gewusst?") retained, und die Entscheidung des
- * Hausherrn dazu steht aus. Wer sie faellt, ergaenzt hier eine Zeile - und
- * dann faellt die Pruefzeile von selbst aus.
+ * 'ok' gehoert dazu, seit der Hausherr am 18.09.2026 entschieden hat: ok
+ * ist nie retained (Regeln/07 Abschnitt 3). Bis 0.9.27 stand hier nur 'ts',
+ * weil die Regel sich ueber 'ok' widersprach und die Linie es retained
+ * fuehrte (gemessen: "retain weissware/ok 1", Pruefung-Weissware-0.9.28,
+ * Fall R1).
  */
 function ww_lebenszeichen_themen()
 {
-    return array('ts');
+    return array('ts', 'ok');
 }
 
 /**

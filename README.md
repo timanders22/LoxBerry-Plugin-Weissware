@@ -10,12 +10,76 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.27 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.28 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.28
+
+**Die Suche nach der LoxBerry-Wurzel verlangt jetzt `config/system/general.json`,
+und ohne Wurzel wird nichts mehr geraten.** Wird `bin/dienst.sh`,
+`bin/weissware.py` oder die Bibliothek der Oberfläche ohne `LBHOMEDIR`
+aufgerufen, sucht sie die Wurzel vom eigenen Ablageort aufwärts. Bis 0.9.27
+galt dabei jedes Verzeichnis mit `config/plugins` und `webfrontend` als
+Wurzel, und fand die Suche keines, rechneten `dienst.sh` und `weissware.py`
+eine feste Zahl Ebenen über sich. Solche Ordner liegen auf einem Prüfrechner
+auch außerhalb eines LoxBerry, etwa als Reste früherer Prüfläufe. In WSL Ubuntu
+nachgestellt (18.09.2026, `Pruefung-Weissware-0.9.28`, Fälle F1 bis F6) — in
+einem solchen Baum ohne `general.json`:
+
+* `bin/dienst.sh start` legte `data/plugins/weissware` und `log/plugins/weissware` an, `stop` löschte `soll_laufen`;
+* der Dienst und die Oberfläche hielten den Baum für die Wurzel und hätten dort gelesen und geschrieben.
+
+Die drei Suchen prüfen jetzt zusätzlich `config/system/general.json` — ein
+LoxBerry hat sie immer. `general.json` allein genügte in `dienst.sh` und
+`weissware.py` nicht: der Rückfall auf die feste Ebenenzahl führte in denselben
+fremden Baum zurück — installiert genau auf dessen Wurzel, aus einem Archiv
+darin auf einen Ordner darin. Er ist entfallen; ohne
+Wurzel melden beide „Es wurde kein LoxBerry-Wurzelverzeichnis gefunden" und
+legen nichts an. In der installierten Lage (mit `general.json`) finden alle
+drei die Wurzel weiterhin, auch ohne `LBHOMEDIR` und aus `/` aufgerufen (Fälle
+G1 bis G4); ein gesetztes `LBHOMEDIR` gilt unverändert (U1 bis U3). Am Gerät
+ändert sich damit nichts.
+
+**Dieselbe Regel gilt jetzt in `uninstall/uninstall`.** Ohne fünftes Argument
+und ohne `LBHOMEDIR` rechnete das Skript bis 0.9.27 drei Ebenen über seinem
+Ablageort und prüfte nichts. In WSL nachgestellt (Fall D1): abgelegt unter
+`<fremder Baum>/pruef/weissware/uninstall/`, löschte es in dem fremden Baum
+(ohne `general.json`) die Sicherung `weissware.backup.zugang.json`, die
+Upgrade-Marke und `soll_laufen` und meldete „Sicherung entfernt". Jetzt sucht
+es aufwärts nach `config/plugins`, `data/plugins` **und**
+`config/system/general.json`; ohne Wurzel meldet es `<WARNING>`, beendet und
+entfernt nichts und endet mit 1. Beim Deinstallieren über LoxBerry ändert
+sich nichts — der Installer übergibt die Wurzel als fünftes Argument (Fall D3),
+und abgelegt unter `data/system/uninstall/` findet die Suche sie auch ohne
+(Fall D2). Ein laufender Dienst wird weiterhin beendet, der einer anderen
+Installation nicht (Fall D6).
+
+**`weissware/ok` geht nicht mehr zurückbehalten (retained) hinaus.** Am
+UDP-Eingang gemessen (Fall R1): bis 0.9.27 `retain weissware/ok 1`. Der
+Hausherr hat am 18.09.2026 entschieden, dass `ok` nie retained ist — ein
+zurückbehaltenes `ok=1` bliebe stehen, wenn der Dienst stirbt, und nach einem
+Neustart von Broker oder Gateway läse Loxone „in Ordnung" von einem Dienst,
+der nicht mehr läuft. Der Preis: nach einem solchen Neustart fehlt `ok`, bis
+der Dienst wieder sendet (bis zum Ruhetakt, ab Werk 300 s). Geändert in beiden
+Tabellen (`RETAIN` in `bin/weissware.py`, `ww_mqtt_retain()` der Oberfläche);
+die Zeile „Geht das Lebenszeichen nie zurückbehalten hinaus?" im Reiter
+*Test* hält jetzt `ts` **und** `ok` fest. Der alte zurückbehaltene Wert wird
+wie `ts` in 0.9.26 einmal abgeräumt — eine leere Nutzlast mit `retain` auf
+`<präfix>/ok`, der gültige Wert unmittelbar dahinter. Der Merker
+`retain_ts_geraeumt` trägt dafür jetzt Präfix **und** Themenliste
+(`weissware ts,ok`); ein Merker aus 0.9.26/0.9.27 trägt nur das Präfix und
+hätte das Abräumen von `ok` übersprungen (Fall R3). Ob das Gateway der Anlage
+die leere Nachricht als Löschung an den Broker weitergibt, ist weiterhin nicht
+am Gerät gemessen. Ein Alter sendet die Linie über MQTT nicht, einen Letzten
+Willen hat sie nicht (sie spricht über den UDP-Eingang des Gateways, nicht
+selbst mit dem Broker). Unverändert retained bleiben die Zustände, darunter
+`fehler_folge` und die Ausfallmerker. Gemessen in WSL, nicht am Gerät
+(`Pruefung-Weissware-0.9.28`, `messe_teil2.sh`, 24 Prüfzeilen, sieben
+Rückbauten geeicht).
 
 ## Neu in 0.9.27
 

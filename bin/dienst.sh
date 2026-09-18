@@ -62,13 +62,29 @@ ww_wurzel() {
         printf '%s\n' "$LBHOMEDIR"
         return 0
     fi
-    # Aufwaerts suchen statt raten: das erste Verzeichnis, das config/plugins
-    # UND webfrontend traegt, ist die Wurzel. Dieselbe Suche wie in
-    # bin/weissware.py und in ww_lib.php.
+    # Aufwaerts suchen statt raten: das erste Verzeichnis, das config/plugins,
+    # webfrontend UND config/system/general.json traegt, ist die Wurzel.
+    # Dieselbe Suche wie in bin/weissware.py und in ww_lib.php.
+    #
+    # general.json unterscheidet einen LoxBerry von einem Rest aus
+    # Pruefstaenden: ein LoxBerry hat sie immer, ein solcher Rest nie
+    # (Regeln/06). Ohne sie galt ein fremder Baum mit config/plugins und
+    # webfrontend als Wurzel - gemessen am 18.09.2026 in WSL
+    # (Pruefung-Weissware-0.9.28, Faelle F1 bis F3): 'start' legte dort
+    # data/plugins/weissware und log/plugins/weissware an, 'stop' loeschte
+    # dessen soll_laufen.
+    #
+    # Nach der Suche kommt KEIN Rueckfall auf den Ablageort mehr. Hier stand
+    # '(cd "$SELF/../../.." && pwd)'; er fuehrte in den Baum zurueck, den die
+    # Suche gerade abgelehnt hatte - installiert genau auf dessen Wurzel, aus
+    # einem Archiv darin auf einen Ordner darin. Mit general.json in der Suche
+    # allein blieben F1 bis F3 deshalb rot (dieselbe Messung, Stufe A). Ohne
+    # Wurzel steigt das Skript unten aus, bevor es etwas anlegt.
     ww_d=$SELF
     ww_i=0
     while [ "$ww_i" -lt 8 ]; do
-        if [ -d "$ww_d/config/plugins" ] && [ -d "$ww_d/webfrontend" ]; then
+        if [ -d "$ww_d/config/plugins" ] && [ -d "$ww_d/webfrontend" ] \
+           && [ -f "$ww_d/config/system/general.json" ]; then
             printf '%s\n' "$ww_d"
             return 0
         fi
@@ -77,7 +93,7 @@ ww_wurzel() {
         ww_d=$ww_e
         ww_i=$((ww_i + 1))
     done
-    (cd "$SELF/../../.." 2>/dev/null && pwd)
+    return 1
 }
 # LBPPLUGINDIR steht am Geraet nicht in jeder Umgebung (Regeln/03, an 43
 # Linien gemessen) - deshalb die zweite Stufe. Die dritte greift nur dort, wo
@@ -96,6 +112,17 @@ ww_ordner() {
 }
 PNAME=$(ww_ordner)
 LBHOMEDIR=$(ww_wurzel)
+# Ohne Wurzel wird nichts angelegt und nichts gestartet - die Pfade darunter
+# begannen sonst mit "/data/plugins/...". Die Pruefung steht VOR dem ersten
+# Anlegen, nicht danach.
+if [ -z "$LBHOMEDIR" ] || [ ! -d "$LBHOMEDIR" ]; then
+    echo "FEHLER: Es wurde kein LoxBerry-Wurzelverzeichnis gefunden."
+    echo "        \$LBHOMEDIR ist nicht gesetzt, und oberhalb von"
+    echo "        $SELF traegt kein Verzeichnis config/plugins, webfrontend"
+    echo "        und config/system/general.json."
+    echo "        Es wurde nichts angelegt und nichts gestartet."
+    exit 1
+fi
 PDATA="$LBHOMEDIR/data/plugins/$PNAME"
 PLOG="$LBHOMEDIR/log/plugins/$PNAME"
 PCONFIG="$LBHOMEDIR/config/plugins/$PNAME"

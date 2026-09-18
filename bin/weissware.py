@@ -50,13 +50,20 @@ def lb_wurzel_ermitteln():
     """Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
 
     Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
-    config/plugins UND webfrontend enthaelt. Trifft die uebliche
-    Installation genauso wie eine an einem anderen Ort.
+    config/plugins, webfrontend UND config/system/general.json enthaelt.
+    Trifft die uebliche Installation genauso wie eine an einem anderen Ort.
+
+    general.json unterscheidet einen LoxBerry von einem Rest aus
+    Pruefstaenden: ein LoxBerry hat sie immer, ein solcher Rest nie
+    (Regeln/06). Ohne sie galt ein fremder Baum mit config/plugins und
+    webfrontend als Wurzel (gemessen am 18.09.2026 in WSL,
+    Pruefung-Weissware-0.9.28, Faelle F4 und F5).
     """
     d = os.path.dirname(os.path.abspath(__file__))
     for _ in range(8):
         if os.path.isdir(os.path.join(d, "config", "plugins")) \
-                and os.path.isdir(os.path.join(d, "webfrontend")):
+                and os.path.isdir(os.path.join(d, "webfrontend")) \
+                and os.path.isfile(os.path.join(d, "config", "system", "general.json")):
             return d
         eltern = os.path.dirname(d)
         if eltern == d:
@@ -96,7 +103,7 @@ def mqtt_wert_saeubern(wert):
 # zeigten auf data/plugins/bin - in der LAUFENDEN Installation.
 #
 # Reihenfolge nach Regeln/03, Stufe 1 ist die Umgebung:
-#   Wurzel:      $LBHOMEDIR  ->  Aufwaertssuche  ->  Ablageort
+#   Wurzel:      $LBHOMEDIR  ->  Aufwaertssuche (mit general.json)  ->  Abbruch
 #   Ordnername:  $LBPPLUGINDIR  ->  Ablageort  ->  der vorgesehene Name
 # Die letzte Stufe des Ordnernamens greift nur dort, wo der Ablageort
 # nachweislich kein Pluginordner sein kann ("bin", "plugins") - dieselbe
@@ -112,7 +119,17 @@ def _lbhome_ermitteln() -> Path:
     gefunden = lb_wurzel_ermitteln()
     if gefunden:
         return Path(gefunden)
-    return SELF.parents[2] if len(SELF.parents) >= 3 else SELF
+    # Kein Rueckfall auf den Ablageort mehr (hier stand SELF.parents[2]). Er
+    # fuehrte in den Baum zurueck, den die Suche gerade abgelehnt hatte -
+    # installiert genau auf dessen Wurzel, aus einem Archiv darin auf einen
+    # Ordner darin (Pruefung-Weissware-0.9.28, Faelle F4 und F5, Stufe A).
+    # Ohne Wurzel wird nichts gelesen und nichts angelegt.
+    sys.stderr.write(
+        "FEHLER: Es wurde kein LoxBerry-Wurzelverzeichnis gefunden. "
+        "LBHOMEDIR ist nicht gesetzt, und oberhalb von %s traegt kein "
+        "Verzeichnis config/plugins, webfrontend und "
+        "config/system/general.json. Es wurde nichts angelegt.\n" % SELF)
+    raise SystemExit(1)
 
 
 def _pname_ermitteln() -> str:
@@ -494,6 +511,15 @@ def mqtt_zustand() -> dict:
 #                   der Schaden, den die Regel meint.
 #                   Der Altwert im Broker verschwindet davon nicht von selbst:
 #                   siehe ALTWERTE_LOESCHEN weiter unten.
+#   ok              NICHT retained - entschieden am 18.09.2026 (Hausherr,
+#                   Regeln/07 Abschnitt 3): ok ist nie retained. Ein
+#                   zurueckbehaltenes ok=1 bliebe stehen, wenn der Dienst
+#                   stirbt, und nach einem Neustart von Broker oder Gateway
+#                   laese Loxone "in Ordnung" von einem toten Dienst. Bis
+#                   0.9.27 stand hier True; am 18.09.2026 am UDP-Eingang
+#                   gemessen: "retain weissware/ok 1"
+#                   (Pruefung-Weissware-0.9.28, Fall R1). Der Altwert wird wie
+#                   bei ts einmal abgeraeumt (ALTWERTE_LOESCHEN).
 #   fertig_um       RETAINED: ein absoluter Zeitpunkt des GERAETS (wann wird
 #                   dieser Waschgang fertig), kein Lebenszeichen des Dienstes.
 #   restzeit_min    NICHT retained - eine DAUER altert von selbst. Sechzig
@@ -514,7 +540,7 @@ def mqtt_zustand() -> dict:
 # Geraet gemessen).
 RETAIN = {
     # --- anlagenweit ---
-    "ok":                         True,
+    "ok":                         False,
     "ts":                         False,
     "fehler_folge":               True,
     "geraete":                    True,
@@ -556,7 +582,7 @@ RETAIN = {
 # message"). Muster im Bestand: BatterieBMS 0.9.22 und APC-UPS 1.2.10, beide
 # mit einem Merker im Datenordner, damit es genau EINMAL geschieht
 # (Regeln/07).
-ALTWERTE_LOESCHEN = ("ts",)
+ALTWERTE_LOESCHEN = ("ts", "ok")
 
 
 def thema_stamm(thema: str) -> str:
@@ -589,10 +615,14 @@ def retain_fuer(thema: str) -> bool:
 def altwerte_abraeumen(s, praefix: str, port: int) -> None:
     """Loescht EINMAL die zurueckbehaltenen Altwerte aus ALTWERTE_LOESCHEN.
 
-    Der Merker haelt fest, fuer WELCHES Themenpraefix das geschehen ist. Wer
-    das Praefix in den Einstellungen umstellt, laesst sonst den alten Stamm im
-    Broker stehen; mit dem Praefix im Merker wird unter dem neuen Stamm noch
-    einmal abgeraeumt.
+    Der Merker haelt fest, fuer WELCHES Themenpraefix und WELCHE Themen das
+    geschehen ist. Wer das Praefix in den Einstellungen umstellt, laesst sonst
+    den alten Stamm im Broker stehen; mit dem Praefix im Merker wird unter dem
+    neuen Stamm noch einmal abgeraeumt. Die Themenliste steht mit darin, seit
+    ok dazugekommen ist: ein Merker aus 0.9.26/0.9.27 traegt nur das Praefix
+    und haette das Abraeumen von ok uebersprungen (gemessen,
+    Pruefung-Weissware-0.9.28, Fall R3). Der Dateiname retain_ts_geraeumt
+    bleibt, damit kein alter Merker daneben liegen bleibt.
 
     Der gueltige Wert geht unmittelbar danach hinaus - darum steht dieser
     Aufruf VOR der Sendeschleife. Das Gateway reicht eine leere Nachricht
@@ -601,11 +631,12 @@ def altwerte_abraeumen(s, praefix: str, port: int) -> None:
     """
     if not ALTWERTE_LOESCHEN:
         return
+    kennung = praefix + " " + ",".join(ALTWERTE_LOESCHEN)
     try:
         schon = DATEI_RETAIN_GERAEUMT.read_text(encoding="utf-8").strip()
     except OSError:
         schon = ""
-    if schon == praefix:
+    if schon == kennung:
         return
     for t in ALTWERTE_LOESCHEN:
         # Ein Leerzeichen hinter dem Thema, sonst keine Nutzlast: genau die
@@ -614,7 +645,7 @@ def altwerte_abraeumen(s, praefix: str, port: int) -> None:
                  ("127.0.0.1", port))
     try:
         DATEI_RETAIN_GERAEUMT.parent.mkdir(parents=True, exist_ok=True)
-        DATEI_RETAIN_GERAEUMT.write_text(praefix + "\n", encoding="utf-8")
+        DATEI_RETAIN_GERAEUMT.write_text(kennung + "\n", encoding="utf-8")
     except OSError as err:
         # Ohne Merker geschieht die Loeschung bei jedem Lauf erneut. Schaden
         # richtet das nicht an - der gueltige Wert folgt jedes Mal unmittelbar

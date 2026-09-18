@@ -28,11 +28,17 @@ if (!function_exists('ww_e')) {
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
  * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
- * Installation genauso wie eine an einem anderen Ort - und es trifft auch
- * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
- * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
- * abfangen muss).
+ * config/plugins, webfrontend UND config/system/general.json enthaelt. Das
+ * trifft die uebliche Installation genauso wie eine an einem anderen Ort -
+ * und es trifft auch den Fall, dass das Plugin noch als entpacktes Archiv
+ * daliegt (dann findet es nichts und gibt einen Leerstring zurueck, was der
+ * Aufrufer ohnehin abfangen muss).
+ *
+ * general.json unterscheidet einen LoxBerry von einem Rest aus Pruefstaenden:
+ * ein LoxBerry hat sie immer, ein solcher Rest nie (Regeln/06). Ohne sie galt
+ * ein fremder Baum mit config/plugins und webfrontend als Wurzel, und
+ * ww_paths() las dessen Konfiguration (gemessen am 18.09.2026 in WSL,
+ * Pruefung-Weissware-0.9.28, Fall F6).
  *
  * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
  * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
@@ -42,7 +48,8 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     {
         $d = __DIR__;
         for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')
+                && is_file($d . '/config/system/general.json')) {
                 return $d;
             }
             $eltern = dirname($d);
@@ -1149,11 +1156,16 @@ function ww_abo_text()
  * Lebenszeichen nie zurueckbehalten hinaus?" im Reiter Test haelt beide
  * Tabellen daraufhin fest - die Zeile darueber vergleicht sie nur
  * gegeneinander und bliebe gruen, wenn beide dasselbe Falsche sagten.
+ *
+ * ok ist ebenfalls nie retained - entschieden am 18.09.2026 (Hausherr,
+ * Regeln/07 Abschnitt 3). Bis 0.9.27 stand hier true; am 18.09.2026 am
+ * UDP-Eingang gemessen: "retain weissware/ok 1" (Pruefung-Weissware-0.9.28,
+ * Fall R1). Dieselbe Pruefzeile haelt es seitdem mit fest.
  */
 function ww_mqtt_retain()
 {
     return array(
-        'ok'                         => true,
+        'ok'                         => false,
         'ts'                         => false,
         'fehler_folge'               => true,
         'geraete'                    => true,
