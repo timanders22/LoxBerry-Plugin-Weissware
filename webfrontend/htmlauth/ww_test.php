@@ -23,10 +23,18 @@ function ww_pruefzeile($stand, $frage, $antwort)
  * weil die Regel sich ueber 'ok' widersprach und die Linie es retained
  * fuehrte (gemessen: "retain weissware/ok 1", Pruefung-Weissware-0.9.28,
  * Fall R1).
+ *
+ * Seit der Entscheidung vom 19.09.2026 (Hausherr, Regeln/07 Abschnitt 3)
+ * gehoeren alle Aussagen ueber den Zustand des DIENSTES dazu: fehler_folge,
+ * ausfaelle und die drei ausfall/<anbieter>. Bis 0.9.28 standen sie hier
+ * nicht, und beide Tabellen fuehrten sie retained (gemessen: "retain
+ * weissware/fehler_folge 0", Pruefung-Weissware-0.9.29, messe_retain.sh,
+ * Fall R1). Die Geraetezustaende bleiben retained und gehoeren nicht hierher.
  */
 function ww_lebenszeichen_themen()
 {
-    return array('ts', 'ok');
+    return array('ts', 'ok', 'fehler_folge', 'ausfaelle',
+                 'ausfall/homeconnect', 'ausfall/miele', 'ausfall/smartthings');
 }
 
 /**

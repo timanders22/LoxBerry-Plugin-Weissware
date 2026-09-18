@@ -71,7 +71,12 @@ ww_wurzel_suchen() {
     done
     return 1
 }
-if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
+# Was der Installer ($5) oder die Umgebung (LBHOMEDIR) nennt, gilt nur mit
+# config/plugins darunter. Bis 0.9.28 genuegte ein beliebiges Verzeichnis:
+# gemessen am 19.09.2026 (Pruefung-Weissware-0.9.29, messe_h2.sh, Fall U1)
+# entfernte das Skript mit LBHOMEDIR auf einem Ordner ohne LoxBerry-Aufbau
+# dort Marke und soll_laufen und endete mit 0.
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ]; then
     BASE=$(ww_wurzel_suchen)
 fi
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then

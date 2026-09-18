@@ -60,21 +60,43 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     }
 }
 
+/* Die Wurzel: $LBHOMEDIR, wenn darunter config/plugins liegt, sonst die
+ * Suche aufwaerts (mit general.json). Findet sie nichts, gibt es KEINE
+ * Wurzel - ww_paths() arbeitet dann im Archivmodus auf dem eigenen Ordner,
+ * ww_t() liest die Sprachdateien des eigenen Ordners.
+ *
+ * Bis 0.9.28 stand in ww_paths() und ww_t()
+ *     foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k)
+ * hinter einem $LBHOMEDIR, das nur ein Verzeichnis sein musste. Gemessen am
+ * 19.09.2026 in WSL (Pruefung-Weissware-0.9.29, messe_h2.sh): aus einem
+ * ausgepackten Archiv las die Bibliothek die Konfiguration eines Baums unter
+ * /home/loxberry/loxberry, schrieb dort aus dessen Zweitschrift eine
+ * weissware.json und lud dessen Sprachdatei (B1-B4, B7); ein auf nichts
+ * zeigendes $LBHOMEDIR blieb als Wurzel stehen (B5), ein beliebiges
+ * Verzeichnis wurde Wurzel (B6, B8). Unter /home/loxberry/loxberry liegt auf
+ * einem LoxBerry keine Wurzel - die Wurzel ist /home/loxberry selbst, auf
+ * vielen Anlagen ueber einen Verweis erreichbar (Regeln/06, Z. 134) -, der
+ * feste Pfad traf also nie die eigene Anlage.
+ *
+ * Fuer $LBHOMEDIR wird config/plugins verlangt, nicht general.json: die
+ * Attrappe Werkzeuge/lb, gegen die rendern.py und wirkungstest.py die
+ * Oberflaeche laufen lassen, traegt keine general.json. */
+function ww_lbhome()
+{
+    $home = getenv('LBHOMEDIR');
+    if ($home && is_dir($home . '/config/plugins')) {
+        return $home;
+    }
+    return lb_wurzel_ermitteln();
+}
+
 function ww_paths()
 {
     static $p = null;
     if ($p !== null) {
         return $p;
     }
-    $home = getenv('LBHOMEDIR');
-    if (!$home || !is_dir($home)) {
-        foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-            if (is_dir($k)) {
-                $home = $k;
-                break;
-            }
-        }
-    }
+    $home = ww_lbhome();
     // Der Pluginordner ergibt sich aus dem Ablageort dieser Datei. Der
     // MD5-Schluessel aus der plugindatabase.json wird bewusst NICHT benutzt -
     // er wird aus Autorenname, E-Mail und Plugin-Name gebildet und aendert
@@ -1161,18 +1183,27 @@ function ww_abo_text()
  * Regeln/07 Abschnitt 3). Bis 0.9.27 stand hier true; am 18.09.2026 am
  * UDP-Eingang gemessen: "retain weissware/ok 1" (Pruefung-Weissware-0.9.28,
  * Fall R1). Dieselbe Pruefzeile haelt es seitdem mit fest.
+ *
+ * fehler_folge, ausfaelle und ausfall/<anbieter> sind ebenfalls nie retained
+ * - entschieden am 19.09.2026 (Hausherr, Regeln/07 Abschnitt 3): Aussagen
+ * ueber den Zustand des DIENSTES gehen nie zurueckbehalten hinaus. Bis 0.9.28
+ * stand hier true; am 19.09.2026 am UDP-Eingang gemessen:
+ * "retain weissware/fehler_folge 0" (Pruefung-Weissware-0.9.29,
+ * messe_retain.sh, Fall R1). Die Geraetezustaende (geraete, geraetN/...)
+ * bleiben retained. Begruendung ausfuehrlich am Kopf von RETAIN in
+ * bin/weissware.py.
  */
 function ww_mqtt_retain()
 {
     return array(
         'ok'                         => false,
         'ts'                         => false,
-        'fehler_folge'               => true,
+        'fehler_folge'               => false,
         'geraete'                    => true,
-        'ausfaelle'                  => true,
-        'ausfall/homeconnect'        => true,
-        'ausfall/miele'              => true,
-        'ausfall/smartthings'        => true,
+        'ausfaelle'                  => false,
+        'ausfall/homeconnect'        => false,
+        'ausfall/miele'              => false,
+        'ausfall/smartthings'        => false,
         'geraetN/name'               => true,
         'geraetN/anbieter'           => true,
         'geraetN/zustand'            => true,
@@ -1875,15 +1906,9 @@ function ww_t($schluessel)
 {
     static $texte = null;
     if ($texte === null) {
-        $home = getenv('LBHOMEDIR');
-        if (!$home || !is_dir($home)) {
-            foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-                if (is_dir($k)) {
-                    $home = $k;
-                    break;
-                }
-            }
-        }
+        // Wie in ww_paths() (siehe ww_lbhome(); Faelle B4 und B8 in
+        // Pruefung-Weissware-0.9.29/messe_h2.sh).
+        $home = ww_lbhome();
         $ordner = basename(dirname(__FILE__));
         $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
         if (!is_dir($pfad)) {

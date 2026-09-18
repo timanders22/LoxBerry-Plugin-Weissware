@@ -28,6 +28,31 @@ ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-weissware}"
 BASE="${ARGV5:-$LBHOMEDIR}"
+# Ohne brauchbares $5/LBHOMEDIR aufwaerts suchen, sonst nichts tun - dieselbe
+# Regel wie in postinstall.sh und uninstall/uninstall (Regeln/06). Bis 0.9.28
+# lief das Skript hier ungeprueft weiter: ohne $5 und LBHOMEDIR begannen alle
+# Pfade bei / (Marke /data/plugins/..., Sicherung /config/plugins/...), mit
+# LBHOMEDIR auf einem beliebigen Ordner legte es dort die Marke an (gemessen
+# am 19.09.2026, Pruefung-Weissware-0.9.29, messe_h2.sh, Faelle V1 und V2).
+ww_wurzel_suchen() {
+    v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd)
+    i=0
+    while [ -n "$v" ] && [ "$v" != "/" ] && [ $i -lt 8 ]; do
+        if [ -d "$v/config/plugins" ] && [ -d "$v/data/plugins" ] \
+           && [ -f "$v/config/system/general.json" ]; then
+            printf '%s\n' "$v"; return 0
+        fi
+        v=$(dirname "$v"); i=$((i + 1))
+    done
+    return 1
+}
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ]; then
+    BASE=$(ww_wurzel_suchen)
+fi
+if [ -z "$BASE" ]; then
+    echo "<WARNING> Es wurde kein LoxBerry-Wurzelverzeichnis gefunden - nichts gesichert, nichts angehalten."
+    exit 1
+fi
 
 CFGDIR="$BASE/config/plugins/$PFOLDER"
 PDATA="$BASE/data/plugins/$PFOLDER"

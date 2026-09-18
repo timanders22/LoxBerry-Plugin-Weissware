@@ -58,7 +58,13 @@ SELF=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)          # <home>/bin/plugi
 # LAUFENDEN Installation data/plugins/bin und log/plugins/bin an - mit
 # 'status', also mit einem Aufruf, den jeder fuer folgenlos haelt.
 ww_wurzel() {
-    if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR" ]; then
+    # Ein gesetztes $LBHOMEDIR gilt nur mit config/plugins darunter (nicht
+    # general.json - Attrappen wie Werkzeuge/lb tragen keine). Bis 0.9.28
+    # genuegte ein beliebiges Verzeichnis; gemessen am 19.09.2026
+    # (Pruefung-Weissware-0.9.29, messe_h2.sh, Fall S1): 'start' legte darin
+    # data/plugins/weissware an. Dieselbe Regel wie ww_lbhome() in der
+    # Oberflaeche und _lbhome_ermitteln() in bin/weissware.py.
+    if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ]; then
         printf '%s\n' "$LBHOMEDIR"
         return 0
     fi
@@ -117,7 +123,8 @@ LBHOMEDIR=$(ww_wurzel)
 # Anlegen, nicht danach.
 if [ -z "$LBHOMEDIR" ] || [ ! -d "$LBHOMEDIR" ]; then
     echo "FEHLER: Es wurde kein LoxBerry-Wurzelverzeichnis gefunden."
-    echo "        \$LBHOMEDIR ist nicht gesetzt, und oberhalb von"
+    echo "        \$LBHOMEDIR ist nicht gesetzt oder traegt kein config/plugins,"
+    echo "        und oberhalb von"
     echo "        $SELF traegt kein Verzeichnis config/plugins, webfrontend"
     echo "        und config/system/general.json."
     echo "        Es wurde nichts angelegt und nichts gestartet."

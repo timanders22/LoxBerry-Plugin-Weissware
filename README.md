@@ -10,12 +10,74 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.28 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.29 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.29
+
+**Die Oberfläche fällt ohne gefundene Wurzel nicht mehr auf einen festen
+Standardort zurück.** Die Bibliothek der Oberfläche (`ww_paths()` und die
+Sprachtexte in `ww_t()`) nahm bis 0.9.28 ein gesetztes `LBHOMEDIR`, sobald es
+ein Verzeichnis war, und fand die Suche keine Wurzel, versuchte sie noch
+`/home/loxberry/loxberry`. Auf einem LoxBerry liegt dort keine Wurzel — die
+Wurzel ist `/home/loxberry` selbst. In WSL Ubuntu nachgestellt
+(19.09.2026, `Pruefung-Weissware-0.9.29`, `messe_h2.sh`; der fremde Baum nur in
+einem eigenen Mount-Namensraum): aus einem ausgepackten Archiv heraus las die
+Oberfläche die Konfiguration eines fremden Baums unter diesem Pfad, schrieb
+dort aus dessen Zweitschrift eine `weissware.json` und zeigte dessen
+Sprachtexte (Fälle B1 bis B4, B7); ein `LBHOMEDIR`, das auf nichts zeigte,
+blieb als Wurzel stehen (B5), ein beliebiges Verzeichnis wurde Wurzel (B6,
+B8). Jetzt gilt `LBHOMEDIR` nur mit `config/plugins` darunter, sonst sucht die
+Oberfläche aufwärts nach `config/system/general.json`; findet sie nichts,
+arbeitet sie auf dem eigenen Ordner. Installiert findet sie ihre Wurzel wie
+bisher, mit und ohne `LBHOMEDIR` (A1, A2).
+
+**Dieselbe Regel in Dienst, Deinstallation und Installationsskripten.**
+`bin/dienst.sh` und `bin/weissware.py` nahmen ebenfalls jedes Verzeichnis als
+`LBHOMEDIR` — `dienst.sh start` legte darin `data/plugins/weissware` an (S1),
+`weissware.py` arbeitete darin (P1); `uninstall/uninstall` entfernte dort Marke
+und `soll_laufen` und endete mit 0 (U1). `postinstall.sh` rechnete ohne
+fünftes Argument und ohne `LBHOMEDIR` zwei Ebenen über seinem Ablageort,
+ungeprüft: unter einem fremden Baum ohne `general.json` richtete es dort
+Daten-, Protokoll- und Konfigurationsordner ein und stellte eine
+`weissware.json` aus dessen Sicherung wieder her (I1); tief unter einer echten
+Wurzel richtete es alles an der falschen Stelle ein (I3). `preupgrade.sh` lief
+ohne Wurzel mit Pfaden ab `/` weiter (V2) und legte bei einem beliebigen
+`LBHOMEDIR` dort seine Marke an (V1). Alle prüfen jetzt `config/plugins`,
+suchen sonst aufwärts mit `general.json` und tun ohne Wurzel nichts
+(`dienst.sh`, `weissware.py`: Meldung und Abbruch; die drei Skripte:
+`<WARNING>` und Rückgabe 1). Beim Installieren, Aktualisieren und
+Deinstallieren über LoxBerry ändert sich nichts — der Installer übergibt die
+Wurzel als fünftes Argument (I2, V3).
+
+**Aussagen über den Zustand des Dienstes gehen nicht mehr zurückbehalten
+(retained) hinaus.** Der Hausherr hat am 19.09.2026 entschieden: neben `ok`
+auch `fehler_folge`, `ausfaelle` und `ausfall/homeconnect`, `ausfall/miele`,
+`ausfall/smartthings`. Am UDP-Eingang gemessen (Fall R1 in `messe_retain.sh`):
+bis 0.9.28 `retain weissware/fehler_folge 0`, `retain weissware/ausfall/miele 0`
+und so fort — zurückbehalten stünde „keine Fehlversuche, kein Ausfall" auch
+dann noch im Broker, wenn der Dienst längst nicht mehr läuft. Geändert in
+beiden Tabellen (`RETAIN` in `bin/weissware.py`, `ww_mqtt_retain()` der
+Oberfläche); die Zeile im Reiter *Test* heißt jetzt „Gehen Lebenszeichen und
+Dienstzustand nie zurückbehalten hinaus?" und hält alle sieben Themen fest.
+Die Altwerte werden einmal abgeräumt — je Thema eine leere Nutzlast mit
+`retain`, der gültige Wert unmittelbar dahinter; alle drei `ausfall/*`, auch
+für einen nicht eingerichteten Anbieter, weil ein Altwert aus einer früheren
+Einrichtung stehen kann. Ein Merker aus 0.9.28 (`weissware ts,ok`) überspringt
+das nicht (R3); `ts` und `ok` gehen dabei ein zweites Mal leer hinaus. Die
+Gerätezustände (`geraete`, `geraetN/…`) bleiben retained. Der Preis: nach
+einem Neustart von Broker oder Gateway fehlen die Dienstzustände, bis der
+Dienst wieder sendet (bis zum Ruhetakt, ab Werk 300 s). Ob das Gateway der
+Anlage die leere Nachricht als Löschung weitergibt, ist weiterhin nicht am
+Gerät gemessen.
+
+Gemessen in WSL, nicht am Gerät: 33 und 25 Prüfzeilen, vorher 19 und 19 rot,
+nachher alle grün; 13 Rückbauten geeicht, jeder genau an seinen Zeilen rot; die
+Prüfstände von 0.9.28 bleiben grün (17 und 24 Zeilen).
 
 ## Neu in 0.9.28
 

@@ -21,9 +21,34 @@ ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-weissware}"
 BASE="${ARGV5:-$LBHOMEDIR}"
-if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    SELF=$(cd "$(dirname "$0")" && pwd)
-    BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
+# Ohne brauchbares $5/LBHOMEDIR wird aufwaerts GESUCHT, nicht gerechnet:
+# Wurzel ist, was config/plugins, data/plugins UND config/system/general.json
+# traegt (Regeln/06) - dieselbe Regel wie in uninstall/uninstall. Bis 0.9.28
+# stand hier BASE=$(cd "$SELF/../.."), ungeprueft. Gemessen am 19.09.2026 in
+# WSL (Pruefung-Weissware-0.9.29, messe_h2.sh): abgelegt unter
+# <fremd>/pruef/weissware/ legte das Skript in <fremd> (ohne general.json)
+# data/, log/ und config/plugins/weissware an und stellte dort eine
+# weissware.json aus dessen Sicherung wieder her (Fall I1); abgelegt tief
+# unter einer echten Wurzel richtete es alles zwei Ebenen ueber sich ein,
+# nicht in der Wurzel (Fall I3). Ohne Wurzel wird nichts angelegt.
+ww_wurzel_suchen() {
+    v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd)
+    i=0
+    while [ -n "$v" ] && [ "$v" != "/" ] && [ $i -lt 8 ]; do
+        if [ -d "$v/config/plugins" ] && [ -d "$v/data/plugins" ] \
+           && [ -f "$v/config/system/general.json" ]; then
+            printf '%s\n' "$v"; return 0
+        fi
+        v=$(dirname "$v"); i=$((i + 1))
+    done
+    return 1
+}
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ]; then
+    BASE=$(ww_wurzel_suchen)
+fi
+if [ -z "$BASE" ]; then
+    echo "<WARNING> Es wurde kein LoxBerry-Wurzelverzeichnis gefunden - nichts angelegt, nichts eingerichtet."
+    exit 1
 fi
 
 PBIN="$BASE/bin/plugins/$PFOLDER"

@@ -114,7 +114,13 @@ SELF = Path(__file__).resolve().parent            # <home>/bin/plugins/<ordner>
 
 def _lbhome_ermitteln() -> Path:
     h = os.environ.get("LBHOMEDIR") or ""
-    if h and os.path.isdir(h):
+    # Ein gesetztes LBHOMEDIR gilt nur mit config/plugins darunter - nicht
+    # general.json, damit Attrappen ohne sie (Werkzeuge/lb) weiter tragen.
+    # Bis 0.9.28 genuegte ein beliebiges Verzeichnis; gemessen am 19.09.2026
+    # (Pruefung-Weissware-0.9.29, messe_h2.sh, Fall P1): LBHOME wurde ein
+    # Ordner ohne jede LoxBerry-Struktur. Dieselbe Regel wie ww_lbhome() in
+    # der Oberflaeche und ww_wurzel() in bin/dienst.sh.
+    if h and os.path.isdir(os.path.join(h, "config", "plugins")):
         return Path(h)
     gefunden = lb_wurzel_ermitteln()
     if gefunden:
@@ -126,7 +132,8 @@ def _lbhome_ermitteln() -> Path:
     # Ohne Wurzel wird nichts gelesen und nichts angelegt.
     sys.stderr.write(
         "FEHLER: Es wurde kein LoxBerry-Wurzelverzeichnis gefunden. "
-        "LBHOMEDIR ist nicht gesetzt, und oberhalb von %s traegt kein "
+        "LBHOMEDIR ist nicht gesetzt oder traegt kein config/plugins, und "
+        "oberhalb von %s traegt kein "
         "Verzeichnis config/plugins, webfrontend und "
         "config/system/general.json. Es wurde nichts angelegt.\n" % SELF)
     raise SystemExit(1)
@@ -520,6 +527,22 @@ def mqtt_zustand() -> dict:
 #                   gemessen: "retain weissware/ok 1"
 #                   (Pruefung-Weissware-0.9.28, Fall R1). Der Altwert wird wie
 #                   bei ts einmal abgeraeumt (ALTWERTE_LOESCHEN).
+#   fehler_folge    NICHT retained - entschieden am 19.09.2026 (Hausherr,
+#   ausfaelle       Regeln/07 Abschnitt 3): Aussagen ueber den Zustand des
+#   ausfall/<anb.>  DIENSTES sind nie retained. Zurueckbehalten bliebe
+#                   "keine Fehlversuche, kein Ausfall" stehen, wenn der
+#                   Dienst stirbt, und nach einem Neustart von Broker oder
+#                   Gateway laese Loxone es von einem toten Dienst. Bis
+#                   0.9.28 stand hier True; am 19.09.2026 am UDP-Eingang
+#                   gemessen: "retain weissware/fehler_folge 0", "retain
+#                   weissware/ausfall/miele 0" (Pruefung-Weissware-0.9.29,
+#                   messe_retain.sh, Fall R1). Die Altwerte werden wie bei ts
+#                   und ok einmal abgeraeumt (ALTWERTE_LOESCHEN) - alle drei
+#                   ausfall/*, auch fuer einen nicht eingerichteten Anbieter:
+#                   ein Altwert kann aus einer frueheren Einrichtung stehen.
+#                   Die Geraetezustaende (geraete, geraetN/...) bleiben
+#                   retained - sie sagen etwas ueber die Geraete, nicht ueber
+#                   den Dienst.
 #   fertig_um       RETAINED: ein absoluter Zeitpunkt des GERAETS (wann wird
 #                   dieser Waschgang fertig), kein Lebenszeichen des Dienstes.
 #   restzeit_min    NICHT retained - eine DAUER altert von selbst. Sechzig
@@ -542,12 +565,12 @@ RETAIN = {
     # --- anlagenweit ---
     "ok":                         False,
     "ts":                         False,
-    "fehler_folge":               True,
+    "fehler_folge":               False,
     "geraete":                    True,
-    "ausfaelle":                  True,
-    "ausfall/homeconnect":        True,
-    "ausfall/miele":              True,
-    "ausfall/smartthings":        True,
+    "ausfaelle":                  False,
+    "ausfall/homeconnect":        False,
+    "ausfall/miele":              False,
+    "ausfall/smartthings":        False,
     # --- je Geraet ---
     "geraetN/name":               True,
     "geraetN/anbieter":           True,
@@ -582,7 +605,14 @@ RETAIN = {
 # message"). Muster im Bestand: BatterieBMS 0.9.22 und APC-UPS 1.2.10, beide
 # mit einem Merker im Datenordner, damit es genau EINMAL geschieht
 # (Regeln/07).
-ALTWERTE_LOESCHEN = ("ts", "ok")
+#
+# Die Kennung im Merker ist Praefix plus diese Liste (altwerte_abraeumen()).
+# Ein Merker aus 0.9.28 lautet "<praefix> ts,ok" und passt damit nicht mehr -
+# das Abraeumen der Dienstzustaende wird nicht uebersprungen (gemessen,
+# Pruefung-Weissware-0.9.29, messe_retain.sh, Fall R3). ts und ok gehen dabei
+# ein zweites Mal leer hinaus; der gueltige Wert folgt unmittelbar.
+ALTWERTE_LOESCHEN = ("ts", "ok", "fehler_folge", "ausfaelle",
+                     "ausfall/homeconnect", "ausfall/miele", "ausfall/smartthings")
 
 
 def thema_stamm(thema: str) -> str:
