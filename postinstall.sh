@@ -47,14 +47,52 @@ chmod 755 "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
 [ -f "$PCONFIG/zugang.json" ] || echo '{}' > "$PCONFIG/zugang.json"
 chmod 600 "$PCONFIG/zugang.json"
 
+# Ist diese Datei gueltiges JSON UND traegt sie darin mindestens einen der
+# genannten Schluessel mit einem nicht leeren Wert? Wortgleich mit
+# preupgrade.sh - die beiden Skripte muessen dieselbe Frage gleich
+# beantworten.
+#
+# Bis 0.9.25 stand hier "[ ! -s "$CF" ] || [ "$INHALT" = "{}" ]" - ein
+# Entscheid nach der FORM. Eine abgeschnittene weissware.json ist weder leer
+# noch "{}"; sie wurde also NICHT zurueckgeholt, und der erste Aufruf der
+# Oberflaeche wuerfelte danach ein neues Aktionstoken (Regeln/05; gemessen
+# 18.09.2026, Pruefung-Weissware-0.9.25, Messstelle postinstall).
+ww_hat_wert() {
+    D=$1
+    shift
+    [ -f "$D" ] || return 1
+    if command -v php >/dev/null 2>&1; then
+        php -r '$d=json_decode((string)@file_get_contents($argv[1]),true); $rc=1; if (is_array($d)) { for ($i=2;$i<$argc;$i++) { $k=$argv[$i]; if (isset($d[$k]) && trim((string)$d[$k]) !== "") { $rc=0; break; } } } exit($rc);' "$D" "$@" >/dev/null 2>&1
+        return $?
+    fi
+    echo "<INFO> Kein PHP gefunden - die Konfiguration wird nur ueberschlaegig geprueft."
+    [ "$(tr -d ' \t\n\r' < "$D" 2>/dev/null | tail -c 1)" = "}" ] || return 1
+    for k in "$@"; do
+        if grep -q "\"$k\"[[:space:]]*:[[:space:]]*\"[^\"]\{1,\}\"" "$D" 2>/dev/null; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 for f in weissware.json zugang.json; do
     BK="$BASE/config/plugins/$PFOLDER.backup.$f"
     CF="$PCONFIG/$f"
-    if [ -f "$BK" ]; then
-        INHALT=$(cat "$CF" 2>/dev/null)
-        if [ ! -s "$CF" ] || [ "$INHALT" = "{}" ]; then
-            cp -p "$BK" "$CF" && echo "<OK> $f aus Sicherung wiederhergestellt."
+    [ -f "$BK" ] || continue
+    case "$f" in
+        weissware.json) SCHLUESSEL="aktionstoken" ;;
+        *)              SCHLUESSEL="hc_client_secret miele_client_secret st_token" ;;
+    esac
+    # Zurueckgeholt wird, wenn die Sicherung traegt und die Konfiguration
+    # nicht. Der verdraengte Stand wird nicht weggeworfen: er liegt als
+    # <datei>.kaputt daneben (0600 - es koennen Zugangsdaten darin stehen),
+    # wie in ww_selbstheilung().
+    if ww_hat_wert "$BK" $SCHLUESSEL && ! ww_hat_wert "$CF" $SCHLUESSEL; then
+        if [ -s "$CF" ] && [ "$(tr -d ' \t\n\r' < "$CF" 2>/dev/null)" != "{}" ]; then
+            cp -p "$CF" "$CF.kaputt" 2>/dev/null && chmod 600 "$CF.kaputt" 2>/dev/null
+            echo "<INFO> Der bisherige Inhalt von $f liegt als $f.kaputt daneben."
         fi
+        cp -p "$BK" "$CF" && echo "<OK> $f aus Sicherung wiederhergestellt."
     fi
 done
 chmod 600 "$PCONFIG/zugang.json"

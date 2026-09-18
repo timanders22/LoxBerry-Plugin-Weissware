@@ -10,12 +10,73 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.24 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.25 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.25
+
+**Eine abgeschnittene `weissware.json` kostete das Aktionstoken — und mit ihm
+jede Adresse im Miniserver.** Gemessen am 18.09.2026 in WSL/Ubuntu unter
+PHP 8.3.6 und unter Windows-PHP 7.4.33 und 8.4.24
+(`Pruefung-Weissware-0.9.25/`).
+
+Die Selbstheilung entschied nach der **Form** der Datei:
+
+```php
+if ($erzeugen && ($roh === '' || $roh === '{}') && is_file($p['sicherung'])) {
+```
+
+Eine halb geschriebene Datei — Stromausfall, volle Speicherkarte,
+Handbearbeitung — ist weder leer noch `{}`. Sie ging an dieser Zeile vorbei,
+`json_decode` gab `null`, die Konfiguration bestand nur noch aus den
+Werkseinstellungen, `ww_token()` würfelte ein **neues** Aktionstoken, und
+`ww_config_speichern()` kopierte es über die Zweitschrift. Danach antwortet
+jeder virtuelle Eingang im Miniserver mit HTTP 403, und das alte Token lässt
+sich nicht zurückrechnen.
+
+Entschieden wird jetzt nach dem **Inhalt**: trägt die Datei noch ein
+Aktionstoken? Der Entscheid steht in **einer** Funktion (`ww_selbstheilung()`),
+die alle vier Wege benutzen — Oberfläche, Speichern, unangemeldeter Endpunkt
+und der Minutenlauf aus `cron/cron.01min`. Geheilt wird nur aus einer
+Zweitschrift, die selbst ein Token trägt; der verdrängte Inhalt wird nicht
+weggeworfen, sondern liegt als `weissware.json.kaputt` daneben (Rechte 0600 —
+in der Konfiguration steht das Aktionstoken). Gemeldet wird einmal, nicht bei
+jedem Minutenlauf.
+
+Dazu drei Wege, die an der Heilung vorbeischreiben konnten:
+
+* **Die Zweitschrift** wurde bisher mitgezogen, sobald der neue Stand
+  *irgendein* nicht leeres Token trug. Verglichen wird jetzt mit dem, was die
+  Zweitschrift selbst führt (`ww_zweitschrift_ziehen()`): ein Stand ohne das,
+  was dort steht, ersetzt sie nicht. Gespeichert wird trotzdem — nur der
+  Rückweg bleibt stehen, und das Protokoll sagt es.
+* **Die Tokenerzeugung** schrieb durch diese Wache hindurch, weil ein frisch
+  gewürfeltes Token ein gültiger Wert ist. Ein neues Token entsteht deshalb
+  nur noch, wenn **keine** Zweitschrift mit Token danebenliegt
+  (`ww_token_gesperrt()`). Sonst erscheint eine Meldung, es wird nichts
+  geschrieben, und die nächste gelungene Selbstheilung holt das alte Token
+  zurück. Derselbe Schutz sperrt den Knopf „Neues Token", solange die
+  Konfiguration unlesbar ist.
+* **`preupgrade.sh`** kopierte die Konfiguration ungeprüft über die
+  Zweitschrift — bei einem Auto-Update mit beschädigter Datei war das der
+  sichere Verlust. `postinstall.sh` holte die Sicherung nach demselben
+  Formentscheid zurück wie die Bibliothek und ließ die abgeschnittene Datei
+  deshalb stehen. Beide fragen jetzt nach dem Inhalt, und beide lesen die
+  Datei wirklich (`php -r`, kein `grep`): eine abgeschnittene Datei trägt den
+  Text `"aktionstoken":"…"` weiterhin.
+
+Neu im Reiter **Test**: „War die Konfiguration heil, als diese Seite aufgebaut
+wurde?" Die Zeile merkt sich die **zuerst** festgestellte Lage, bevor die
+Selbstheilung sie beseitigt — sonst meldete sie „in Ordnung" für eine Datei,
+die beim selben Seitenaufruf beschädigt war.
+
+Was diese Fassung **nicht** misst: nichts davon ist am Gerät gemessen, sondern
+über die PHP-Kommandozeile gegen eine LoxBerry-Nachbildung; und es wurde kein
+Hausgerät und keine Cloud angesprochen.
 
 ## Neu in 0.9.23
 

@@ -184,6 +184,256 @@ function ww_json_lesen($pfad)
 }
 
 /**
+ * Eine Zeile in weissware.log, mit Kappung wie ww_ansage_log().
+ *
+ * Bewusst dieselbe Datei, die der Dienst fuehrt und die der Reiter Logdateien
+ * anzeigt: eine Selbstheilung, von der nur eine zweite Datei weiss, erfaehrt
+ * der Bediener nicht.
+ */
+function ww_log($msg)
+{
+    $p = ww_paths();
+    if (!is_dir($p['logdir'])) {
+        @mkdir($p['logdir'], 0775, true);
+    }
+    clearstatcache(true, $p['log']);
+    if (is_file($p['log']) && filesize($p['log']) > 512000) {
+        $rest = array_slice(file($p['log'], FILE_IGNORE_NEW_LINES) ?: array(), -200);
+        @file_put_contents($p['log'], implode("\n", $rest) . "\n");
+    }
+    @file_put_contents($p['log'],
+        '[' . date('Y-m-d H:i:s') . '] ' . $msg . "\n", FILE_APPEND);
+}
+
+/**
+ * Eine Meldung hoechstens einmal je Zeitfenster ins Protokoll.
+ *
+ * Der Merker liegt in einer Datei, nicht im Prozess: Oberflaeche, Endpunkt
+ * und der Minutenlauf aus cron/cron.01min sind kurzlebig, ein Merker im
+ * Arbeitsspeicher haelt dort nichts still. Ohne ihn schriebe eine
+ * Selbstheilung, die nicht greift, jede Minute eine Zeile.
+ * Bauart: ak_log_wenn_neu() aus AnkerSolix 0.9.18.
+ */
+function ww_log_wenn_neu($schluessel, $text, $sekunden = 3600)
+{
+    $p = ww_paths();
+    $merker = $p['datadir'] . '/.meldung_' . preg_replace('/[^a-z0-9_]/', '', $schluessel);
+    $letzte = is_file($merker) ? (int) @file_get_contents($merker) : 0;
+    if (time() - $letzte < $sekunden) {
+        return false;
+    }
+    if (!is_dir($p['datadir']) && !@mkdir($p['datadir'], 0775, true) && !is_dir($p['datadir'])) {
+        return false;
+    }
+    @file_put_contents($merker, (string) time());
+    ww_log($text);
+    return true;
+}
+
+/**
+ * Traegt diese Datei etwas, oder nur Zeichen?
+ *
+ * Gemessen an der Sprachsteuerung (17.09.2026) und ueber den Bestand
+ * (Bestand-2026-09-18/klasse-A): eine ABGESCHNITTENE JSON-Datei - nicht
+ * leer, nicht "{}", aber fuer json_decode unbrauchbar - ging an jedem
+ * Heilungsentscheid vorbei, der nach der FORM fragte. ww_json_lesen() gab
+ * daraufhin ein leeres Feld, ww_config() die blanken Vorgaben, ww_token()
+ * wuerfelte ein NEUES Aktionstoken, und ww_config_speichern() kopierte es
+ * ueber die Zweitschrift: jede Loxone-Adresse mit dem alten Token bekommt
+ * danach HTTP 403. Bauart: sp_inhalt_oder_null() (Sprachsteuerung 0.11.7),
+ * ic_config_hat_inhalt() (Intercom 2.2.11).
+ *
+ * Rueckgabe: die gelesenen Daten oder null, wenn die Datei nichts traegt.
+ */
+function ww_inhalt_oder_null($pfad)
+{
+    if (!is_file($pfad)) { return null; }
+    $roh = trim((string) @file_get_contents($pfad));
+    if ($roh === '') { return null; }
+    $d = json_decode($roh, true);
+    if (!is_array($d) || $d === array()) { return null; }
+    return $d;
+}
+
+/**
+ * Traegt diese Konfiguration das, was nur sie tragen kann?
+ *
+ * Das Aktionstoken. Es steht in JEDER Loxone-Adresse dieses Plugins
+ * (?token=...&aktion=...); geht es verloren, scheitern alle virtuellen
+ * Eingaenge und Ausgaenge im Miniserver, und es gibt keinen Weg, es
+ * zurueckzurechnen. Alles andere - Takt, Anbieterhaken, MQTT-Stamm - laesst
+ * sich in der Oberflaeche noch einmal eintragen.
+ *
+ * Eine Konfiguration OHNE Token gibt es auf keinem Weg der Oberflaeche:
+ * ww_token() fuellt es beim ersten Seitenaufbau. Steht dort keines, ist die
+ * Datei nicht aus einem gespeicherten Stand hervorgegangen.
+ */
+function ww_config_hat_inhalt($c)
+{
+    return is_array($c) && $c !== array()
+        && trim((string) (isset($c['aktionstoken']) ? $c['aktionstoken'] : '')) !== '';
+}
+
+/**
+ * Die zuerst festgestellte Lage der Konfiguration, fuer die Dauer des
+ * Prozesses gemerkt.
+ *
+ * Regeln/05: "Eine Zeile, die den Zustand der Konfiguration meldet, merkt ihn
+ * sich, bevor die Selbstheilung ihn beseitigt." Der erste Aufruf von
+ * ww_config() heilt; der zweite - den die Selbstpruefung macht - saehe eine
+ * heile Datei und meldete "in Ordnung". Ein geheilter Schaden ist kein
+ * Nicht-Schaden: die Zweitschrift kann aelter sein als das, was verlorenging,
+ * und die Ursache (volles Dateisystem, Stromausfall beim Schreiben) besteht
+ * fort.
+ *
+ * Werte: ok | leer | neu | aus_zweitschrift | kaputt_geheilt |
+ *        kaputt_ohne_zweitschrift | unbekannt
+ */
+function ww_konfig_lage($setzen = null)
+{
+    static $lage = 'unbekannt';
+    if ($setzen !== null && ($lage === 'unbekannt' || $lage === 'ok')) {
+        $lage = (string) $setzen;
+    }
+    return $lage;
+}
+
+/**
+ * Der EINE Heilungsentscheid - nach INHALT, nicht nach Form.
+ *
+ * Nicht "fehlt die Datei, ist sie leer oder '{}'", sondern "traegt sie noch
+ * das Aktionstoken". Geheilt wird nur aus einer Zweitschrift, die selbst
+ * Inhalt traegt: ein Stand ohne Aktionstoken darf keinen anderen ersetzen,
+ * in keiner der beiden Richtungen. Was vorher in der Datei stand, wird nicht
+ * weggeworfen, sondern liegt als weissware.json.kaputt daneben - 0600, denn
+ * in der Konfiguration steht das Aktionstoken. Der reine Aktualisierungsfall
+ * "{}" hinterlaesst keine .kaputt-Datei; dort ging nichts verloren.
+ *
+ * Gemeldet wird EINMAL (ww_log_wenn_neu), nicht bei jedem Minutenlauf.
+ *
+ * Rueckgabe: true, wenn wirklich geheilt wurde.
+ */
+function ww_selbstheilung()
+{
+    $p = ww_paths();
+    if (ww_config_hat_inhalt(ww_inhalt_oder_null($p['config']))) {
+        ww_konfig_lage('ok');
+        return false;
+    }
+    $alt = is_file($p['config']) ? (string) @file_get_contents($p['config']) : '';
+    $rest = preg_replace('/\s+/', '', $alt);
+    $verdraengt = ($rest !== '' && $rest !== '{}' && $rest !== '[]');
+    if (!ww_config_hat_inhalt(ww_inhalt_oder_null($p['sicherung']))) {
+        // Nichts zu holen. Eine beschaedigte Datei ohne Zweitschrift ist der
+        // Fall, in dem wirklich etwas verloren ist - er wird benannt, nicht
+        // stillschweigend zur Neuinstallation erklaert.
+        if ($verdraengt) {
+            ww_konfig_lage('kaputt_ohne_zweitschrift');
+            ww_log_wenn_neu('kaputt_ohne_zweitschrift',
+                'WARNUNG: Die Konfiguration ist unlesbar und es liegt keine brauchbare '
+                . 'Zweitschrift daneben: ' . $p['config']);
+        } else {
+            ww_konfig_lage($rest === '' ? 'neu' : 'leer');
+        }
+        return false;
+    }
+    if (!is_dir($p['configdir'])) {
+        // is_dir() davor: @mkdir mit einem vorhandenen Verzeichnis ruft den
+        // Fehleraufnehmer trotzdem ("File exists") und faerbt jeden Pruef-
+        // lauf mit einer Warnung, die keine ist.
+        @mkdir($p['configdir'], 0775, true);
+    }
+    if ($verdraengt) {
+        @copy($p['config'], $p['config'] . '.kaputt');
+        @chmod($p['config'] . '.kaputt', 0600);
+    }
+    if (!@copy($p['sicherung'], $p['config'])) {
+        ww_konfig_lage($verdraengt ? 'kaputt_ohne_zweitschrift' : 'leer');
+        ww_log_wenn_neu('heilung_misslungen',
+            'WARNUNG: Die Konfiguration liess sich nicht aus der Zweitschrift '
+            . 'wiederherstellen (Schreibrecht? Platz?): ' . $p['config']);
+        return false;
+    }
+    @chmod($p['config'], 0600);
+    ww_konfig_lage($verdraengt ? 'kaputt_geheilt' : 'aus_zweitschrift');
+    ww_log_wenn_neu('heilung',
+        'Die Konfiguration trug kein Aktionstoken und wurde aus der Zweitschrift '
+        . 'wiederhergestellt: ' . $p['sicherung']
+        . ($verdraengt ? ' (der vorherige Inhalt liegt unter ' . $p['config'] . '.kaputt)' : '')
+        . '.');
+    return true;
+}
+
+/**
+ * Was die Zweitschrift traegt und der neue Stand nicht.
+ *
+ * Leere Rueckgabe heisst: die Zweitschrift darf erneuert werden. Verglichen
+ * wird, ob ein SCHLUESSEL fehlt oder leer ist, nicht ob sich ein Wert
+ * geaendert hat. Ein leeres Aktionstoken gibt es auf keinem Weg der
+ * Oberflaeche und gilt deshalb als fehlend.
+ *
+ * Bauart uebernommen aus Sprachsteuerung 0.11.7 / Intercom 2.2.11: eine
+ * Zweitschrift MIT Inhalt wird nie durch einen Stand OHNE Inhalt ersetzt.
+ * Das Speichern selbst wird nicht verhindert - nur der einzige Rueckweg
+ * bleibt stehen, und das Protokoll sagt es.
+ */
+function ww_zweitschrift_fehlt($sicherung, array $neu, array $felder)
+{
+    $z = ww_inhalt_oder_null($sicherung);
+    if ($z === null) { return array(); }
+    $fehlt = array();
+    foreach ($felder as $feld) {
+        if (!array_key_exists($feld, $z)) { continue; }
+        $hat_z = is_string($z[$feld]) ? (trim($z[$feld]) !== '') : !empty($z[$feld]);
+        if (!$hat_z) { continue; }
+        $hat_n = array_key_exists($feld, $neu)
+               && (is_string($neu[$feld]) ? (trim($neu[$feld]) !== '') : true);
+        if (!$hat_n) { $fehlt[] = $feld; }
+    }
+    return $fehlt;
+}
+
+/** Die Zweitschrift erneuern - oder begruendet nicht. */
+function ww_zweitschrift_ziehen($quelle, $ziel, array $neu, array $felder, $rechte = null)
+{
+    $fehlt = ww_zweitschrift_fehlt($ziel, $neu, $felder);
+    if ($fehlt) {
+        ww_log_wenn_neu('zweitschrift',
+            'WARNUNG: Die Zweitschrift bleibt unveraendert - der gespeicherte Stand '
+            . 'traegt nicht, was dort steht (' . implode(', ', $fehlt) . '): ' . $ziel);
+        return false;
+    }
+    if (!@copy($quelle, $ziel)) { return false; }
+    if ($rechte !== null) { @chmod($ziel, $rechte); }
+    return true;
+}
+
+/**
+ * Darf ueberhaupt ein neues Aktionstoken entstehen?
+ *
+ * Der dritte Weg, und er ist gemessen: die Zweitschrift-Wache faengt diesen
+ * Fall NICHT ab, weil ein frisch gewuerfeltes Token ein gueltiger Wert ist
+ * und durch jede Wache hindurchgeht, die nur fragt "traegt der neue Stand
+ * ein Token?". Aufgefallen an FerienFeiertage 1.2.13 (18.09.2026,
+ * Messstelle "wache" mit zurueckgebauter Heilung).
+ *
+ * Ein neues Token gehoert zur ERSTEN Einrichtung. Liegt eine Zweitschrift
+ * MIT Aktionstoken daneben, ist dies keine Erstinstallation, sondern eine
+ * Anlage, deren Konfiguration unlesbar ist und deren Selbstheilung nicht
+ * durchkam - kein Schreibrecht, volles Dateisystem. Ein NEUES Token waere
+ * dann kein Anfang, sondern der endgueltige Verlust des alten. Der Schutz
+ * faellt deshalb geschlossen aus: es wird nichts gewuerfelt und nichts
+ * geschrieben, der Bediener bekommt den Grund zu lesen, und die naechste
+ * gelungene Selbstheilung holt das alte Token zurueck.
+ */
+function ww_token_gesperrt()
+{
+    $p = ww_paths();
+    return !ww_config_hat_inhalt(ww_inhalt_oder_null($p['config']))
+        && ww_config_hat_inhalt(ww_inhalt_oder_null($p['sicherung']));
+}
+
+/**
  * Liest die Konfiguration und ergaenzt sie um die Vorgaben.
  *
  * $erzeugen = false schaltet die Selbstheilung ab. Der UNANGEMELDETE
@@ -195,19 +445,17 @@ function ww_json_lesen($pfad)
  * und legte dabei config/plugins/<ordner>/weissware.json aus der
  * Zweitschrift an. Wer die Adresse kennt, schaltete damit eine alte
  * Sicherung wieder scharf, samt steuerung_ein und altem Aktionstoken.
+ *
+ * Bis 0.9.25 entschied die Heilung nach der FORM der Datei ("leer oder
+ * '{}'"). Der Entscheid steht jetzt in ww_selbstheilung() und fragt nach
+ * dem INHALT; alle vier Wege, die diese Funktion aufrufen (Oberflaeche,
+ * Speichern, Endpunkt, Minutenlauf aus cron/cron.01min), benutzen denselben.
  */
 function ww_config($erzeugen = true)
 {
     $p = ww_paths();
-    $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
-    if ($erzeugen && ($roh === '' || $roh === '{}') && is_file($p['sicherung'])) {
-        // is_dir() davor: @mkdir mit einem vorhandenen Verzeichnis ruft den
-        // Fehleraufnehmer trotzdem ("File exists") und faerbt jeden Pruef-
-        // lauf mit einer Warnung, die keine ist.
-        if (!is_dir($p['configdir'])) {
-            @mkdir($p['configdir'], 0775, true);
-        }
-        @copy($p['sicherung'], $p['config']);
+    if ($erzeugen) {
+        ww_selbstheilung();
     }
     $cfg = ww_json_lesen($p['config']);
     return array_merge(ww_vorgaben(), $cfg);
@@ -243,14 +491,17 @@ function ww_config_speichern($cfg)
         @unlink($tmp);
         return false;
     }
-    /* Die Zweitschrift wird NUR mitgezogen, wenn der Stand ein Aktionstoken
-     * traegt. Sonst ueberschreibt ein Stand ohne Token die einzige Kopie,
-     * die ihn noch hat - und mit ihr jede im Miniserver eingetragene
-     * Adresse, still. */
-    if (trim((string) (isset($cfg['aktionstoken']) ? $cfg['aktionstoken'] : '')) !== '') {
-        @copy($p['config'], $p['sicherung']);
-        @chmod($p['sicherung'], 0600);
-    }
+    /* Die Zweitschrift wird NUR mitgezogen, wenn der Stand traegt, was dort
+     * schon steht. Sonst ueberschreibt ein Stand ohne Token die einzige
+     * Kopie, die ihn noch hat - und mit ihr jede im Miniserver eingetragene
+     * Adresse, still.
+     *
+     * Bis 0.9.25 stand hier nur "traegt der neue Stand ein nicht leeres
+     * Aktionstoken?". Das ist zu wenig: verglichen werden muss mit dem, was
+     * die Zweitschrift fuehrt (ww_zweitschrift_fehlt()). Das Speichern selbst
+     * wird nicht verhindert - nur der Rueckweg bleibt stehen. */
+    ww_zweitschrift_ziehen($p['config'], $p['sicherung'], (array) $cfg,
+                           array('aktionstoken'), 0600);
     return true;
 }
 
@@ -553,11 +804,24 @@ function ww_token_erzeugen($laenge = 24)
     return $t;
 }
 
-/** Sorgt dafuer, dass ein Token vorhanden ist, und gibt es zurueck. */
+/**
+ * Sorgt dafuer, dass ein Token vorhanden ist, und gibt es zurueck.
+ *
+ * Es entsteht nur eines, wenn ww_token_gesperrt() es zulaesst - also nur
+ * dort, wo nicht schon eine Zweitschrift MIT Aktionstoken danebenliegt.
+ * Rueckgabe '' heisst: es gibt keines und es darf gerade keines geben; der
+ * Aufrufer meldet das (webfrontend/htmlauth/index.php, WACHE.KEIN_TOKEN).
+ */
 function ww_token()
 {
     $cfg = ww_config();
     if (trim((string) $cfg['aktionstoken']) === '') {
+        if (ww_token_gesperrt()) {
+            ww_log_wenn_neu('tokenschutz',
+                'Die Konfiguration traegt kein Aktionstoken, die Zweitschrift aber '
+                . 'schon - es wird KEIN neues erzeugt: ' . ww_paths()['sicherung']);
+            return '';
+        }
         $cfg['aktionstoken'] = ww_token_erzeugen();
         ww_config_speichern($cfg);
     }

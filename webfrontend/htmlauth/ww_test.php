@@ -221,6 +221,39 @@ function ww_pruefungen()
                      : sprintf(ww_t('TEST.A_MUSTER_OK'), count($inVorlage)));
     }
 
+    /* War die Konfiguration heil, als dieser Seitenaufbau begann?
+     *
+     * Gefragt wird ww_konfig_lage(), nicht die Datei: der erste Aufruf von
+     * ww_config() in diesem Prozess heilt sie aus der Zweitschrift, und eine
+     * Zeile, die danach nachsieht, faende immer eine heile Datei und meldete
+     * "in Ordnung". Der Bediener erfuehre nie, dass etwas war - nur das
+     * Protokoll wuesste es. Ein geheilter Schaden ist kein Nicht-Schaden:
+     * die Zweitschrift kann aelter sein als das, was verlorenging, und die
+     * Ursache (volles Dateisystem, Stromausfall beim Schreiben) besteht fort.
+     * Regeln/05, Anlass Robonect 1.1.0. */
+    $lagen = array(
+        'ok'                       => array(1,  'TEST.A_KONFIG_OK'),
+        'neu'                      => array(-1, 'TEST.A_KONFIG_NEU'),
+        'leer'                     => array(-1, 'TEST.A_KONFIG_LEER'),
+        'aus_zweitschrift'         => array(-1, 'TEST.A_KONFIG_AUS_ZWEITSCHRIFT'),
+        'kaputt_geheilt'           => array(0,  'TEST.A_KONFIG_KAPUTT_GEHEILT'),
+        'kaputt_ohne_zweitschrift' => array(0,  'TEST.A_KONFIG_KAPUTT_OHNE'),
+    );
+    $lage = ww_konfig_lage();
+    if (isset($lagen[$lage])) {
+        list($stand, $schluessel) = $lagen[$lage];
+        $text = ww_t($schluessel);
+        if ($lage === 'kaputt_geheilt' || $lage === 'kaputt_ohne_zweitschrift') {
+            $text = sprintf($text, ww_e(basename($p['config']) . '.kaputt'));
+        }
+        $zeilen[] = ww_pruefzeile($stand, ww_t('TEST.F_KONFIG'), $text);
+    } else {
+        // 'unbekannt' - die Lage wird in ww_selbstheilung() gesetzt, und die
+        // laeuft nur bei ww_config(true). "Konnte nicht pruefen" ist ein
+        // eigener Ausgang, kein gruener Haken.
+        $zeilen[] = ww_pruefzeile(-1, ww_t('TEST.F_KONFIG'), ww_t('TEST.A_KONFIG_UNBEKANNT'));
+    }
+
     /* Gibt es eine Zweitschrift? Sie liegt NEBEN dem Konfigordner, damit sie
      * ein Update und sogar eine Neuinstallation uebersteht. */
     $zw = is_file($p['sicherung']);

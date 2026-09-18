@@ -373,8 +373,20 @@ if ($ww_post && isset($_POST['anmelden'])) {
     $ww_tab = 'tab-settings';
 }
 
-/* ---------------- Neues Token ---------------- */
-if ($ww_post && isset($_POST['token_neu'])) {
+/* ---------------- Neues Token ----------------
+ *
+ * Der Knopf ist eine bewusste Entscheidung des Bedieners und tauscht das
+ * Token auch dann, wenn alles heil ist. Er faellt aber geschlossen aus,
+ * solange die Konfiguration unlesbar ist und eine Zweitschrift MIT
+ * Aktionstoken danebenliegt: ww_config() gaebe dann die blanken Vorgaben
+ * zurueck, und gespeichert wuerde die Werkseinstellung samt frischem Token -
+ * die uebrigen Einstellungen waeren fort und das alte Token unwiederbringlich.
+ * Die naechste gelungene Selbstheilung holt es zurueck; danach wirkt der
+ * Knopf wieder. */
+if ($ww_post && isset($_POST['token_neu']) && ww_token_gesperrt()) {
+    $ww_fehler[] = ww_t('WACHE.KEIN_TOKEN');
+    $ww_tab = 'tab-loxone';
+} elseif ($ww_post && isset($_POST['token_neu'])) {
     $ww_cfg = ww_config();
     $ww_cfg['aktionstoken'] = ww_token_erzeugen();
     if (ww_config_speichern($ww_cfg)) {
@@ -522,6 +534,13 @@ if ($ww_post && isset($_POST['ww_zurueck'])) {
 /* ---------------- Laden ---------------- */
 $ww_cfg = ww_config();
 $ww_token = ww_token();
+/* Leer heisst: die Konfiguration ist unlesbar, die Selbstheilung kam nicht
+ * durch, und es wurde bewusst KEIN neues Token gewuerfelt (ww_token_gesperrt()).
+ * Das gehoert dem Bediener gesagt - der Reiter "Einbindung in Loxone" zeigte
+ * sonst Adressen mit leerem token= an, die niemand gebrauchen kann. */
+if ($ww_token === '') {
+    $ww_fehler[] = ww_t('WACHE.KEIN_TOKEN');
+}
 $ww_zg = ww_zugang();
 $ww_geraete = ww_geraete();
 $ww_zustand = ww_zustand();
