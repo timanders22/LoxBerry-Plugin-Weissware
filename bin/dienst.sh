@@ -101,6 +101,12 @@ PLOG="$LBHOMEDIR/log/plugins/$PNAME"
 PCONFIG="$LBHOMEDIR/config/plugins/$PNAME"
 PID="$PDATA/dienst.pid"
 SOLL="$PDATA/soll_laufen"
+# Die Marke "Aktualisierung laeuft". Sie liegt NEBEN dem Datenordner, weil
+# purge_installation data/plugins/<ordner>/ zwischen preupgrade.sh und
+# postinstall.sh restlos abraeumt (Regeln/06) - im Ordner waere sie genau
+# dann fort, wenn sie gebraucht wird. preupgrade.sh legt sie als Erstes an,
+# postinstall.sh entfernt sie beim Verlassen (trap), NACH seinem Dienststart.
+MARKE="$LBHOMEDIR/data/plugins/$PNAME.upgrade_laeuft"
 LOGDATEI="$PLOG/weissware.log"
 # Eigene Datei fuer alles, was NEBEN dem Protokoll anfaellt: Meldungen des
 # Starts und alles, was das Programm nach stderr schreibt, bevor sein
@@ -117,6 +123,10 @@ LOGDATEI="$PLOG/weissware.log"
 STARTLOG="$PLOG/weissware_start.log"
 PY="$SELF/venv/bin/python3"
 SKRIPT="$SELF/weissware.py"
+# Der Dienst laeuft als loxberry (siehe den Abstieg oben); wo es den Benutzer
+# nicht gibt, als der eigene. Gebraucht fuer die Suche nach Diensten ohne
+# PID-Datei: ohne Benutzerfilter liefe sie ueber fremde Prozesse.
+DIENSTUID=$(id -u loxberry 2>/dev/null || id -u)
 
 laeuft() {
     [ -f "$PID" ] || return 1
@@ -144,9 +154,107 @@ laeuft() {
     return 0
 }
 
+# Dieselbe Probe fuer eine BELIEBIGE Nummer, zusaetzlich mit dem Benutzer -
+# gebraucht fuer die Suche nach Diensten ohne PID-Datei. Wortgleich mit
+# ww_ist_dienst() in preupgrade.sh. Argumentweise (Regeln/06, Berichtigung
+# vom 18.09.2026): argv[0] ist ein Python, argv[1] ist GENAU dieses Skript
+# (ein relativer Start wird gegen /proc/<pid>/cwd aufgeloest), und es folgt
+# KEIN drittes Argument - "weissware.py --selbsttest" oder "--hc-anmelden"
+# aus der Oberflaeche ist ein Einmallauf, kein Dienst.
+ist_dienst() {   # $1 PID
+    [ -r "/proc/$1/cmdline" ] || return 1
+    [ "$(stat -c %u "/proc/$1" 2>/dev/null)" = "$DIENSTUID" ] || return 1
+    # cat statt Umlenkung: sonst meldet die Schale einen Prozess, der zwischen
+    # Auflistung und Lesen endet, auf der Fehlerausgabe - und die landet ueber
+    # ww_dienst() in der Oberflaeche.
+    ROH=$(cat "/proc/$1/cmdline" 2>/dev/null | tr '\0' '\n')
+    [ -n "$ROH" ] || return 1
+    A0=$(printf '%s\n' "$ROH" | sed -n '1p')
+    A1=$(printf '%s\n' "$ROH" | sed -n '2p')
+    A2=$(printf '%s\n' "$ROH" | sed -n '3p')
+    [ -n "$A0" ] && [ -n "$A1" ] && [ -z "$A2" ] || return 1
+    case "${A0##*/}" in python|python[0-9.]*) ;; *) return 1 ;; esac
+    case "$A1" in
+        /*) ZIEL=$A1 ;;
+        *)  WD=$(readlink "/proc/$1/cwd" 2>/dev/null) || return 1
+            ZIEL="${WD% (deleted)}/$A1" ;;
+    esac
+    [ "$ZIEL" = "$SKRIPT" ]
+}
+dienste_suchen() {
+    for D in /proc/[0-9]*; do
+        ist_dienst "${D#/proc/}" && echo "${D#/proc/}"
+    done
+    return 0
+}
+# Beendet jeden eigenen Dienst, der gerade laeuft - auch den, der in keiner
+# PID-Datei steht. Zehn Sekunden Zeit, dann hart; vor jedem Signal steht die
+# Probe oben. Gibt die Nummern aus.
+#
+# Warum: die PID-Datei liegt im Datenordner, und den raeumt
+# purge_installation beim Upgrade restlos ab (Regeln/06). Ein Dienst, der in
+# keiner PID-Datei steht, blieb bis 0.9.26 bei "stop" stehen - und
+# postinstall.sh stellte nach dem Upgrade einen zweiten daneben. In WSL
+# gemessen (Pruefung-Weissware-0.9.27, Faelle R3 bis R5): zwei Dienste nach
+# dem Upgrade, einer nach "stop".
+waisen_beenden() {
+    LISTE=$(dienste_suchen)
+    [ -n "$LISTE" ] || return 0
+    kill $LISTE 2>/dev/null
+    N=0
+    while [ $N -lt 10 ] && [ -n "$(dienste_suchen)" ]; do
+        sleep 1
+        N=$((N + 1))
+    done
+    REST=$(dienste_suchen)
+    [ -n "$REST" ] && kill -9 $REST 2>/dev/null
+    echo $LISTE
+}
+
+# Laeuft gerade eine Aktualisierung dieses Plugins?
+#
+# Gemessen (Pruefung-Weissware-0.9.27, Faelle P2/P3, 18.09.2026): ohne Marke
+# legte der Knopf "Dienst starten" der Oberflaeche im Fenster, in dem
+# postinstall.sh die Bibliothek installiert, soll_laufen an - der Start
+# selbst scheiterte, weil requests noch fehlte, und die Oberflaeche meldete
+# "Start fehlgeschlagen". Der Minutentakt startete den Dienst trotzdem, und
+# ein vor dem Upgrade BEWUSST angehaltener Dienst lief danach. (Den Merker
+# raeumt zusaetzlich das "stop" in postinstall.sh bei liegender Marke weg -
+# erst ohne beide Stellen wird P2 rot, Eichfall K2K7.)
+#
+# Ausgaenge:
+#   Marke hoechstens 3600 s alt  -> gesperrt (Fall C1)
+#   Marke aelter, aus der Zukunft, leer oder unlesbar -> sie gilt nicht
+#                                (Faelle C4 bis C7; eine abgebrochene
+#                                Installation darf den Dienst nicht fuer
+#                                immer stilllegen)
+#   keine lesbare Uhr            -> die Pruefung faellt GESCHLOSSEN aus
+#                                (CLAUDE.md 4; Fall C8)
+#   WW_START_TROTZ_MARKE=1       -> Ausnahme fuer postinstall.sh (Fall C12)
+marke_sperrt() {
+    [ -f "$MARKE" ] || return 1
+    [ "${WW_START_TROTZ_MARKE:-0}" = "1" ] && return 1
+    JETZT=$(date +%s 2>/dev/null)
+    case "$JETZT" in ''|*[!0-9]*) return 0 ;; esac
+    SEIT=$(cat "$MARKE" 2>/dev/null)
+    case "$SEIT" in ''|*[!0-9]*) return 1 ;; esac
+    ALTER=$((JETZT - SEIT))
+    [ "$ALTER" -lt 0 ] && return 1
+    [ "$ALTER" -le 3600 ]
+}
+
 starten() {
     if laeuft; then
         echo "laeuft bereits (PID $(cat "$PID"))"
+        return 0
+    fi
+    # Diese Frage steht VOR dem mkdir und VOR dem touch auf soll_laufen
+    # weiter unten. Stuende sie dahinter, legte der abgewiesene Start den
+    # Merker trotzdem an, und der Waechter startete den Dienst eine Minute
+    # spaeter doch (Fall C3). Rueckgabewert 0: eine laufende Aktualisierung
+    # ist kein Fehlschlag.
+    if marke_sperrt; then
+        echo "Eine Aktualisierung dieses Plugins laeuft - der Dienst wird danach gestartet, falls er vorher lief."
         return 0
     fi
     # Angelegt wird nur da, wo wirklich etwas geschrieben wird - also beim
@@ -185,23 +293,33 @@ starten() {
 
 anhalten() {
     rm -f "$SOLL"
-    if ! laeuft; then
-        rm -f "$PID"
-        echo "laeuft nicht"
-        return 0
-    fi
-    P=$(cat "$PID")
-    kill "$P" 2>/dev/null
-    for i in 1 2 3 4 5 6 7 8 9 10; do
-        laeuft || break
-        sleep 1
-    done
+    ETWAS=0
     if laeuft; then
-        kill -9 "$P" 2>/dev/null
-        sleep 1
+        P=$(cat "$PID")
+        kill "$P" 2>/dev/null
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+            laeuft || break
+            sleep 1
+        done
+        if laeuft; then
+            kill -9 "$P" 2>/dev/null
+            sleep 1
+        fi
+        ETWAS=1
     fi
     rm -f "$PID"
-    echo "angehalten"
+    # Und jeder eigene Dienst, der in KEINER PID-Datei steht (waisen_beenden
+    # oben; Fall R5).
+    WAISEN=$(waisen_beenden)
+    if [ -n "$WAISEN" ]; then
+        echo "angehalten; zusaetzlich ein Dienst ohne PID-Datei beendet (PID $WAISEN)"
+        return 0
+    fi
+    if [ "$ETWAS" = "1" ]; then
+        echo "angehalten"
+        return 0
+    fi
+    echo "laeuft nicht"
     return 0
 }
 

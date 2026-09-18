@@ -33,6 +33,30 @@ CFGDIR="$BASE/config/plugins/$PFOLDER"
 PDATA="$BASE/data/plugins/$PFOLDER"
 SICHER="$BASE/config/plugins"
 
+# ---------- Zuerst die Marke "Aktualisierung laeuft" ----------
+# Sie steht VOR allem anderen, damit sie auch dann liegt, wenn weiter unten
+# etwas schiefgeht. Zwischen diesem Skript und postinstall.sh loescht
+# purge_installation data/plugins/<ordner>/ samt soll_laufen und bin/ samt
+# venv, legt die neuen Dateien und die Cron-Datei hin, und postinstall.sh
+# baut die venv neu (Regeln/06). Solange die Marke liegt, startet bin/dienst.sh
+# keinen Dienst - weder ueber den Minutentakt noch ueber die Knoepfe der
+# Oberflaeche. Gemessen (Pruefung-Weissware-0.9.27, Faelle P2/P3): ohne sie
+# lief ein vor dem Upgrade bewusst angehaltener Dienst danach wieder, weil ein
+# Knopfdruck im pip-Fenster soll_laufen anlegte.
+#
+# Die Marke liegt NEBEN dem Datenordner - im Ordner loeschte purge_installation
+# sie mit. Im Inhalt steht die Unixzeit; bin/dienst.sh nimmt sie nur, solange
+# sie hoechstens eine Stunde alt ist. postinstall.sh entfernt sie.
+mkdir -p "$BASE/data/plugins" 2>/dev/null
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+date +%s > "$MARKE" 2>/dev/null
+if [ -s "$MARKE" ]; then
+    echo "<OK> Dienststart bis zum Ende der Aktualisierung gesperrt."
+else
+    echo "<WARNING> Die Marke $MARKE liess sich nicht anlegen - der Dienst"
+    echo "<WARNING> koennte waehrend der Aktualisierung anlaufen."
+fi
+
 # ZUERST merken, ob der Dienst laufen soll - 'dienst.sh stop' entfernt den
 # Merker selbst, und danach waere die Antwort nicht mehr zu bekommen.
 if [ -f "$PDATA/soll_laufen" ]; then
@@ -73,6 +97,57 @@ elif [ -f "$PDATA/dienst.pid" ]; then
         echo "<INFO> Laufender Dienst angehalten (Rueckfallweg)."
     fi
     rm -f "$PDATA/dienst.pid"
+fi
+
+# Dazu jeder eigene Dienst OHNE PID-Datei. Das "dienst.sh stop" oben ist das
+# der INSTALLIERTEN, also der alten Fassung - und das fand bis 0.9.26 nur den
+# Dienst aus der PID-Datei. Ein Dienst ohne sie (von Hand gestartet, PID-Datei
+# verloren) lief durch das ganze Upgrade weiter, und postinstall.sh stellte
+# einen zweiten daneben: zwei Abrufe gegen dieselben Herstellerclouds mit
+# derselben Anmeldung. In WSL gemessen (Pruefung-Weissware-0.9.27, Fall R3):
+# 2 Dienste nach dem Upgrade.
+#
+# Argumentweise und nur fuer den Dienstbenutzer, vor JEDEM Signal - wortgleich
+# mit ist_dienst() in bin/dienst.sh.
+WW_SKRIPT="$BASE/bin/plugins/$PFOLDER/weissware.py"
+WW_UID=$(id -u loxberry 2>/dev/null || id -u)
+ww_ist_dienst() {   # $1 PID
+    [ -r "/proc/$1/cmdline" ] || return 1
+    [ "$(stat -c %u "/proc/$1" 2>/dev/null)" = "$WW_UID" ] || return 1
+    # cat statt Umlenkung: endet der Prozess zwischen Auflistung und Lesen,
+    # meldete die Schale die fehlgeschlagene Umlenkung selbst - mitten in das
+    # Protokoll des Installers.
+    ww_roh=$(cat "/proc/$1/cmdline" 2>/dev/null | tr '\0' '\n')
+    [ -n "$ww_roh" ] || return 1
+    ww_a0=$(printf '%s\n' "$ww_roh" | sed -n '1p')
+    ww_a1=$(printf '%s\n' "$ww_roh" | sed -n '2p')
+    ww_a2=$(printf '%s\n' "$ww_roh" | sed -n '3p')
+    [ -n "$ww_a0" ] && [ -n "$ww_a1" ] && [ -z "$ww_a2" ] || return 1
+    case "${ww_a0##*/}" in python|python[0-9.]*) ;; *) return 1 ;; esac
+    case "$ww_a1" in
+        /*) ww_ziel=$ww_a1 ;;
+        *)  ww_wd=$(readlink "/proc/$1/cwd" 2>/dev/null) || return 1
+            ww_ziel="${ww_wd% (deleted)}/$ww_a1" ;;
+    esac
+    [ "$ww_ziel" = "$WW_SKRIPT" ]
+}
+ww_dienste_suchen() {
+    for ww_d in /proc/[0-9]*; do
+        ww_ist_dienst "${ww_d#/proc/}" && echo "${ww_d#/proc/}"
+    done
+    return 0
+}
+WW_LISTE=$(ww_dienste_suchen)
+if [ -n "$WW_LISTE" ]; then
+    kill $WW_LISTE 2>/dev/null
+    ww_i=0
+    while [ $ww_i -lt 10 ] && [ -n "$(ww_dienste_suchen)" ]; do
+        sleep 1
+        ww_i=$((ww_i + 1))
+    done
+    WW_REST=$(ww_dienste_suchen)
+    [ -n "$WW_REST" ] && kill -9 $WW_REST 2>/dev/null
+    echo "<INFO> Ein Dienst ohne PID-Datei lief und wurde beendet (PID $(echo $WW_LISTE))."
 fi
 
 # Ist diese Datei gueltiges JSON UND traegt sie darin mindestens einen der

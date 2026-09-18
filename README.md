@@ -10,12 +10,76 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.26 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.27 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.27
+
+Die Upgrade-Marke, nachgerüstet nach der Bauweise aus Regeln/06 (Einspeisebremse
+0.9.20, Govee 0.9.19), und die Dienste ohne PID-Datei. Alles in WSL/Ubuntu
+gemessen, mit nachgebautem Installationsablauf (preupgrade, Abräumen von
+`config/`, `data/`, `bin/` samt venv, `templates/` und `webfrontend/`, neue
+Dateien und Cron-Datei, postinstall mit wartendem pip, postupgrade), vor und
+nach der Korrektur, jede Korrektur einzeln durch Rückbau geeicht
+(`Pruefung-Weissware-0.9.27/`, 47 Prüfzeilen). Nichts davon ist am Gerät
+gemessen.
+
+**Was in der Lücke geschah.** In der eigentlichen Lücke zwischen dem Abräumen
+und `postinstall.sh` startet nichts: der Minutentakt findet `soll_laufen` nicht
+mehr, und der Knopf „Dienst starten" scheitert an der fehlenden venv. Die Lücke
+reicht aber bis in `postinstall.sh` hinein, und dort wurde gemessen:
+
+* **Ein bewusst angehaltener Dienst lief nach dem Upgrade wieder.** Wer im
+  Fenster, in dem `postinstall.sh` die Bibliothek installiert, auf „Dienst
+  starten" drückte, bekam „Start fehlgeschlagen" (requests fehlte noch) — aber
+  `soll_laufen` war schon angelegt, und der Minutentakt startete den Dienst
+  danach trotzdem.
+* **Zwei oder drei Dienste nach dem Neustart in `postinstall.sh`.** Zwischen
+  dem Anlegen von `soll_laufen` und dem Schreiben der PID-Datei kann der
+  Minutentakt denselben Dienst ein zweites Mal starten. Gegen eine
+  Wächterschleife ohne Pause: in 3 von 200 Durchgängen ohne Marke, in 1 von 100
+  mit einer Marke, die **vor** dem Start fällt, in 0 von 100 mit einer Marke,
+  die **nach** dem Start fällt. Im Betrieb läuft der Wächter einmal je Minute —
+  der Fall ist dort selten, aber möglich.
+* **Ein Dienst ohne PID-Datei überlebte das Upgrade.** `preupgrade.sh` hielt nur
+  den Dienst aus der PID-Datei an, `dienst.sh stop` ebenso. Lief einer ohne sie
+  (von Hand gestartet, oder mit dem Knopf der alten Fassung zwischen
+  `preupgrade.sh` und dem Abräumen), liefen nach dem Upgrade zwei — zwei Abrufe
+  mit derselben Anmeldung gegen dieselben Herstellerclouds.
+
+**Was jetzt gilt.**
+
+* `preupgrade.sh` legt als Erstes `data/plugins/<ordner>.upgrade_laeuft` mit
+  der Unixzeit an — **neben** dem Datenordner, der beim Upgrade abgeräumt wird.
+* `bin/dienst.sh` startet nicht, solange die Marke höchstens eine Stunde alt
+  ist, und fragt das **vor** dem Anlegen von `soll_laufen`. Eine ältere, leere,
+  unlesbare oder in der Zukunft liegende Marke gilt nicht; ohne lesbare Uhr
+  gilt sie (der Schutz fällt geschlossen aus). Anhalten bleibt jederzeit
+  möglich.
+* `postinstall.sh` hält bei liegender Marke zuerst jeden eigenen Dienst an,
+  startet dann den Dienst, falls er vor dem Upgrade lief, mit der Ausnahme
+  `WW_START_TROTZ_MARKE=1`, und entfernt die Marke erst beim Verlassen (`trap`
+  auf EXIT) — also **nach** dem Start, und auch dann, wenn es vorzeitig mit
+  einem Fehler aussteigt.
+* `dienst.sh stop` und `preupgrade.sh` beenden auch Dienste ohne PID-Datei.
+  Erkannt wird argumentweise über `/proc/<pid>/cmdline`: ein Python, genau
+  dieses `weissware.py`, **kein** drittes Argument (ein Einmallauf wie
+  `--selbsttest` ist kein Dienst), und der Prozess gehört dem Dienstbenutzer.
+  Ein Dienst einer Nachbarinstallation, ein Einmallauf und ein `tail -f` auf die
+  Datei bleiben unberührt (gemessen).
+* `uninstall` räumt die Marke weg.
+* Der Reiter Test zeigt eine Zeile „Läuft gerade eine Aktualisierung dieses
+  Plugins?" — mit einem Kreuz, wenn eine alte Marke liegengeblieben ist.
+
+**Die Oberfläche wird nicht gesperrt.** Gemessen wurde ein Seitenaufruf und ein
+Speichern in der Lücke und im pip-Fenster, dazu der Minutenlauf der Ansage:
+Aktionstoken, Client-Geheimnis, Anmeldung und die gespeicherte Änderung waren
+nach dem Upgrade in jedem Fall erhalten. Eine Sperre ohne gemessenen Verlust
+nähme dem Anwender nur die Seite (Regeln/06).
 
 ## Neu in 0.9.26
 

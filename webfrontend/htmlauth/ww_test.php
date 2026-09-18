@@ -359,6 +359,23 @@ function ww_pruefungen()
         $pid > 0 ? ww_t('TEST.A_DIENST_LAEUFT') . ' ' . $pid
                  : (ww_dienst_soll() ? ww_t('TEST.A_DIENST_SOLL_TOT') : ww_t('TEST.A_DIENST_GESTOPPT')));
 
+    /* Laeuft gerade eine Aktualisierung? Solange die Marke liegt, weist
+     * bin/dienst.sh jeden Start ab - auch den ueber die Knoepfe im Reiter
+     * Einstellungen. Ohne diese Zeile gaebe es die Regel, aber nichts, was
+     * sie sichtbar macht (CLAUDE.md 6). Drei Ausgaenge, drei Saetze; die
+     * liegengebliebene Marke ist ein Kreuz, die laufende Aktualisierung nur
+     * ein Hinweis. */
+    list($mk_liegt, $mk_gueltig, $mk_alter) = ww_upgrade_marke();
+    if (!$mk_liegt) {
+        $zeilen[] = ww_pruefzeile(1, ww_t('TEST.F_UPGRADE_MARKE'), ww_t('TEST.A_UPGRADE_KEINE'));
+    } elseif ($mk_gueltig) {
+        $zeilen[] = ww_pruefzeile(-1, ww_t('TEST.F_UPGRADE_MARKE'),
+            sprintf(ww_t('TEST.A_UPGRADE_LAEUFT'), (int) $mk_alter));
+    } else {
+        $zeilen[] = ww_pruefzeile(0, ww_t('TEST.F_UPGRADE_MARKE'),
+            sprintf(ww_t('TEST.A_UPGRADE_ALT'), ww_e(ww_paths()['plugin'] . '.upgrade_laeuft')));
+    }
+
     // Je Anbieter eine Zeile - eingeschaltet, Zugangsdaten da, angemeldet.
     $anbieter = array(
         array('hc_ein', 'homeconnect', 'Home Connect', $z['hc_client_id'] !== '', 1),

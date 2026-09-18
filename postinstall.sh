@@ -32,6 +32,29 @@ PLOG="$BASE/log/plugins/$PFOLDER"
 PCONFIG="$BASE/config/plugins/$PFOLDER"
 VENV="$PBIN/venv"
 
+# ---------- Die Marke "Aktualisierung laeuft" faellt hier ----------
+# preupgrade.sh legt sie als Erstes an (data/plugins/<ordner>.upgrade_laeuft);
+# solange sie liegt, startet bin/dienst.sh keinen Dienst.
+#
+# Warum hier und nicht in postupgrade.sh: postupgrade.sh ruft nur dieses
+# Skript ein zweites Mal auf. Der Dienststart steht HIER, weiter unten - und
+# die Marke muss NACH ihm fallen, nicht davor: zwischen dem "touch
+# soll_laufen" in bin/dienst.sh und dem Schreiben der PID-Datei ist ein
+# Fenster offen, in dem der Minutentakt denselben Dienst ein zweites Mal
+# startet, sobald die Marke weg ist. Der eigene Start bekommt deshalb die
+# Ausnahme WW_START_TROTZ_MARKE=1. In WSL gegen eine Waechterschleife ohne
+# Pause gemessen (Pruefung-Weissware-0.9.27, messe_reihenfolge.sh): ohne
+# Marke in 3 von 200 Durchgaengen zwei oder drei Dienste, Marke vor dem
+# Start 1 von 100, Marke nach dem Start 0 von 100.
+#
+# Entfernt wird sie ueber einen trap auf EXIT, nicht am Dateiende: dieses
+# Skript steigt an mehreren Stellen mit "exit 1" aus (Python, venv, pip). Ohne
+# trap bliebe der Dienst nach einer gescheiterten Installation eine Stunde
+# gesperrt, ohne dass irgendwo stuende, warum (Fall C13).
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+ww_marke_weg() { rm -f "$MARKE"; }
+trap ww_marke_weg EXIT
+
 # Auf eine Fassung festgenagelt, damit eine Installation von heute morgen und
 # eine von heute abend dasselbe ergeben.
 REQUESTS="2.32.3"
@@ -236,8 +259,22 @@ chmod 600 "$PDATA/token.json" 2>/dev/null
 # und weil 'soll_laufen' im abgeraeumten Datenordner lag, griff auch der
 # minuetliche Waechter nicht.
 LIEF="$BASE/config/plugins/$PFOLDER.backup.lief"
+# Liegt die Marke, laeuft gerade ein Upgrade: dann darf hier KEIN Dienst mehr
+# laufen - auch keiner ohne PID-Datei, die hat purge_installation mit dem
+# Datenordner geloescht. Gemessen (Pruefung-Weissware-0.9.27, Fall R4): ein
+# Knopfdruck "Dienst starten" zwischen preupgrade.sh und purge_installation -
+# dort ist noch die ALTE Fassung installiert, die keine Marke kennt - liess
+# einen Dienst ohne PID-Datei zurueck, und nach dem Upgrade liefen zwei.
+# bin/dienst.sh stop beendet seit dieser Fassung auch Dienste ohne PID-Datei,
+# argumentweise (waisen_beenden).
+if [ -f "$MARKE" ] && [ -x "$PBIN/dienst.sh" ]; then
+    WW_HALT=$("$PBIN/dienst.sh" stop 2>&1)
+    case "$WW_HALT" in
+        angehalten*) echo "<INFO> Waehrend des Upgrades lief ein Dienst: $WW_HALT" ;;
+    esac
+fi
 if [ -f "$LIEF" ]; then
-    if [ -x "$PBIN/dienst.sh" ] && "$PBIN/dienst.sh" start >/dev/null 2>&1; then
+    if [ -x "$PBIN/dienst.sh" ] && WW_START_TROTZ_MARKE=1 "$PBIN/dienst.sh" start >/dev/null 2>&1; then
         echo "<OK> Der Dienst wurde wieder gestartet."
     else
         echo "<INFO> Der Dienst lief vor dem Upgrade, liess sich aber nicht"

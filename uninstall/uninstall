@@ -101,6 +101,11 @@ for D in /proc/[0-9]*; do
 done
 [ "$GEFUNDEN" -eq 0 ] && echo "<INFO> Es lief kein Abrufdienst."
 rm -f "$PIDDATEI" "$PDATA/soll_laufen" 2>/dev/null
+# Die Marke einer abgebrochenen Aktualisierung liegt NEBEN dem Datenordner
+# (preupgrade.sh) und geht mit ihm nicht weg. Bliebe sie liegen, sperrte sie
+# den Dienst einer spaeteren Neuinstallation bis zu einer Stunde lang.
+# Gemessen: Pruefung-Weissware-0.9.27, Fall C11.
+rm -f "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" 2>/dev/null
 
 # ---------------------------------------------------------------
 # 2. Sicherungsdateien ausserhalb der Plugin-Ordner
