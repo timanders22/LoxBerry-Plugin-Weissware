@@ -10,12 +10,68 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.25 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.26 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.26
+
+Drei Befunde aus der Bestandsmessung vom 18.09.2026, alle in WSL/Ubuntu
+nachgestellt, vor und nach der Korrektur gemessen und jede Korrektur einzeln
+durch Rückbau geeicht (`Pruefung-Weissware-0.9.26/`, 24 Prüfzeilen, 9
+Rückbaufälle). Nichts davon ist am Gerät gemessen.
+
+**Das Lebenszeichen `ts` ging zurückbehalten (retained) hinaus.** Am
+UDP-Eingang gemessen: `retain weissware/ts 1789…`. Der Hausstandard ist
+eindeutig — das Lebenszeichen ist nie retained, sonst liefert der Broker nach
+einem Neustart einen Zeitstempel aus, zu dem längst kein Dienst mehr läuft.
+`ts` geht jetzt mit `publish` hinaus, in beiden Tabellen (`RETAIN` in
+`bin/weissware.py`, `ww_mqtt_retain()` in der Oberfläche). Der Preis ist
+benannt: nach einem Neustart des Miniservers steht `ts` erst mit dem nächsten
+Takt wieder an (bis zum Ruhetakt, ab Werk 300 s).
+
+Der alte zurückbehaltene Wert verschwindet davon nicht von selbst. Der Dienst
+räumt ihn deshalb **einmal** ab — eine leere Nutzlast mit `retain` auf
+`<präfix>/ts`, der gültige Wert unmittelbar dahinter — und merkt sich das
+im Datenordner (`retain_ts_geraeumt`, Inhalt: das Themenpräfix; wer das
+Präfix umstellt, bekommt die Abräumung unter dem neuen Stamm noch einmal).
+Ob das Gateway der Anlage die leere Nachricht als Löschung an den Broker
+weitergibt, ist nicht gemessen.
+
+Neu im Reiter **Test**: „Geht das Lebenszeichen nie zurückbehalten hinaus?"
+Die vorhandene Zeile „Stimmen die beiden Retain-Tabellen überein?" hielt die
+Tabellen nur gegeneinander — beide sagten dasselbe, und beide sagten es
+falsch.
+
+Unverändert und ausdrücklich **nicht** angefasst: `weissware/ok` geht weiter
+retained hinaus. Ob `ok` zum Lebenszeichen gehört, ist in den Hausregeln
+widersprüchlich festgehalten; die Entscheidung steht aus. Ebenso bleibt
+`geraetN/laeuft` retained — es ist der Zustand des Geräts, nicht des Dienstes.
+
+**Eine abgeschnittene Datendatei verhinderte die Rückholung nach dem Update.**
+`postinstall.sh` holte `token.json`, `geraetenummern.json` und `laeufe.json`
+nur zurück, wenn die Datei **leer** war (`[ ! -s … ]`). Eine halb geschriebene
+Datei ist nicht leer: die Anmeldung an drei Herstellerclouds blieb fort, und
+die Gerätenummern — also die Adressen in Loxone — wurden neu vergeben.
+Entschieden wird jetzt nach dem Inhalt (`ww_json_traegt()`: lesbares JSON mit
+mindestens einem Eintrag); der verdrängte Stand liegt als `<datei>.kaputt`
+(0600) daneben. Dieselbe Lücke saß auf der anderen Seite: `preupgrade.sh`
+kopierte die drei Dateien **unbedingt** über die Sicherung, eine abgeschnittene
+`token.json` verdrängte also die letzte heile Abschrift. Beide Skripte stellen
+jetzt dieselbe Frage.
+
+**`bin/dienst.sh` und `bin/weissware.py` rieten Wurzel und Ordnernamen.**
+Beide rechneten sie aus dem eigenen Ablageort und übergingen ein gesetztes
+`$LBHOMEDIR`. Nachgestellt: `dienst.sh status` aus einem Prüfarchiv unter
+`<Wurzel>/pruefung/<plugin>/bin` legte in der **laufenden** Installation
+`data/plugins/bin` und `log/plugins/bin` an. Jetzt gilt die Reihenfolge
+Umgebung (`$LBHOMEDIR`, `$LBPPLUGINDIR`) → Aufwärtssuche → Ablageort, wie in
+der Oberfläche schon lange. Außerdem legt `dienst.sh` Daten- und Logordner
+nur noch beim **Start** an, nicht mehr bei jedem Aufruf: vorher legte schon
+ein `status` den eben abgeräumten Datenordner wieder an.
 
 ## Neu in 0.9.25
 

@@ -1,11 +1,12 @@
 #!/bin/bash
 # Weissware Cloud - Start, Stopp und Waechter des Abrufdienstes.
 #
-# Die Pfade werden aus dem EIGENEN Ablageort abgeleitet, nicht ueber
-# LoxBerry::System. Grund: LoxBerry::System leitet den Pluginordner aus dem
-# Aufrufort ab; wird dieses Skript aus postinstall.sh oder aus dem Cron
-# gestartet, kommt dort ueberall Leerstring zurueck - das Skript werkelt dann
-# gegen /-Pfade und meldet trotzdem Erfolg.
+# Die Pfade kommen aus der UMGEBUNG, solange sie etwas sagt
+# ($LBHOMEDIR, $LBPPLUGINDIR); erst danach aus dem Ablageort. Nicht ueber
+# LoxBerry::System: das leitet den Pluginordner aus dem Aufrufort ab; wird
+# dieses Skript aus postinstall.sh oder aus dem Cron gestartet, kommt dort
+# ueberall Leerstring zurueck - das Skript werkelt dann gegen /-Pfade und
+# meldet trotzdem Erfolg. Die Abstufung steht bei ww_wurzel() weiter unten.
 
 # readlink -f loest Symlinks auf, BEVOR das Verzeichnis bestimmt wird.
 # LoxBerry legt Daemons als Symlink unter system/daemons/plugins/ ab; von
@@ -43,8 +44,58 @@ if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
 fi
 
 SELF=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)          # <home>/bin/plugins/<ordner>
-PNAME=$(basename "$SELF")
-LBHOMEDIR=$(cd "$SELF/../../.." && pwd)
+
+# Wurzel und Ordnername werden GELESEN, nicht geraten (Regeln/03: Stufe 1 ist
+# $LBHOMEDIR; Regeln/06: "Ein Systempfad wird nicht fest verdrahtet").
+#
+# Bis 0.9.25 stand hier
+#     PNAME=$(basename "$SELF")
+#     LBHOMEDIR=$(cd "$SELF/../../.." && pwd)
+# - beides aus dem Ablageort, und ein gesetztes $LBHOMEDIR wurde dabei
+# UEBERSCHRIEBEN. Am 18.09.2026 nachgestellt (Pruefung-Weissware-0.9.26,
+# Fall H1; Bauart H1 aus Bestand-2026-09-18/klasse-H): 'dienst.sh status' aus
+# einem Pruefarchiv unter <Wurzel>/pruefung/<plugin>/bin legte in der
+# LAUFENDEN Installation data/plugins/bin und log/plugins/bin an - mit
+# 'status', also mit einem Aufruf, den jeder fuer folgenlos haelt.
+ww_wurzel() {
+    if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR" ]; then
+        printf '%s\n' "$LBHOMEDIR"
+        return 0
+    fi
+    # Aufwaerts suchen statt raten: das erste Verzeichnis, das config/plugins
+    # UND webfrontend traegt, ist die Wurzel. Dieselbe Suche wie in
+    # bin/weissware.py und in ww_lib.php.
+    ww_d=$SELF
+    ww_i=0
+    while [ "$ww_i" -lt 8 ]; do
+        if [ -d "$ww_d/config/plugins" ] && [ -d "$ww_d/webfrontend" ]; then
+            printf '%s\n' "$ww_d"
+            return 0
+        fi
+        ww_e=$(dirname "$ww_d")
+        [ "$ww_e" = "$ww_d" ] && break
+        ww_d=$ww_e
+        ww_i=$((ww_i + 1))
+    done
+    (cd "$SELF/../../.." 2>/dev/null && pwd)
+}
+# LBPPLUGINDIR steht am Geraet nicht in jeder Umgebung (Regeln/03, an 43
+# Linien gemessen) - deshalb die zweite Stufe. Die dritte greift nur dort, wo
+# der Ablageort nachweislich kein Pluginordner sein kann: aus einem
+# Pruefarchiv heraus heisst er "bin".
+ww_ordner() {
+    case "${LBPPLUGINDIR:-}" in
+        ''|bin|plugins) ;;
+        *) printf '%s\n' "${LBPPLUGINDIR%/}"; return 0 ;;
+    esac
+    ww_b=$(basename "$SELF")
+    case "$ww_b" in
+        ''|/|bin|plugins) printf 'weissware\n' ;;
+        *) printf '%s\n' "$ww_b" ;;
+    esac
+}
+PNAME=$(ww_ordner)
+LBHOMEDIR=$(ww_wurzel)
 PDATA="$LBHOMEDIR/data/plugins/$PNAME"
 PLOG="$LBHOMEDIR/log/plugins/$PNAME"
 PCONFIG="$LBHOMEDIR/config/plugins/$PNAME"
@@ -66,8 +117,6 @@ LOGDATEI="$PLOG/weissware.log"
 STARTLOG="$PLOG/weissware_start.log"
 PY="$SELF/venv/bin/python3"
 SKRIPT="$SELF/weissware.py"
-
-mkdir -p "$PDATA" "$PLOG" 2>/dev/null
 
 laeuft() {
     [ -f "$PID" ] || return 1
@@ -100,6 +149,15 @@ starten() {
         echo "laeuft bereits (PID $(cat "$PID"))"
         return 0
     fi
+    # Angelegt wird nur da, wo wirklich etwas geschrieben wird - also beim
+    # START. Bis 0.9.25 stand dieses mkdir auf oberster Ebene und lief bei
+    # JEDEM Aufruf, auch bei 'status'. Zusammen mit der geratenen Wurzel
+    # entstanden dadurch Ordner in einer fremden Installation
+    # (Pruefung-Weissware-0.9.26, Fall H1). Nebenbefund derselben Zeile: in
+    # der Upgrade-Luecke legte schon ein 'status' data/plugins/<ordner>
+    # wieder an - "der Ordner ist da" sagte dort also nichts ueber eine
+    # gelungene Ruecksicherung.
+    mkdir -p "$PDATA" "$PLOG" 2>/dev/null
     if [ ! -x "$PY" ]; then
         echo "FEHLER: virtuelle Python-Umgebung fehlt ($PY). Plugin neu installieren."
         return 1

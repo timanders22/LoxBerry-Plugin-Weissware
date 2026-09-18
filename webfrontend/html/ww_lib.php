@@ -1102,16 +1102,24 @@ function ww_abo_text()
  * aendert, aendert es in bin/weissware.py mit.
  *
  * Die Abwaegungen, die nicht auf der Hand liegen, stehen ausfuehrlich am
- * Kopf der Tabelle in bin/weissware.py: ts und fertig_um sind ABSOLUTE
- * Zeitpunkte und damit retained; restzeit_min, startzeit_min, laufzeit_min
+ * Kopf der Tabelle in bin/weissware.py: fertig_um ist ein absoluter Zeitpunkt
+ * des GERAETS und damit retained; restzeit_min, startzeit_min, laufzeit_min
  * und fortschritt altern von selbst; energie_kwh und wasser_l sind
  * Momentanwerte des laufenden Programms, kein Zaehlerstand.
+ *
+ * ts ist das LEBENSZEICHEN und geht nie zurueckbehalten hinaus (Regeln/07,
+ * Hausstandard vom 03.09.2026). Bis 0.9.25 stand hier true; am 18.09.2026 am
+ * UDP-Eingang gemessen: es ging wirklich als "retain weissware/ts ..." hinaus
+ * (Bestand-2026-09-18/klasse-E, Abschnitt 4a). Die Zeile "Geht das
+ * Lebenszeichen nie zurueckbehalten hinaus?" im Reiter Test haelt beide
+ * Tabellen daraufhin fest - die Zeile darueber vergleicht sie nur
+ * gegeneinander und bliebe gruen, wenn beide dasselbe Falsche sagten.
  */
 function ww_mqtt_retain()
 {
     return array(
         'ok'                         => true,
-        'ts'                         => true,
+        'ts'                         => false,
         'fehler_folge'               => true,
         'geraete'                    => true,
         'ausfaelle'                  => true,

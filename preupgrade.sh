@@ -133,11 +133,52 @@ for f in weissware.json zugang.json; do
     cp -p "$CFGDIR/$f" "$SICHER/$PFOLDER.backup.$f" || true
 done
 
-# Daten, die ein Upgrade sonst nicht ueberleben
-for f in token.json geraetenummern.json laeufe.json; do
-    if [ -f "$PDATA/$f" ]; then
-        cp -p "$PDATA/$f" "$SICHER/$PFOLDER.backup.$f" || true
+# Ist diese Datei gueltiges JSON mit mindestens einem Eintrag? Wortgleich mit
+# postinstall.sh - die beiden Skripte muessen dieselbe Frage gleich
+# beantworten.
+#
+# Warum nicht ww_hat_wert(): fuer die drei Datendateien gibt es keinen festen
+# Schluesselnamen, den man abfragen koennte - geraetenummern.json fuehrt die
+# Geraetekennungen selbst als Schluessel, laeufe.json eine Liste. Gefragt wird
+# deshalb nach dem, was sie gemeinsam haben: lesbares JSON, das etwas enthaelt.
+ww_json_traegt() {
+    D=$1
+    [ -f "$D" ] || return 1
+    if command -v php >/dev/null 2>&1; then
+        php -r '$d=json_decode((string)@file_get_contents($argv[1]),true); exit((is_array($d) && count($d) > 0) ? 0 : 1);' "$D" >/dev/null 2>&1
+        return $?
     fi
+    echo "<INFO> Kein PHP gefunden - die Datendatei wird nur ueberschlaegig geprueft."
+    # Schwaecherer Ersatz: nicht leer, nicht das leere Objekt, und sie endet
+    # auf eine schliessende Klammer. Erkennt die uebliche abgeschnittene
+    # Datei, aber nicht eine, die zufaellig hinter einem verschachtelten
+    # Block endet.
+    I=$(tr -d ' \t\n\r' < "$D" 2>/dev/null)
+    case "$I" in
+        ''|'{}'|'[]') return 1 ;;
+    esac
+    case "$I" in
+        *'}'|*']') return 0 ;;
+    esac
+    return 1
+}
+
+# Daten, die ein Upgrade sonst nicht ueberleben
+#
+# Dieselbe Wache wie oben bei der Konfiguration, nur fuer die Daten: eine
+# abgeschnittene Datei darf die heile Sicherung nicht verdraengen. Bis 0.9.25
+# wurde hier unbedingt kopiert - eine halb geschriebene token.json
+# ueberschrieb die letzte heile Abschrift der Anmeldung an drei
+# Herstellerclouds, und postinstall.sh konnte danach nichts mehr zurueckholen.
+# Nachgestellt in Pruefung-Weissware-0.9.26, Fall C6.
+for f in token.json geraetenummern.json laeufe.json; do
+    [ -f "$PDATA/$f" ] || continue
+    if ww_json_traegt "$SICHER/$PFOLDER.backup.$f" && ! ww_json_traegt "$PDATA/$f"; then
+        echo "<INFO> $f traegt keinen lesbaren Inhalt mehr - die vorhandene"
+        echo "<INFO> Sicherung bleibt unveraendert."
+        continue
+    fi
+    cp -p "$PDATA/$f" "$SICHER/$PFOLDER.backup.$f" || true
 done
 
 # Beide Geheimnisdateien auf 0600 - weissware.json traegt das Aktionstoken,

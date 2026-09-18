@@ -106,10 +106,56 @@ chmod 600 "$PCONFIG/weissware.json"
 # hat diese drei Dateien danebengelegt; ohne sie waere nach jedem Update die
 # Anmeldung an drei Herstellerclouds fort und die Geraetenummern - also die
 # Adressen in Loxone - wuerden neu vergeben.
+#
+# Ist diese Datei gueltiges JSON mit mindestens einem Eintrag? Wortgleich mit
+# preupgrade.sh - die beiden Skripte muessen dieselbe Frage gleich
+# beantworten.
+#
+# Warum nicht ww_hat_wert(): fuer die drei Datendateien gibt es keinen festen
+# Schluesselnamen, den man abfragen koennte - geraetenummern.json fuehrt die
+# Geraetekennungen selbst als Schluessel, laeufe.json eine Liste. Gefragt wird
+# deshalb nach dem, was sie gemeinsam haben: lesbares JSON, das etwas enthaelt.
+#
+# Bis 0.9.25 stand hier "[ -f "$BK" ] && [ ! -s "$DF" ]" - ein Entscheid nach
+# der GROESSE. Eine abgeschnittene Datei ist nicht leer und bestand ihn.
+# Gemessen 18.09.2026 (Bestand-2026-09-18/klasse-C, Fall 10; nachgestellt in
+# Pruefung-Weissware-0.9.26, Faelle C1 bis C3): die Anmeldung an drei
+# Herstellerclouds wurde nicht zurueckgeholt, und die Geraetenummern - also
+# die Adressen in Loxone - wurden neu vergeben.
+ww_json_traegt() {
+    D=$1
+    [ -f "$D" ] || return 1
+    if command -v php >/dev/null 2>&1; then
+        php -r '$d=json_decode((string)@file_get_contents($argv[1]),true); exit((is_array($d) && count($d) > 0) ? 0 : 1);' "$D" >/dev/null 2>&1
+        return $?
+    fi
+    echo "<INFO> Kein PHP gefunden - die Datendatei wird nur ueberschlaegig geprueft."
+    # Schwaecherer Ersatz: nicht leer, nicht das leere Objekt, und sie endet
+    # auf eine schliessende Klammer. Erkennt die uebliche abgeschnittene
+    # Datei, aber nicht eine, die zufaellig hinter einem verschachtelten
+    # Block endet.
+    I=$(tr -d ' \t\n\r' < "$D" 2>/dev/null)
+    case "$I" in
+        ''|'{}'|'[]') return 1 ;;
+    esac
+    case "$I" in
+        *'}'|*']') return 0 ;;
+    esac
+    return 1
+}
+
 for f in token.json geraetenummern.json laeufe.json; do
     BK="$BASE/config/plugins/$PFOLDER.backup.$f"
     DF="$PDATA/$f"
-    if [ -f "$BK" ] && [ ! -s "$DF" ]; then
+    # Zurueckgeholt wird, wenn die Sicherung Inhalt traegt und der Datenstand
+    # nicht. Der verdraengte Stand wird nicht weggeworfen: er liegt als
+    # <datei>.kaputt daneben (0600 - in token.json steht ein gueltiger Zugang
+    # zu drei Herstellerclouds), wie in ww_selbstheilung().
+    if ww_json_traegt "$BK" && ! ww_json_traegt "$DF"; then
+        if [ -s "$DF" ]; then
+            cp -p "$DF" "$DF.kaputt" 2>/dev/null && chmod 600 "$DF.kaputt" 2>/dev/null
+            echo "<INFO> Der bisherige Inhalt von $f liegt als $f.kaputt daneben."
+        fi
         cp -p "$BK" "$DF" && echo "<OK> $f aus Sicherung wiederhergestellt."
     fi
 done

@@ -14,6 +14,51 @@ function ww_pruefzeile($stand, $frage, $antwort)
 }
 
 /**
+ * Die Themen, die zum LEBENSZEICHEN gehoeren.
+ *
+ * Regeln/07, Hausstandard vom 03.09.2026: "Das Lebenszeichen ist nie
+ * retained - retained zeigte es immer 'lebt'; es traegt den Zeitstempel."
+ * Hier steht nur, was in JEDER Lesart dieser Regel dazugehoert. Ueber 'ok'
+ * widerspricht sich Regeln/07 selbst (Z.108 gegen Z.120, an der Funkwacht
+ * 1.0.3 entschieden); diese Linie fuehrt 'ok' als Zustand der Datenlage
+ * ("hat der Lauf etwas gewusst?") retained, und die Entscheidung des
+ * Hausherrn dazu steht aus. Wer sie faellt, ergaenzt hier eine Zeile - und
+ * dann faellt die Pruefzeile von selbst aus.
+ */
+function ww_lebenszeichen_themen()
+{
+    return array('ts');
+}
+
+/**
+ * Geht das Lebenszeichen wirklich fluechtig hinaus - in BEIDEN Tabellen?
+ *
+ * Diese Zeile ist noetig, weil die Zeile "Stimmen die beiden Retain-Tabellen
+ * ueberein?" nur die Tabellen GEGENEINANDER haelt: bis 0.9.25 sagten beide
+ * dasselbe, und beide sagten es falsch. Am 18.09.2026 am UDP-Eingang gemessen
+ * (Bestand-2026-09-18/klasse-E, Abschnitt 4a): "retain weissware/ts ...".
+ *
+ * Rueckgabe: 'ab' = die beanstandeten Stellen, 'unlesbar' = die Tabelle des
+ * Dienstes war nicht zu lesen (dann ist die Antwort "nicht feststellbar",
+ * nicht "in Ordnung").
+ */
+function ww_test_lebenszeichen()
+{
+    $php = ww_mqtt_retain();
+    $py  = ww_py_retain();
+    $ab = array();
+    foreach (ww_lebenszeichen_themen() as $t) {
+        if (!empty($php[$t])) {
+            $ab[] = 'Oberflaeche: ' . $t;
+        }
+        if (is_array($py) && !empty($py[$t])) {
+            $ab[] = 'Dienst: ' . $t;
+        }
+    }
+    return array('ab' => $ab, 'unlesbar' => ($py === null));
+}
+
+/**
  * Liest eine Python-Tabelle statisch aus bin/weissware.py.
  *
  * Was statisch liest, muss auch statisch vergleichen - deshalb wird hier
@@ -135,6 +180,25 @@ function ww_pruefungen()
             $rt_ab ? sprintf(ww_t('TEST.A_RETAIN_AB'), ww_e(implode(', ', $rt_ab)))
                    : sprintf(ww_t('TEST.A_RETAIN_OK'),
                              count(array_filter($rt_php)), count($rt_php)));
+    }
+
+    /* Geht das Lebenszeichen nie zurueckbehalten hinaus?
+     *
+     * Die Zeile darueber vergleicht die beiden Tabellen nur miteinander und
+     * bleibt gruen, wenn beide dasselbe Falsche sagen - genau so war es bis
+     * 0.9.25 bei 'ts'. Diese Zeile misst gegen die Regel, nicht gegen die
+     * andere Tabelle. Geeicht durch Rueckbau: 'ts' => true in einer der
+     * beiden Tabellen macht sie rot und nennt, welche. */
+    $lz = ww_test_lebenszeichen();
+    if ($lz['unlesbar']) {
+        $zeilen[] = ww_pruefzeile(-1, ww_t('TEST.F_LEBENSZEICHEN'),
+            ww_t('TEST.A_RETAIN_UNLESBAR'));
+    } else {
+        $zeilen[] = ww_pruefzeile($lz['ab'] ? 0 : 1, ww_t('TEST.F_LEBENSZEICHEN'),
+            $lz['ab'] ? sprintf(ww_t('TEST.A_LEBENSZEICHEN_AB'),
+                                ww_e(implode(', ', $lz['ab'])))
+                      : sprintf(ww_t('TEST.A_LEBENSZEICHEN_OK'),
+                                ww_e(implode(', ', ww_lebenszeichen_themen()))));
     }
 
     /* Reiterleiste, Bereiche und Positivliste fuehren dieselben Namen.

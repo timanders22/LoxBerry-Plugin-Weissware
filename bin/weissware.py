@@ -82,18 +82,52 @@ def mqtt_wert_saeubern(wert):
 
 
 # ---------------------------------------------------------------------------
-# Pfade aus dem EIGENEN Ablageort ableiten.
+# Wurzel und Ordnername werden GELESEN, nicht geraten.
 #
 # Nicht ueber LoxBerry::System: das leitet den Pluginordner aus dem Aufrufort
 # ab und liefert bei einem Start aus postinstall.sh oder aus dem Cron ueberall
 # Leerstring.
+#
+# Bis 0.9.25 stand hier "LBHOME = SELF.parents[2]" und "PNAME = SELF.name" -
+# beides aus dem Ablageort, und ein GESETZTES $LBHOMEDIR wurde dabei
+# uebergangen. Am 18.09.2026 nachgestellt (Pruefung-Weissware-0.9.26, Fall H3;
+# Bauart H1 aus Bestand-2026-09-18/klasse-H): aus einem Pruefarchiv unter
+# <Wurzel>/pruefung/<plugin>/bin heraus hiess der Ordner "bin", und alle Pfade
+# zeigten auf data/plugins/bin - in der LAUFENDEN Installation.
+#
+# Reihenfolge nach Regeln/03, Stufe 1 ist die Umgebung:
+#   Wurzel:      $LBHOMEDIR  ->  Aufwaertssuche  ->  Ablageort
+#   Ordnername:  $LBPPLUGINDIR  ->  Ablageort  ->  der vorgesehene Name
+# Die letzte Stufe des Ordnernamens greift nur dort, wo der Ablageort
+# nachweislich kein Pluginordner sein kann ("bin", "plugins") - dieselbe
+# Abstufung wie in ww_paths() der Oberflaeche.
 # ---------------------------------------------------------------------------
 SELF = Path(__file__).resolve().parent            # <home>/bin/plugins/<ordner>
-PNAME = SELF.name
-if len(SELF.parents) >= 3:
-    LBHOME = SELF.parents[2]
-else:
-    LBHOME = Path(os.environ.get("LBHOMEDIR") or lb_wurzel_ermitteln())
+
+
+def _lbhome_ermitteln() -> Path:
+    h = os.environ.get("LBHOMEDIR") or ""
+    if h and os.path.isdir(h):
+        return Path(h)
+    gefunden = lb_wurzel_ermitteln()
+    if gefunden:
+        return Path(gefunden)
+    return SELF.parents[2] if len(SELF.parents) >= 3 else SELF
+
+
+def _pname_ermitteln() -> str:
+    # LBPPLUGINDIR steht am Geraet nicht in jeder Umgebung (Regeln/03, an 43
+    # Linien gemessen) - deshalb die zweite Stufe.
+    p = (os.environ.get("LBPPLUGINDIR") or "").strip("/")
+    if p and p not in ("bin", "plugins"):
+        return p
+    if SELF.name not in ("", "/", "bin", "plugins"):
+        return SELF.name
+    return "weissware"
+
+
+LBHOME = _lbhome_ermitteln()
+PNAME = _pname_ermitteln()
 # Fassung an EINER Stelle. Bis 0.9.17 stand im User-Agent fest "0.9.1" -
 # genau der Fehler, den die README fuer 0.9.1 als behoben fuehrt, nur eine
 # Nummer weiter. Wird von Werkzeuge/fassung_setzen.py mitgezogen.
@@ -109,6 +143,7 @@ DATEI_CACHE = PDATA / "cache.json"
 DATEI_LOXONE = PDATA / "loxone.json"
 DATEI_ZUSTAND = PDATA / "zustand.json"
 DATEI_NUMMERN = PDATA / "geraetenummern.json"
+DATEI_RETAIN_GERAEUMT = PDATA / "retain_ts_geraeumt"
 ORDNER_BEFEHLE = PDATA / "befehle"
 ORDNER_ANTWORTEN = PDATA / "antworten"
 DATEI_LOG = PLOG / "weissware.log"
@@ -441,17 +476,26 @@ def mqtt_zustand() -> dict:
 #
 # ABWAEGUNGEN, die nicht auf der Hand liegen:
 #
-#   ts              RETAINED. Das ist NICHT das Lebenszeichen "ich lief
-#                   gerade" - der Wert wandert nur bei einem ERFOLGREICHEN
-#                   Abruf weiter und sagt damit genau, wann zuletzt gemessen
-#                   wurde. Ein absoluter Zeitpunkt kann nicht "aktuell
-#                   erscheinen"; ohne Retain koennte Loxone nach einem
-#                   Neustart das Alter gar nicht rechnen, und ein toter Dienst
-#                   waere von einem gesunden nicht zu unterscheiden.
-#                   Gegenbeispiel aus dem Bestand: Spotpreis Tibber 0.9.13
-#                   hatte status/ts retained - dort war es ein Pulsschlag bei
-#                   JEDEM Lauf, und das war falsch.
-#   fertig_um       RETAINED, aus demselben Grund: ein absoluter Zeitpunkt.
+#   ts              NICHT retained - das Lebenszeichen geht nie
+#                   zurueckbehalten hinaus. Regeln/07 laesst hier keinen
+#                   Spielraum: "Das Lebenszeichen ist nie retained - retained
+#                   zeigte es immer 'lebt'; es traegt den Zeitstempel"
+#                   (Hausstandard vom 03.09.2026).
+#                   Bis 0.9.25 stand hier True, begruendet damit, ts sei ein
+#                   absoluter Zeitpunkt und koenne nicht "aktuell erscheinen".
+#                   Am 18.09.2026 am UDP-Eingang gemessen: es ging wirklich
+#                   als "retain weissware/ts ..." hinaus
+#                   (Bestand-2026-09-18/klasse-E, Abschnitt 4a).
+#                   Der Preis der Umstellung ist benannt, nicht verschwiegen:
+#                   nach einem Neustart des Miniservers steht ALTER erst mit
+#                   dem naechsten Takt wieder an (bis takt_ruhe Sekunden).
+#                   Dafuer behauptet der Broker nie wieder etwas ueber einen
+#                   Dienst, der laengst nicht mehr laeuft - und genau das ist
+#                   der Schaden, den die Regel meint.
+#                   Der Altwert im Broker verschwindet davon nicht von selbst:
+#                   siehe ALTWERTE_LOESCHEN weiter unten.
+#   fertig_um       RETAINED: ein absoluter Zeitpunkt des GERAETS (wann wird
+#                   dieser Waschgang fertig), kein Lebenszeichen des Dienstes.
 #   restzeit_min    NICHT retained - eine DAUER altert von selbst. Sechzig
 #   startzeit_min   Minuten Restzeit, eine Woche zurueckbehalten, waeren eine
 #   laufzeit_min    stille Falschaussage.
@@ -471,7 +515,7 @@ def mqtt_zustand() -> dict:
 RETAIN = {
     # --- anlagenweit ---
     "ok":                         True,
-    "ts":                         True,
+    "ts":                         False,
     "fehler_folge":               True,
     "geraete":                    True,
     "ausfaelle":                  True,
@@ -503,6 +547,17 @@ RETAIN = {
     "geraetN/temperatur":         False,
 }
 
+# Themen, deren zurueckbehaltener ALTWERT einmal abgeraeumt werden muss.
+#
+# Eine Umstellung von retain auf publish loescht nichts: der alte Wert steht
+# im Broker weiter und wird nach jedem Neustart wieder ausgeliefert. Fort ist
+# er erst, wenn eine LEERE Nutzlast mit Retain-Kennzeichen auf dasselbe Thema
+# faellt (mqttgateway.pl, sub udpin: "Delete ... from memory because of empty
+# message"). Muster im Bestand: BatterieBMS 0.9.22 und APC-UPS 1.2.10, beide
+# mit einem Merker im Datenordner, damit es genau EINMAL geschieht
+# (Regeln/07).
+ALTWERTE_LOESCHEN = ("ts",)
+
 
 def thema_stamm(thema: str) -> str:
     """Bildet aus einem gesendeten Thema seinen Stamm fuer die RETAIN-Tabelle.
@@ -531,6 +586,45 @@ def retain_fuer(thema: str) -> bool:
     return bool(RETAIN.get(thema_stamm(thema), False))
 
 
+def altwerte_abraeumen(s, praefix: str, port: int) -> None:
+    """Loescht EINMAL die zurueckbehaltenen Altwerte aus ALTWERTE_LOESCHEN.
+
+    Der Merker haelt fest, fuer WELCHES Themenpraefix das geschehen ist. Wer
+    das Praefix in den Einstellungen umstellt, laesst sonst den alten Stamm im
+    Broker stehen; mit dem Praefix im Merker wird unter dem neuen Stamm noch
+    einmal abgeraeumt.
+
+    Der gueltige Wert geht unmittelbar danach hinaus - darum steht dieser
+    Aufruf VOR der Sendeschleife. Das Gateway reicht eine leere Nachricht
+    sonst als leeren Wert an den Miniserver weiter (Regeln/07, am Geraet
+    gemessen 06.09.2026).
+    """
+    if not ALTWERTE_LOESCHEN:
+        return
+    try:
+        schon = DATEI_RETAIN_GERAEUMT.read_text(encoding="utf-8").strip()
+    except OSError:
+        schon = ""
+    if schon == praefix:
+        return
+    for t in ALTWERTE_LOESCHEN:
+        # Ein Leerzeichen hinter dem Thema, sonst keine Nutzlast: genau die
+        # Form, die das Gateway als Loeschung liest.
+        s.sendto("retain {0}/{1} ".format(praefix, t).encode("utf-8"),
+                 ("127.0.0.1", port))
+    try:
+        DATEI_RETAIN_GERAEUMT.parent.mkdir(parents=True, exist_ok=True)
+        DATEI_RETAIN_GERAEUMT.write_text(praefix + "\n", encoding="utf-8")
+    except OSError as err:
+        # Ohne Merker geschieht die Loeschung bei jedem Lauf erneut. Schaden
+        # richtet das nicht an - der gueltige Wert folgt jedes Mal unmittelbar
+        # -, aber es gehoert gemeldet statt verschwiegen.
+        melde_gebremst("retain_merker",
+                       "Der Merker {0} liess sich nicht schreiben ({1}); der "
+                       "zurueckbehaltene Altwert wird deshalb bei jedem Lauf "
+                       "erneut abgeraeumt.".format(DATEI_RETAIN_GERAEUMT, err))
+
+
 def mqtt_senden(paare: dict, praefix: str) -> None:
     z = mqtt_zustand()
     if not z["udpport"]:
@@ -548,6 +642,8 @@ def mqtt_senden(paare: dict, praefix: str) -> None:
         melde_gebremst("mqtt_socket", f"MQTT: Socket nicht moeglich ({err}).")
         return
     try:
+        # Erst der Altwert, dann der gueltige Wert - in derselben Sendefolge.
+        altwerte_abraeumen(s, praefix, z["udpport"])
         for k, v in paare.items():
             if v is None:
                 continue
