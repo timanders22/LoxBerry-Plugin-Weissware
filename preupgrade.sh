@@ -114,7 +114,11 @@ elif [ -f "$PDATA/dienst.pid" ]; then
     case "$P" in
         ''|*[!0-9]*) P="" ;;
     esac
-    if [ -n "$P" ] && tr '\0' '\n' < "/proc/$P/cmdline" 2>/dev/null \
+    # cat statt Umlenkung: gibt es /proc/<n> nicht (mehr), meldete die Schale
+    # die gescheiterte Umlenkung selbst ins Protokoll des Installers
+    # ("line 117: /proc/<n>/cmdline: No such file", gemessen
+    # Pruefung-Weissware-0.9.30, Fall C3).
+    if [ -n "$P" ] && cat "/proc/$P/cmdline" 2>/dev/null | tr '\0' '\n' \
          | sed -n '2p' | grep -q 'weissware\.py$'; then
         kill "$P" 2>/dev/null || true
         sleep 2

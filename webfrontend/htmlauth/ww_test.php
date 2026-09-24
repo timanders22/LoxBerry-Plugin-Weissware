@@ -248,11 +248,18 @@ function ww_pruefungen()
      * dort dauerhaft "nicht feststellbar". */
     $ep_p = ww_paths();
     $ep_datei = '';
-    foreach (array(
-        $ep_p['home'] . '/webfrontend/html/plugins/' . $ep_p['plugin'] . '/index.php',
-        dirname(dirname(__DIR__)) . '/html/plugins/' . basename(__DIR__) . '/index.php',
-        dirname(__DIR__) . '/html/index.php',
-    ) as $ep_k) {
+    /* Der Installationspfad nur MIT Wurzel. Bis 0.9.29 stand er ohne
+     * Pruefung an erster Stelle; ohne Wurzel hiess er
+     * /webfrontend/html/plugins/<ordner>/index.php ab der Laufwerkswurzel,
+     * und die Pruefzeile las eine fremde Datei (gemessen,
+     * Pruefung-Weissware-0.9.30, Fall T4). */
+    $ep_kandidaten = array();
+    if ($ep_p['home'] !== '') {
+        $ep_kandidaten[] = $ep_p['home'] . '/webfrontend/html/plugins/' . $ep_p['plugin'] . '/index.php';
+    }
+    $ep_kandidaten[] = dirname(dirname(__DIR__)) . '/html/plugins/' . basename(__DIR__) . '/index.php';
+    $ep_kandidaten[] = dirname(__DIR__) . '/html/index.php';
+    foreach ($ep_kandidaten as $ep_k) {
         if (is_file($ep_k)) {
             $ep_datei = $ep_k;
             break;

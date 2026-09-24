@@ -1910,8 +1910,16 @@ function ww_t($schluessel)
         // Pruefung-Weissware-0.9.29/messe_h2.sh).
         $home = ww_lbhome();
         $ordner = basename(dirname(__FILE__));
-        $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
-        if (!is_dir($pfad)) {
+        /* Ohne Wurzel NUR die eigenen Sprachdateien. Bis 0.9.29 wurde der
+         * Installationspfad auch mit leerer Wurzel gebildet und abgefragt -
+         * also /templates/plugins/html/lang ab der Laufwerkswurzel; lag dort
+         * etwas, zeigte die Oberflaeche fremde Texte (gemessen,
+         * Pruefung-Weissware-0.9.30, Fall T1). */
+        $pfad = '';
+        if ($home !== '' && is_dir($home . '/templates/plugins/' . $ordner . '/lang')) {
+            $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
+        }
+        if ($pfad === '') {
             $pfad = dirname(dirname(dirname(__FILE__))) . '/templates/lang';
         }
         $texte = @parse_ini_file($pfad . '/language_' . ww_sprache() . '.ini', true, INI_SCANNER_RAW);

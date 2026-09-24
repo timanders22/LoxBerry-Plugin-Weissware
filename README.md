@@ -10,12 +10,65 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.29 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.30 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.30
+
+- **Die Kachel „MQTT" zeigt jetzt, ob dieses Plugin veröffentlicht.** Bis 0.9.29
+  stand dort als großer Wert der Autostart des MQTT-Gateways von LoxBerry, und
+  „MQTT ein" las sich, als sende das Plugin — auch wenn es im Reiter MQTT
+  ausgeschaltet war. Der Autostart des Gateways steht jetzt klein darunter;
+  fehlt der MQTT-Abschnitt in der LoxBerry-Konfiguration, heißt er dort
+  „nicht feststellbar" statt „aus".
+- **Die Deinstallation leert die zurückbehaltenen (retained) MQTT-Themen.**
+  Bis 0.9.29 blieben die Gerätezustände (`geraete`, `geraetN/…`) nach dem
+  Entfernen des Plugins im Broker stehen, dazu, was ältere Fassungen
+  zurückbehalten gesendet hatten (`ok`, `ts`, `fehler_folge`, `ausfaelle`,
+  `ausfall/…`), und der Miniserver bekam sie nach jedem Neustart von Broker
+  oder Gateway wieder. Jetzt schickt `uninstall` — nach dem Anhalten des
+  Dienstes — für jedes dieser Themen eine leere Nachricht mit `retain` an den
+  UDP-Eingang des MQTT-Gateways, für jede je vergebene Gerätenummer, unter dem
+  eingestellten Themenpräfix. Themen, die nie zurückbehalten gesendet wurden
+  (Restzeit, Fortschritt, Verbrauch, Temperatur), bleiben unberührt.
+  **Grenze:** das ist der einzige Weg, den dieses Plugin zum Broker hat, und
+  er bestätigt nichts. Der UDP-Eingang des Gateways verwirft unter Last
+  Datagramme, und ob eine Löschung ankam, lässt sich darüber nicht nachlesen.
+  Jede Löschung geht deshalb dreimal hinaus, mit einer Sekunde Abstand; das
+  senkt den Verlust, schließt ihn aber nicht aus. Was danach noch im Broker
+  steht, lässt sich mit `mosquitto_pub -r -n -t <thema>` von Hand löschen.
+  Ein früher benutztes, später geändertes Themenpräfix wird nicht mehr
+  erfasst. Das gilt ebenso für das einmalige Abräumen der Altwerte im Betrieb
+  (seit 0.9.26): der Dienst setzt seinen Merker, sobald die Löschung ohne
+  Fehler gesendet ist — angekommen sein muss sie deshalb nicht.
+- **Die eigene Fassungsnummer wird gelesen, nicht mehr eingetragen.** Der
+  Dienst schickte an Home Connect, Miele und SmartThings seit 0.9.19 den
+  User-Agent `LoxBerry-Weissware/0.9.18` — die Nummer stand als Konstante im
+  Quelltext, und das Werkzeug, das beim Hochsetzen die Fassung nachzieht,
+  kennt diese Stelle nicht. Jetzt liest der Dienst sie aus der
+  Plugin-Datenbank des LoxBerry (über den Ordnernamen), im ausgepackten
+  Archiv aus der `plugin.cfg`; findet er keine, geht der User-Agent ohne
+  Nummer hinaus. Die Selbstprüfung nennt Fassung und Quelle.
+- **Die Deinstallation meldet keinen Prozess mehr, der während der Suche
+  endet.** Im Installationsprotokoll stand dann
+  „`/proc/<n>/cmdline: No such file or directory`"; dieselbe Stelle gab es in
+  `bin/dienst.sh` (die Meldung erschien dort in der Oberfläche) und im
+  Rückfallweg von `preupgrade.sh`.
+- **Ohne gefundene LoxBerry-Wurzel liest die Oberfläche nur ihre eigenen
+  Dateien.** Die Sprachtexte (`ww_t()`) und eine Prüfzeile im Reiter *Test*
+  bildeten bis 0.9.29 den Installationspfad auch ohne Wurzel und fragten ihn
+  ab — also `/templates/plugins/html/lang` und
+  `/webfrontend/html/plugins/weissware/index.php` ab der Laufwerkswurzel. Lag
+  dort etwas, zeigte die Oberfläche fremde Texte. Auf einem LoxBerry gibt es
+  die Wurzel immer; betroffen war das ausgepackte Archiv.
+
+Gemessen in WSL, nicht am Gerät und nicht an einem echten Broker (UDP-Horcher
+an der Stelle des Gateway-Eingangs): 33 Prüfzeilen, vorher 23 rot, nachher
+alle grün; 20 Rückbauten geeicht; die Prüfstände von 0.9.29 bleiben grün.
 
 ## Neu in 0.9.29
 

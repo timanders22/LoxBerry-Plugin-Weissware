@@ -32,12 +32,15 @@
 # Datenordner weg, den LoxBerry selbst entfernt - dort steht ein
 # gueltiger Zugang zu den Clouds, auch ohne Passwort.
 #
-# MQTT wird hier NICHT abgeraeumt. Bis zu dieser Zeile stand, der Dienst
-# sende nur mit "publish"; das gilt seit 0.9.21 nicht mehr - Zustaende gehen
-# retained hinaus (RETAIN in bin/weissware.py) und bleiben nach dem
-# Deinstallieren im Broker stehen. Einen Letzten Willen gibt es nicht: die
-# Linie schickt UDP-Zeilen an das Gateway und hat keine eigene
-# MQTT-Verbindung (Regeln/07, Abschnitt 3).
+#   3. Die zurueckbehaltenen (retained) MQTT-Themen. Seit 0.9.21 gehen
+#      Zustaende retained hinaus (RETAIN in bin/weissware.py); bis 0.9.29
+#      blieben sie nach dem Deinstallieren im Broker stehen, und nach jedem
+#      Neustart von Broker oder Gateway bekam der Miniserver sie wieder
+#      (gemessen, Pruefung-Weissware-0.9.30, Faelle U1-U13). Geleert wird
+#      ueber den einzigen Weg der Linie, den UDP-Eingang des Gateways - ohne
+#      Bestaetigung und ohne Nachlesen (Schritt 1b, README). Einen Letzten
+#      Willen gibt es nicht: die Linie hat keine eigene MQTT-Verbindung
+#      (Regeln/07, Abschnitt 3).
 
 ARGV3=$3
 ARGV5=$5
@@ -100,7 +103,14 @@ PCONFIG="$BASE/config/plugins"
 # Dienst eines zweiten abschiesst.
 ist_unser_dienst() {
     [ -r "/proc/$1/cmdline" ] || return 1
-    ARGS=$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null)
+    # cat statt Umlenkung: endet der Prozess zwischen "[ -r ]" und dem Lesen,
+    # meldete die Schale die gescheiterte Umlenkung selbst - "2>/dev/null"
+    # hinter dem Befehl gilt erst nach ihr. Bis 0.9.29 stand hier
+    # tr ... < /proc/<pid>/cmdline; gemessen: "line 103: /proc/<n>/cmdline:
+    # No such file or directory" im Protokoll des Installers
+    # (Pruefung-Weissware-0.9.30, Fall C1). Dieselbe Form wie ist_dienst() in
+    # bin/dienst.sh.
+    ARGS=$(cat "/proc/$1/cmdline" 2>/dev/null | tr '\0' '\n')
     [ "$(echo "$ARGS" | sed -n '2p')" = "$PBIN/weissware.py" ] || return 1
     echo "$ARGS" | sed -n '1p' | grep -qE '(^|/)python[0-9.]*$' || return 1
     return 0
@@ -141,6 +151,39 @@ rm -f "$PIDDATEI" "$PDATA/soll_laufen" 2>/dev/null
 # den Dienst einer spaeteren Neuinstallation bis zu einer Stunde lang.
 # Gemessen: Pruefung-Weissware-0.9.27, Fall C11.
 rm -f "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" 2>/dev/null
+
+# ---------------------------------------------------------------
+# 1b. Zurueckbehaltene MQTT-Themen leeren
+# ---------------------------------------------------------------
+# NACH dem Anhalten des Dienstes - sonst schriebe er die Werte gleich
+# wieder hinein - und vor dem Loeschen der Ordner: Konfiguration (Praefix),
+# Geraetenummern und bin/ sind hier noch da; der Installer loescht sie erst
+# nach diesem Skript (plugininstall.pl, purge_installation Schritt 3 vor
+# Schritt 7; am Geraet nachgesehen 05.09.2026, Geraet/2026-09-05/).
+# Welche Themen und warum dreimal: mqtt_leeren() in bin/weissware.py.
+#
+# Als loxberry, nicht als root: bin/weissware.py liegt in einem Ordner, den
+# loxberry beschreiben kann, und gebraucht wird nur Lesezugriff auf die
+# Konfiguration und general.json. Vorbild VolkswagenID (vw.py --mqtt-leeren).
+# stdin geschlossen, damit su nie auf eine Eingabe wartet (Regeln/02).
+WW_PY=""
+if [ -x "$PBIN/venv/bin/python3" ]; then
+    WW_PY="$PBIN/venv/bin/python3"
+elif command -v python3 >/dev/null 2>&1; then
+    WW_PY=$(command -v python3)
+fi
+if [ -n "$WW_PY" ] && [ -f "$PBIN/weissware.py" ]; then
+    if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+        su -s /bin/bash loxberry -c "$(printf '%q ' env PYTHONDONTWRITEBYTECODE=1 \
+            "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" timeout 60 "$WW_PY" \
+            "$PBIN/weissware.py" --mqtt-leeren)" < /dev/null 2>&1 || true
+    else
+        env PYTHONDONTWRITEBYTECODE=1 "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" \
+            timeout 60 "$WW_PY" "$PBIN/weissware.py" --mqtt-leeren < /dev/null 2>&1 || true
+    fi
+else
+    echo "<INFO> Python oder bin/weissware.py fehlt - zurueckbehaltene MQTT-Themen wurden nicht geleert."
+fi
 
 # ---------------------------------------------------------------
 # 2. Sicherungsdateien ausserhalb der Plugin-Ordner

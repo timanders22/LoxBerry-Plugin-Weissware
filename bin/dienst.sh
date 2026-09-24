@@ -182,7 +182,12 @@ laeuft() {
     # jetzt zwei Dinge argumentweise: das zweite Argument ist genau unser
     # Skript, und das erste ist ein Python. Nur das zweite zu pruefen reicht
     # nicht - "nano <pfad>/weissware.py" fuehrt den Pfad ebenfalls dort.
-    ARGS=$(tr '\0' '\n' < "/proc/$P/cmdline" 2>/dev/null)
+    # cat statt Umlenkung wie in ist_dienst() unten: endet der Prozess
+    # zwischen "kill -0" und dem Lesen, meldete die Schale die gescheiterte
+    # Umlenkung selbst ("line 185: /proc/<n>/cmdline: No such file",
+    # gemessen Pruefung-Weissware-0.9.30, Fall C2) - und das landet ueber
+    # ww_dienst() in der Oberflaeche.
+    ARGS=$(cat "/proc/$P/cmdline" 2>/dev/null | tr '\0' '\n')
     if [ "$(echo "$ARGS" | sed -n '2p')" != "$SKRIPT" ]; then rm -f "$PID"; return 1; fi
     echo "$ARGS" | sed -n '1p' | grep -qE '(^|/)python[0-9.]*$' || { rm -f "$PID"; return 1; }
     return 0

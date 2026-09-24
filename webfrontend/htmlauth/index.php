@@ -706,9 +706,18 @@ if ($ww_rahmen) {
     <b><?= count($ww_geraete) ?></b>
     <span class="sm-hilfe"><?= (int) count(array_filter($ww_geraete, function ($g) { return !empty($g['laeuft']); })) ?> <?= ww_e(ww_t('ALLG.IN_BETRIEB')) ?></span>
   </div>
+  <!-- Der grosse Wert ist die MQTT-Veroeffentlichung DIESES Plugins (mqtt_ein),
+       der Autostart des Gateways steht klein darunter. Bis 0.9.29 stand hier
+       der Autostart des Gateways; "MQTT ein" las sich, als sende das Plugin,
+       auch wenn es gar nicht veroeffentlichte.
+       Vorbild ZendureSolarFlow 0.9.21 und BatterieBMS 0.9.22. Ohne
+       MQTT-Abschnitt in general.json heisst der Autostart "nicht feststellbar"
+       statt "aus". -->
   <div class="sm-kachel">MQTT
-    <b class="<?= $ww_mqtt['autostart'] ? 'sm-an' : 'sm-aus' ?>"><?= $ww_mqtt['autostart'] ? ww_e(ww_t('ALLG.EIN')) : ww_e(ww_t('ALLG.AUS')) ?></b>
-    <span class="sm-hilfe"><?= ww_e(ww_t('ALLG.GATEWAY')) ?></span>
+    <b class="<?= !empty($ww_cfg['mqtt_ein']) ? 'sm-an' : 'sm-aus' ?>"><?= !empty($ww_cfg['mqtt_ein']) ? ww_e(ww_t('ALLG.EIN')) : ww_e(ww_t('ALLG.AUS')) ?></b>
+    <span class="sm-hilfe"><?= ww_e(sprintf(ww_t('ALLG.KACHEL_MQTT_HILFE'),
+        !$ww_mqtt['gefunden'] ? ww_t('ALLG.NICHT_FESTSTELLBAR')
+        : ($ww_mqtt['autostart'] ? ww_t('ALLG.EIN') : ww_t('ALLG.AUS')))) ?></span>
   </div>
 </div>
 

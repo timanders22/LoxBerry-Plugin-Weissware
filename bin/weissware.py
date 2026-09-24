@@ -152,10 +152,60 @@ def _pname_ermitteln() -> str:
 
 LBHOME = _lbhome_ermitteln()
 PNAME = _pname_ermitteln()
-# Fassung an EINER Stelle. Bis 0.9.17 stand im User-Agent fest "0.9.1" -
-# genau der Fehler, den die README fuer 0.9.1 als behoben fuehrt, nur eine
-# Nummer weiter. Wird von Werkzeuge/fassung_setzen.py mitgezogen.
-FASSUNG = "0.9.18"
+# Die eigene Fassungsnummer wird GELESEN, nicht eingetragen.
+#
+# Bis 0.9.29 stand hier eine Konstante mit dem Satz, Werkzeuge/
+# fassung_setzen.py ziehe sie mit. Das Werkzeug kennt aber nur plugin.cfg,
+# release.cfg, prerelease.cfg und die Kopfzeile der README (Regeln/02,
+# Abschnitt "Fassung"): die Zahl blieb auf 0.9.18 stehen und ging von 0.9.19
+# bis 0.9.29 als User-Agent an alle drei Herstellerclouds (gemessen,
+# Pruefung-Weissware-0.9.30, Faelle F1-F8). Bis 0.9.17 stand dort fest "0.9.1".
+#
+# Reihenfolge nach Regeln/03 ("Die Fassungsnummer als Konstante im
+# Quelltext ..."):
+#   1. data/system/plugindatabase.json, gesucht ueber den ORDNERNAMEN - die
+#      plugin.cfg wird nirgendwohin installiert, und der MD5-Schluessel
+#      aendert sich bei jedem Fork;
+#   2. die plugin.cfg neben bin/ - nur im entpackten Archiv (dort heisst
+#      dieser Ordner "bin"); installiert laege neben bin/plugins/<ordner>
+#      keine eigene plugin.cfg;
+#   3. sonst leer. Eine erfundene Nummer waere von einer echten nicht zu
+#      unterscheiden.
+# Angenommen wird nur eine Nummer der Form 1.2.3 (auch mit Buchstaben und
+# Bindestrich): der Wert geht in eine Kopfzeile, ein Zeilenumbruch darin
+# waere eine eingeschobene Kopfzeile (Fall F8).
+_FASSUNG_FORM = re.compile(r"^[0-9][0-9A-Za-z.\-]{0,31}$")
+
+
+def _fassung_ermitteln() -> tuple:
+    try:
+        with (LBHOME / "data" / "system" / "plugindatabase.json").open(
+                "r", encoding="utf-8") as f:
+            db = json.load(f)
+    except (OSError, ValueError):
+        db = {}
+    eintraege = db.get("plugins") if isinstance(db, dict) else None
+    if isinstance(eintraege, dict):
+        eintraege = list(eintraege.values())
+    for e in eintraege if isinstance(eintraege, list) else []:
+        if isinstance(e, dict) and e.get("folder") == PNAME:
+            v = str(e.get("version") or "").strip()
+            if _FASSUNG_FORM.match(v):
+                return v, "Plugin-Datenbank"
+    if SELF.name == "bin":
+        try:
+            with (SELF.parent / "plugin.cfg").open(
+                    "r", encoding="utf-8", errors="replace") as f:
+                for zeile in f:
+                    m = re.match(r"^\s*VERSION\s*=\s*(\S+)\s*$", zeile)
+                    if m and _FASSUNG_FORM.match(m.group(1)):
+                        return m.group(1), "plugin.cfg"
+        except OSError:
+            pass
+    return "", ""
+
+
+FASSUNG, FASSUNG_QUELLE = _fassung_ermitteln()
 PDATA = LBHOME / "data" / "plugins" / PNAME
 PLOG = LBHOME / "log" / "plugins" / PNAME
 PCONFIG = LBHOME / "config" / "plugins" / PNAME
@@ -722,6 +772,122 @@ def mqtt_senden(paare: dict, praefix: str) -> None:
         s.close()
 
 
+# ---------------------------------------------------------------------------
+# Zurueckbehaltene Themen leeren - fuer die Deinstallation
+#
+# Regeln/07, Abschnitt 3: die Deinstallation raeumt die retained Themen der
+# Linie ab. Bis 0.9.29 tat uninstall/uninstall das nicht; die Geraetezustaende
+# (und aus 0.9.21-0.9.28 ok, ts, fehler_folge, ausfaelle, ausfall/*) blieben
+# nach dem Entfernen fuer immer im Broker stehen und wurden nach jedem
+# Neustart von Broker oder Gateway wieder an den Miniserver ausgeliefert.
+#
+# Aufgerufen wird "weissware.py --mqtt-leeren" aus uninstall/uninstall, NACH
+# dem Anhalten des Dienstes (sonst schriebe er die Werte gleich wieder
+# hinein) und VOR dem Loeschen der Ordner durch den Installer
+# (plugininstall.pl, purge_installation: erst das Skript, dann die Ordner).
+#
+# Geleert wird jedes Thema, das eine veroeffentlichte Fassung je retained
+# gesendet hat: die Staemme mit True in RETAIN und die Liste
+# ALTWERTE_LOESCHEN. Ueber die Archive 0.9.21-0.9.29 gelesen ist das genau
+# die Vereinigung aller je retained gesendeten Staemme (Pruefung-Weissware-
+# 0.9.30, soll_menge.py). geraetN steht fuer jede je vergebene Nummer
+# (geraetenummern.json - eine Nummer wird nie neu vergeben) und fuer jede
+# Nummer im letzten Abbild (loxone.json). Was nie retained ging
+# (fortschritt, restzeit_min, ...), bleibt unberuehrt: eine leere Nachricht
+# darauf loeschte nichts, kaeme aber am Miniserver als leerer Wert an.
+#
+# Der Weg ist der einzige, den diese Linie hat: der UDP-Eingang des
+# Gateways, dieselbe Loeschform wie in altwerte_abraeumen() - "retain
+# <thema> " mit leerer Nutzlast (mqttgateway.pl, am Geraet belegt: die leere
+# Nachricht geht als Loeschung an den Broker, Regeln/07).
+#
+# GRENZE: UDP bestaetigt nichts, der Eingang verwirft unter Last Datagramme
+# (Regeln/07: an dieser Anlage gemessen bis etwa 70 %), und sendto() meldet
+# auch fuer ein verworfenes Datagramm Erfolg. Nachlesen ist ohne eigene
+# Brokerverbindung nicht moeglich. Deshalb geht jede Loeschung
+# LEEREN_RUNDEN-mal hinaus, mit Pause dazwischen - das senkt den Verlust,
+# beseitigt ihn nicht. Die Ausgabe sagt das, die README auch.
+# ---------------------------------------------------------------------------
+LEEREN_RUNDEN = 3
+LEEREN_PAUSE_S = 1.0
+
+
+def mqtt_leer_themen() -> list:
+    """Die Themen (ohne Praefix), die die Deinstallation leert."""
+    nummern = set()
+    for v in json_lesen(DATEI_NUMMERN).values():
+        n = ganz(v, 0)
+        if n > 0:
+            nummern.add(n)
+    for k in (json_lesen(DATEI_LOXONE).get("geraete") or {}):
+        n = ganz(k, 0)
+        if n > 0:
+            nummern.add(n)
+    staemme = [k for k, v in RETAIN.items() if v]
+    for t in ALTWERTE_LOESCHEN:
+        if t not in staemme:
+            staemme.append(t)
+    themen = []
+    for st in staemme:
+        if st.startswith("geraetN/"):
+            themen += ["geraet%d/%s" % (n, st[len("geraetN/"):]) for n in sorted(nummern)]
+        else:
+            themen.append(st)
+    return themen
+
+
+def mqtt_leeren(runden: int = LEEREN_RUNDEN, pause: float = LEEREN_PAUSE_S) -> int:
+    """Rueckgabe 0 gesendet, 1 Senden gescheitert, 2 nicht moeglich.
+    Schreibt kein Protokoll und legt nichts an - es laeuft aus der
+    Deinstallation."""
+    praefix = str(config().get("mqtt_topic") or "weissware").strip("/") or "weissware"
+    if any(z in praefix for z in "#+ \t\r\n"):
+        print("<WARNING> MQTT: das Themenpraefix '%s' enthaelt einen Platzhalter oder "
+              "ein Leerzeichen - zurueckbehaltene Themen wurden nicht geleert."
+              % mqtt_wert_saeubern(praefix))
+        return 2
+    z = mqtt_zustand()
+    if not z["udpport"]:
+        print("<INFO> MQTT: in general.json steht kein UDP-Eingangsport des Gateways - "
+              "zurueckbehaltene Themen unter %s/ wurden nicht geleert." % praefix)
+        return 2
+    themen = mqtt_leer_themen()
+    gesendet = 0
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    except OSError as err:
+        print("<WARNING> MQTT: kein Socket (%s) - zurueckbehaltene Themen unter %s/ "
+              "wurden nicht geleert." % (err, praefix))
+        return 2
+    try:
+        for r in range(max(1, int(runden))):
+            if r:
+                time.sleep(pause)
+            for t in themen:
+                # Ein Leerzeichen hinter dem Thema, sonst keine Nutzlast: die
+                # Form, die das Gateway als Loeschung liest.
+                s.sendto(("retain %s/%s " % (praefix, t)).encode("utf-8"),
+                         ("127.0.0.1", z["udpport"]))
+                gesendet += 1
+    except OSError as err:
+        print("<WARNING> MQTT: Senden an den UDP-Eingang %d gescheitert (%s) - "
+              "zurueckbehaltene Themen unter %s/ stehen womoeglich noch im Broker."
+              % (z["udpport"], err, praefix))
+        return 1
+    finally:
+        s.close()
+    print("<INFO> MQTT: %d zurueckbehaltene Themen unter %s/ je %d-mal mit leerer "
+          "Nutzlast an den UDP-Eingang %d des Gateways gesendet (%d Datagramme)."
+          % (len(themen), praefix, max(1, int(runden)), z["udpport"], gesendet))
+    if not z["autostart"]:
+        print("<INFO> MQTT: das Gateway steht nicht auf Autostart - vermutlich hat "
+              "niemand zugehoert.")
+    print("<INFO> MQTT: Nachlesen ist ueber diesen Weg nicht moeglich; der Eingang "
+          "verwirft unter Last Datagramme. Was dennoch stehen bleibt, laesst sich mit "
+          "mosquitto_pub -r -n -t <thema> von Hand loeschen.")
+    return 0
+
+
 # ===========================================================================
 # Mitschnitt des Datenverkehrs
 #
@@ -968,7 +1134,8 @@ def kopfzeilen(token: str, sprache: str = "") -> dict:
         "Authorization": "Bearer " + token,
         "Accept": "application/vnd.bsh.sdk.v1+json, application/json",
         "Accept-Encoding": "gzip, deflate",
-        "User-Agent": "LoxBerry-Weissware/" + FASSUNG,
+        # Ohne ermittelte Fassung ohne Nummer - nie eine geratene.
+        "User-Agent": ("LoxBerry-Weissware/" + FASSUNG) if FASSUNG else "LoxBerry-Weissware",
     }
     if sprache:
         h["Accept-Language"] = sprache
@@ -2230,6 +2397,16 @@ def selbsttest() -> int:
         fehler += 1
         zeilen.append(f"[FEHL] Python {v.major}.{v.minor}.{v.micro} ist zu alt")
 
+    # Woher die Fassung kommt, mit drei Ausgaengen (Regeln/03): Datenbank,
+    # plugin.cfg, nicht ermittelt. Ein Hinweis, kein Fehler - sie geht nur
+    # als User-Agent an die Herstellerclouds.
+    if FASSUNG:
+        zeilen.append(f"[INFO] Fassung {FASSUNG} (gelesen aus: {FASSUNG_QUELLE})")
+    else:
+        zeilen.append("[INFO] Fassung nicht ermittelt - weder die Plugin-Datenbank des "
+                      "LoxBerry noch eine plugin.cfg neben bin/ nennt sie; der "
+                      "User-Agent geht ohne Nummer hinaus")
+
     venv = SELF / "venv" / "bin" / "python3"
     zeilen.append(f"[{'OK]  ' if venv.exists() else 'FEHL]'} Virtuelle Umgebung: {venv}")
     if not venv.exists():
@@ -2345,6 +2522,11 @@ def selbsttest() -> int:
 
 
 def main() -> int:
+    # VOR log_einrichten(): --mqtt-leeren laeuft aus der Deinstallation, und
+    # dort soll kein Protokollordner mehr entstehen (Fall U15; Vorbild
+    # VolkswagenID, vw.py --mqtt-leeren).
+    if "--mqtt-leeren" in sys.argv:
+        return mqtt_leeren()
     log_einrichten()
     if "--selbsttest" in sys.argv:
         return selbsttest()
