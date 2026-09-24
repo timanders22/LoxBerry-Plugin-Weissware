@@ -298,7 +298,9 @@ if [ -f "$MARKE" ] && [ -x "$PBIN/dienst.sh" ]; then
         angehalten*) echo "<INFO> Waehrend des Upgrades lief ein Dienst: $WW_HALT" ;;
     esac
 fi
+DIENST_LIEF=0
 if [ -f "$LIEF" ]; then
+    DIENST_LIEF=1
     if [ -x "$PBIN/dienst.sh" ] && WW_START_TROTZ_MARKE=1 "$PBIN/dienst.sh" start >/dev/null 2>&1; then
         echo "<OK> Der Dienst wurde wieder gestartet."
     else
@@ -308,11 +310,31 @@ if [ -f "$LIEF" ]; then
     rm -f "$LIEF"
 fi
 
-echo "<OK> Installation abgeschlossen."
-echo "<INFO> Naechste Schritte in der Plugin-Oberflaeche, Reiter Einstellungen:"
-echo "<INFO>   1. Anbieter einschalten, die Sie haben"
-echo "<INFO>   2. Zugangsdaten eintragen (Home Connect und Miele brauchen ein"
-echo "<INFO>      kostenloses Entwicklerkonto), speichern"
-echo "<INFO>   3. Anmelden (Home Connect ueber Code, Miele ueber Browser)"
-echo "<INFO>   4. Dienst starten"
+# ---------- Schlusszeile ----------
+# Dieses Skript laeuft bei der Erstinstallation UND bei jedem Upgrade
+# (plugininstall.pl uebergibt kein Kennzeichen). Bis 0.9.30 standen hier nach
+# jedem Upgrade die "Naechsten Schritte" samt "Zugangsdaten eintragen",
+# obwohl sie oben gerade zurueckgespielt worden waren - wer das liest, haelt
+# sie fuer verloren, und der Fall, in dem sie es wirklich sind, sieht
+# genauso aus.
+# Entschieden wird nach dem INHALT von zugang.json nach dem Zurueckspielen,
+# mit derselben Pruefung wie fuer die Sicherung oben (ww_hat_wert mit
+# hc_client_secret, miele_client_secret, st_token), nicht nach der
+# Upgrade-Marke. Traegt die Datei keines davon, erscheint die Anleitung.
+# Gemessen am 24.09.2026: Pruefung-Weissware-0.9.31/postinstall_hinweis.md.
+if ww_hat_wert "$PCONFIG/zugang.json" hc_client_secret miele_client_secret st_token; then
+    echo "<OK> Aktualisierung abgeschlossen, Einstellungen uebernommen (Zugangsdaten vorhanden)."
+    if [ "$DIENST_LIEF" = 0 ]; then
+        echo "<INFO> Der Dienst lief vor dem Upgrade nicht und wurde nicht gestartet"
+        echo "<INFO> (Reiter Einstellungen)."
+    fi
+else
+    echo "<OK> Installation abgeschlossen."
+    echo "<INFO> Naechste Schritte in der Plugin-Oberflaeche, Reiter Einstellungen:"
+    echo "<INFO>   1. Anbieter einschalten, die Sie haben"
+    echo "<INFO>   2. Zugangsdaten eintragen (Home Connect und Miele brauchen ein"
+    echo "<INFO>      kostenloses Entwicklerkonto), speichern"
+    echo "<INFO>   3. Anmelden (Home Connect ueber Code, Miele ueber Browser)"
+    echo "<INFO>   4. Dienst starten"
+fi
 exit 0
