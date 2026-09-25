@@ -168,6 +168,19 @@ rm -f "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" 2>/dev/null
 # loxberry beschreiben kann, und gebraucht wird nur Lesezugriff auf die
 # Konfiguration und general.json. Vorbild VolkswagenID (vw.py --mqtt-leeren).
 # stdin geschlossen, damit su nie auf eine Eingabe wartet (Regeln/02).
+#
+# 'timeout -k 5 60': ohne -k schickt timeout nach 60 s nur SIGTERM - ein
+# Programm, das es nicht annimmt, hielt die Deinstallation an, bis es von
+# selbst endete, und die Sicherung mit den Zugangsdaten (Schritt 2) blieb
+# liegen. Bis 0.9.33 stand hier 'timeout 60' und dahinter '|| true': ein
+# Abbruch nach 60 s erschien in der Ausgabe des Installers gar nicht.
+# Gemessen am 25.09.2026 in WSL mit einem SIGTERM-festen Platzhalter an der
+# Stelle von bin/weissware.py: uninstall lief bis zur aeusseren Grenze von
+# 150 s, ohne Meldung (Pruefung-Weissware-0.9.34, Faelle K1-K7; Befund aus
+# Sprachsteuerung 0.11.10, dort ueber acht Stunden). Jetzt: nach 60 s SIGTERM,
+# nach weiteren 5 s SIGKILL, und der Abbruch steht als WARNING da.
+# Rueckgabe 0-2 meldet weissware.py selbst (mqtt_leeren()).
+WW_RC=0
 WW_PY=""
 if [ -x "$PBIN/venv/bin/python3" ]; then
     WW_PY="$PBIN/venv/bin/python3"
@@ -177,12 +190,18 @@ fi
 if [ -n "$WW_PY" ] && [ -f "$PBIN/weissware.py" ]; then
     if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
         su -s /bin/bash loxberry -c "$(printf '%q ' env PYTHONDONTWRITEBYTECODE=1 \
-            "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" timeout 60 "$WW_PY" \
-            "$PBIN/weissware.py" --mqtt-leeren)" < /dev/null 2>&1 || true
+            "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" timeout -k 5 60 "$WW_PY" \
+            "$PBIN/weissware.py" --mqtt-leeren)" < /dev/null 2>&1 || WW_RC=$?
     else
         env PYTHONDONTWRITEBYTECODE=1 "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" \
-            timeout 60 "$WW_PY" "$PBIN/weissware.py" --mqtt-leeren < /dev/null 2>&1 || true
+            timeout -k 5 60 "$WW_PY" "$PBIN/weissware.py" --mqtt-leeren < /dev/null 2>&1 || WW_RC=$?
     fi
+    case "$WW_RC" in
+        0|1|2) ;;
+        124) echo "<WARNING> MQTT: das Leeren der zurueckbehaltenen Themen wurde nach 60 s abgebrochen - unter dem Praefix der Linie kann noch etwas im Broker stehen. Von Hand: mosquitto_pub -r -n -t <thema>" ;;
+        137) echo "<WARNING> MQTT: das Leeren der zurueckbehaltenen Themen reagierte nach 60 s nicht auf SIGTERM und wurde hart beendet (SIGKILL) - unter dem Praefix der Linie kann noch etwas im Broker stehen. Von Hand: mosquitto_pub -r -n -t <thema>" ;;
+        *) echo "<WARNING> MQTT: das Leeren der zurueckbehaltenen Themen endete unerwartet (Rueckgabe $WW_RC) - unter dem Praefix der Linie kann noch etwas im Broker stehen." ;;
+    esac
 else
     echo "<INFO> Python oder bin/weissware.py fehlt - zurueckbehaltene MQTT-Themen wurden nicht geleert."
 fi

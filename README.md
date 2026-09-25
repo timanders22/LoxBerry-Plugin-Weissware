@@ -10,12 +10,33 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.33 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.34 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.34
+
+Die Deinstallation kann nicht mehr hängen bleiben. Beim Leeren der
+zurückbehaltenen MQTT-Themen (`weissware.py --mqtt-leeren`) stand eine
+Zeitgrenze von 60 s, die aber nur SIGTERM schickte; ein Programm, das es nicht
+annimmt, hielt die Deinstallation an, bis es von selbst endete — und die
+Sicherung mit den Zugangsdaten der Herstellerclouds blieb so lange liegen. Jetzt
+folgt nach weiteren 5 s SIGKILL (`timeout -k 5 60`). Außerdem stand ein Abbruch
+nach 60 s bisher gar nicht in der Ausgabe des Installers; jetzt meldet eine
+`<WARNING>`-Zeile, dass unter dem Präfix der Linie noch etwas im Broker stehen
+kann, mit dem Befehl zum Löschen von Hand.
+
+Gemessen in WSL (`Pruefung-Weissware-0.9.34`): mit einem SIGTERM-festen
+Platzhalter an der Stelle von `bin/weissware.py` lief die Deinstallation vorher
+bis zur äußeren Grenze von 150 s, ohne Meldung; jetzt endet sie nach 67 s mit
+Warnung, die Sicherung ist entfernt, der Platzhalter beendet. Das echte
+`weissware.py` nimmt SIGTERM an (sein Signalhandler wird erst hinter dem Zweig
+`--mqtt-leeren` gesetzt) — es hätte also nicht gehangen, aber ein Abbruch nach
+60 s blieb bis 0.9.33 stumm. Der root-Zweig (`su loxberry`) ist mit Attrappen
+für `id` und `su` gemessen, nicht mit dem echten `su`.
 
 ## Neu in 0.9.33
 
