@@ -116,6 +116,10 @@ ww_ordner() {
         *) printf '%s\n' "$ww_b" ;;
     esac
 }
+# Was der Aufrufer nennt, bevor LBHOMEDIR unten ersetzt wird - gebraucht fuer
+# die Gegenprobe "ausdruecklich genannt" (Muster 3, weiter unten).
+WW_UMG_HOME="${LBHOMEDIR:-}"
+WW_UMG_PDIR="${LBPPLUGINDIR:-}"
 PNAME=$(ww_ordner)
 LBHOMEDIR=$(ww_wurzel)
 # Ohne Wurzel wird nichts angelegt und nichts gestartet - die Pfade darunter
@@ -128,6 +132,32 @@ if [ -z "$LBHOMEDIR" ] || [ ! -d "$LBHOMEDIR" ]; then
     echo "        $SELF traegt kein Verzeichnis config/plugins, webfrontend"
     echo "        und config/system/general.json."
     echo "        Es wurde nichts angelegt und nichts gestartet."
+    exit 1
+fi
+# Muster 3: die Anlage gilt nur, wenn dieses Skript in ihrem bin-Ordner liegt
+# oder der Aufrufer Wurzel UND Ordner ausdruecklich nennt ($LBHOMEDIR und
+# $LBPPLUGINDIR, und config/plugins/<ordner> ist dort eingerichtet) - dieselbe
+# Regel wie anlage_gilt() in bin/weissware.py und ww_paths() in ww_lib.php.
+# Sonst kommt der Aufruf aus einem ausgepackten Archiv oder einem
+# Pruefordner: nichts anlegen, nichts starten, nichts anhalten. Bis 0.9.31
+# nahm ein Archiv unter einer echten Wurzel diese Wurzel und den festen Namen
+# weissware; 'stop' mit nur gesetztem LBHOMEDIR nahm der Anlage ihr
+# soll_laufen (in WSL gemessen, Pruefung-Weissware-0.9.32, Fall A4; Vorbild
+# Govee 0.9.21).
+PBIN="$LBHOMEDIR/bin/plugins/$PNAME"
+WW_AUSDRUECKLICH=0
+if [ -n "$WW_UMG_HOME" ] && [ "${WW_UMG_PDIR%/}" = "$PNAME" ] \
+   && [ "$(cd "$LBHOMEDIR" 2>/dev/null && pwd -P)" = "$(cd "$WW_UMG_HOME" 2>/dev/null && pwd -P)" ] \
+   && [ -d "$LBHOMEDIR/config/plugins/$PNAME" ]; then
+    WW_AUSDRUECKLICH=1
+fi
+if [ "$SELF" != "$(readlink -f "$PBIN" 2>/dev/null)" ] && [ "$WW_AUSDRUECKLICH" != "1" ]; then
+    echo "FEHLER: $SELF ist nicht der bin-Ordner von '$PNAME' unter $LBHOMEDIR,"
+    echo "        und LBHOMEDIR und LBPPLUGINDIR nennen die Anlage nicht beide."
+    echo "        Der Aufruf kommt offenbar aus einem ausgepackten Archiv oder"
+    echo "        einem Pruefordner. Es wurde nichts angelegt, gestartet oder angehalten."
+    echo "        Abhilfe: LBHOMEDIR und LBPPLUGINDIR setzen oder dienst.sh"
+    echo "        aus <LoxBerry-Wurzel>/bin/plugins/<ordner> aufrufen."
     exit 1
 fi
 PDATA="$LBHOMEDIR/data/plugins/$PNAME"
@@ -155,8 +185,13 @@ LOGDATEI="$PLOG/weissware.log"
 # (06.09.2026): sieben Dienste hielten so eine geloeschte Protokolldatei offen.
 # Regel: genau einer schreibt in eine Protokolldatei.
 STARTLOG="$PLOG/weissware_start.log"
-PY="$SELF/venv/bin/python3"
-SKRIPT="$SELF/weissware.py"
+# Das Programm DER ANLAGE, nicht das neben dieser Datei: ausdruecklich aus
+# einem Archiv gerufen, verwaltete dienst.sh sonst den Dienst des Archivs -
+# 'status' meldete "gestoppt", obwohl der Dienst der Anlage lief, und nahm
+# ihr die PID-Datei (Fall A5). Installiert ist das derselbe Ordner wie SELF.
+WW_PBIN_ECHT=$(readlink -f "$PBIN" 2>/dev/null || printf '%s' "$PBIN")
+PY="$WW_PBIN_ECHT/venv/bin/python3"
+SKRIPT="$WW_PBIN_ECHT/weissware.py"
 # Der Dienst laeuft als loxberry (siehe den Abstieg oben); wo es den Benutzer
 # nicht gibt, als der eigene. Gebraucht fuer die Suche nach Diensten ohne
 # PID-Datei: ohne Benutzerfilter liefe sie ueber fremde Prozesse.
@@ -263,7 +298,8 @@ waisen_beenden() {
 #
 # Ausgaenge:
 #   Marke hoechstens 3600 s alt  -> gesperrt (Fall C1)
-#   Marke aelter, aus der Zukunft, leer oder unlesbar -> sie gilt nicht
+#   Marke aelter, mehr als 300 s aus der Zukunft, leer oder unlesbar
+#                             -> sie gilt nicht
 #                                (Faelle C4 bis C7; eine abgebrochene
 #                                Installation darf den Dienst nicht fuer
 #                                immer stilllegen)
@@ -278,7 +314,11 @@ marke_sperrt() {
     SEIT=$(cat "$MARKE" 2>/dev/null)
     case "$SEIT" in ''|*[!0-9]*) return 1 ;; esac
     ALTER=$((JETZT - SEIT))
-    [ "$ALTER" -lt 0 ] && return 1
+    # Bis 300 s "aus der Zukunft" gilt die Marke noch: die Uhr kann ein Stueck
+    # zurueckspringen, nachdem preupgrade.sh sie gesetzt hat. Bis 0.9.31 galt
+    # "jede Sekunde Zukunft gilt nicht" (Fall M1; Muster 8, Vorbild Govee
+    # 0.9.20). Dieselbe Grenze steht in ww_upgrade_marke() (ww_lib.php).
+    [ "$ALTER" -lt -300 ] && return 1
     [ "$ALTER" -le 3600 ]
 }
 

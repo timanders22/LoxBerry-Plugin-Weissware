@@ -549,11 +549,19 @@ function ww_test_aktion($aktion)
     if (!preg_match('/^[0-9]{1,3}$/', $nr)) {
         return array(0, ww_t('TEST.M_GERAET_UNGUELTIG'));
     }
+    if ($aktion !== 'abruf'
+        && !in_array($aktion, array('start', 'stop', 'pause', 'fortsetzen', 'ein', 'aus'), true)) {
+        return array(0, ww_t('TEST.M_UNBEKANNT'));
+    }
+    /* Ohne laufenden Dienst nicht einreihen - wie der Miniserver-Endpunkt
+     * (webfrontend/html/index.php, DIENST_LAEUFT_NICHT). Bis 0.9.31 lag der
+     * Auftrag sonst bis zum naechsten Start in der Warteschlange und lief dann
+     * ungefragt an (in WSL gemessen, Pruefung-Weissware-0.9.32, Fall B1). */
+    if (ww_dienst_pid() === 0) {
+        return array(0, ww_t('TEST.M_DIENST_AUS'));
+    }
     if ($aktion === 'abruf') {
         return ww_befehl_absetzen(array('aktion' => 'abruf'), 15);
-    }
-    if (!in_array($aktion, array('start', 'stop', 'pause', 'fortsetzen', 'ein', 'aus'), true)) {
-        return array(0, ww_t('TEST.M_UNBEKANNT'));
     }
     $b = array('aktion' => $aktion, 'geraet' => $nr);
     if ($aktion === 'start') {

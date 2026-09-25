@@ -36,11 +36,12 @@
 #      Zustaende retained hinaus (RETAIN in bin/weissware.py); bis 0.9.29
 #      blieben sie nach dem Deinstallieren im Broker stehen, und nach jedem
 #      Neustart von Broker oder Gateway bekam der Miniserver sie wieder
-#      (gemessen, Pruefung-Weissware-0.9.30, Faelle U1-U13). Geleert wird
-#      ueber den einzigen Weg der Linie, den UDP-Eingang des Gateways - ohne
-#      Bestaetigung und ohne Nachlesen (Schritt 1b, README). Einen Letzten
-#      Willen gibt es nicht: die Linie hat keine eigene MQTT-Verbindung
-#      (Regeln/07, Abschnitt 3).
+#      (gemessen, Pruefung-Weissware-0.9.30, Faelle U1-U13). Geloescht wird
+#      ueber den UDP-Eingang des Gateways; seit 0.9.32 wird vorher und nach
+#      jeder Runde beim Broker nachgelesen, und nur was dort noch steht, geht
+#      hinaus (Schritt 1b, README; Pruefung-Weissware-0.9.32, Teil U). Einen
+#      Letzten Willen gibt es nicht: die Linie haelt keine Dauerverbindung
+#      zum Broker (Regeln/07, Abschnitt 3).
 
 ARGV3=$3
 ARGV5=$5
@@ -160,7 +161,8 @@ rm -f "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" 2>/dev/null
 # Geraetenummern und bin/ sind hier noch da; der Installer loescht sie erst
 # nach diesem Skript (plugininstall.pl, purge_installation Schritt 3 vor
 # Schritt 7; am Geraet nachgesehen 05.09.2026, Geraet/2026-09-05/).
-# Welche Themen und warum dreimal: mqtt_leeren() in bin/weissware.py.
+# Welche Themen, wie nachgelesen wird und warum hoechstens dreimal:
+# mqtt_leeren() in bin/weissware.py.
 #
 # Als loxberry, nicht als root: bin/weissware.py liegt in einem Ordner, den
 # loxberry beschreiben kann, und gebraucht wird nur Lesezugriff auf die

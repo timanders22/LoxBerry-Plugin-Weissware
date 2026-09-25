@@ -656,11 +656,12 @@ RETAIN = {
 # mit einem Merker im Datenordner, damit es genau EINMAL geschieht
 # (Regeln/07).
 #
-# Die Kennung im Merker ist Praefix plus diese Liste (altwerte_abraeumen()).
-# Ein Merker aus 0.9.28 lautet "<praefix> ts,ok" und passt damit nicht mehr -
-# das Abraeumen der Dienstzustaende wird nicht uebersprungen (gemessen,
-# Pruefung-Weissware-0.9.29, messe_retain.sh, Fall R3). ts und ok gehen dabei
-# ein zweites Mal leer hinaus; der gueltige Wert folgt unmittelbar.
+# "Genau einmal" heisst seit 0.9.32: bis der BROKER bestaetigt, dass keines
+# dieser Themen mehr zurueckbehalten steht - nicht bis die Loeschung gesendet
+# ist. Der UDP-Eingang verwirft unter Last Datagramme, und sendto() meldet
+# auch dann Erfolg (Regeln/07, Nachtrag vom 19.09.2026: Merker gesetzt,
+# Altwert stand weiter im Broker). Einzelheiten und die Merkerkennung:
+# altlast_lage() und mqtt_behalten_liste() weiter unten.
 ALTWERTE_LOESCHEN = ("ts", "ok", "fehler_folge", "ausfaelle",
                      "ausfall/homeconnect", "ausfall/miele", "ausfall/smartthings")
 
@@ -692,48 +693,223 @@ def retain_fuer(thema: str) -> bool:
     return bool(RETAIN.get(thema_stamm(thema), False))
 
 
-def altwerte_abraeumen(s, praefix: str, port: int) -> None:
-    """Loescht EINMAL die zurueckbehaltenen Altwerte aus ALTWERTE_LOESCHEN.
+# ---------------------------------------------------------------------------
+# Beim Broker nachlesen
+#
+# Das Abraeumen laeuft ueber den UDP-Eingang des Gateways, und dort meldet
+# sendto() auch fuer ein verworfenes Datagramm Erfolg (Regeln/07, "Ein
+# Absender merkt nichts davon": am Geraet 396 von 400 Datagrammen verworfen,
+# 0 Fehler beim Senden). Nachtrag vom 19.09.2026 ebenda: Beschattungswaechter
+# 0.9.19 und KODI-NG 1.2.7 setzten ihren Merker nach dem Senden, und der
+# Altwert stand weiter im Broker. Bis 0.9.31 tat diese Linie dasselbe - erst
+# sendto(), dann der Merker, und im zweiten Lauf ging nichts mehr hinaus, auch
+# wenn die Loeschung am Eingang verloren war (in WSL gemessen,
+# Pruefung-Weissware-0.9.32, Faelle R1d, R4a, R4b). Belegt ist das Abraeumen
+# erst, wenn der Broker selbst sagt, dass nichts mehr dasteht.
+#
+# Diese Linie hat kein paho (sie braucht allein requests). Gefragt wird mit
+# MQTT 3.1.1 von Hand - CONNECT, SUBSCRIBE mit QoS 0 auf genau die Themen,
+# DISCONNECT -, nach tb_mqtt_behalten_liste() in Spotpreis-Tibber 0.9.19.
+# Zurueckbehaltenes liefert der Broker unmittelbar nach dem SUBACK, mit
+# gesetztem Retain-Merkmal. Der Zugang kommt aus der general.json
+# (Brokerhost, Brokerport, Brokeruser, Brokerpass; Regeln/07 Abschnitt 2).
+# Das Kennwort steht nur im CONNECT-Paket - nie in einem Protokoll, einer
+# Ausgabe oder einer Befehlszeile.
+#
+# Ohne Brokerport in der general.json wird NICHT 1883 angenommen: dann ist
+# der Broker "nicht zu fragen". Ein LoxBerry traegt den Port immer ein; ein
+# Pruefstand ohne ihn soll nie an einen fremden Broker geraten.
+# ---------------------------------------------------------------------------
+def mqtt_zugang() -> dict:
+    """Host, Port, Benutzer und Kennwort des Brokers aus der general.json.
+    port 0 heisst: nicht angegeben oder unbrauchbar."""
+    gen = json_lesen(LBHOME / "config" / "system" / "general.json")
+    m = gen.get("Mqtt") or gen.get("mqtt") or {}
+    if not isinstance(m, dict):
+        m = {}
 
-    Der Merker haelt fest, fuer WELCHES Themenpraefix und WELCHE Themen das
-    geschehen ist. Wer das Praefix in den Einstellungen umstellt, laesst sonst
-    den alten Stamm im Broker stehen; mit dem Praefix im Merker wird unter dem
-    neuen Stamm noch einmal abgeraeumt. Die Themenliste steht mit darin, seit
-    ok dazugekommen ist: ein Merker aus 0.9.26/0.9.27 traegt nur das Praefix
-    und haette das Abraeumen von ok uebersprungen (gemessen,
-    Pruefung-Weissware-0.9.28, Fall R3). Der Dateiname retain_ts_geraeumt
-    bleibt, damit kein alter Merker daneben liegen bleibt.
+    def hol(gross: str, klein: str) -> str:
+        v = m.get(gross, m.get(klein, ""))
+        return "" if v is None else str(v)
 
-    Der gueltige Wert geht unmittelbar danach hinaus - darum steht dieser
-    Aufruf VOR der Sendeschleife. Das Gateway reicht eine leere Nachricht
-    sonst als leeren Wert an den Miniserver weiter (Regeln/07, am Geraet
-    gemessen 06.09.2026).
+    host = hol("Brokerhost", "brokerhost").strip()
+    if host in ("", "localhost"):
+        host = "127.0.0.1"
+    try:
+        port = int(hol("Brokerport", "brokerport").strip())
+    except ValueError:
+        port = 0
+    if not 0 < port < 65536:
+        port = 0
+    return {"host": host, "port": port,
+            "user": hol("Brokeruser", "brokeruser"),
+            "pass": hol("Brokerpass", "brokerpass")}
+
+
+def mqtt_behalten_liste(themen) -> tuple:
+    """Fragt den Broker in EINER Verbindung, welche der Themen er zurueckbehaelt.
+
+    Rueckgabe (lage, belegt). lage "ok": der Broker hat das Abonnement
+    bestaetigt (oder einen Wert geschickt) - was dann nicht in belegt steht,
+    ist leer. "unbekannt": er war nicht zu fragen (kein Port, keine
+    Verbindung, Anmeldung abgewiesen, keine Antwort).
     """
-    if not ALTWERTE_LOESCHEN:
-        return
-    kennung = praefix + " " + ",".join(ALTWERTE_LOESCHEN)
+    soll = []
+    for t in themen:
+        t = str(t)
+        if t and t not in soll:
+            soll.append(t)
+    if not soll:
+        return "ok", set()
+    z = mqtt_zugang()
+    if not z["port"]:
+        return "unbekannt", set()
+
+    def zk(text: str) -> bytes:
+        b = text.encode("utf-8")
+        return len(b).to_bytes(2, "big") + b
+
+    def laenge(n: int) -> bytes:
+        o = b""
+        while True:
+            b = n % 128
+            n //= 128
+            if n:
+                b |= 128
+            o += bytes([b])
+            if not n:
+                return o
+
+    try:
+        s = socket.create_connection((z["host"], z["port"]), timeout=2)
+    except OSError:
+        return "unbekannt", set()
+    belegt = set()
+    bestaetigt = False
+    puffer = b""
+
+    def lies(n: int) -> bytes:
+        nonlocal puffer
+        while len(puffer) < n:
+            d = s.recv(4096)
+            if not d:
+                raise OSError("Verbindung beendet")
+            puffer += d
+        aus, puffer = puffer[:n], puffer[n:]
+        return aus
+
+    def paket() -> tuple:
+        k = lies(1)[0]
+        n, mult = 0, 1
+        for _ in range(4):
+            b = lies(1)[0]
+            n += (b & 127) * mult
+            mult *= 128
+            if not b & 128:
+                break
+        return k, (lies(n) if n else b"")
+
+    try:
+        s.settimeout(1.0)
+        flags = 0x02                                   # saubere Sitzung
+        nutz = zk("wwrueck%d" % os.getpid())
+        if z["user"]:
+            flags |= 0x80
+            nutz += zk(z["user"])
+            # Ein Kennwort ohne Benutzer laesst MQTT 3.1.1 nicht zu.
+            if z["pass"]:
+                flags |= 0x40
+                nutz += zk(z["pass"])
+        kopf = zk("MQTT") + bytes([4, flags]) + (10).to_bytes(2, "big")
+        s.sendall(bytes([0x10]) + laenge(len(kopf) + len(nutz)) + kopf + nutz)
+        k, r = paket()
+        if k >> 4 == 2 and len(r) >= 2 and r[1] == 0:
+            sub = (1).to_bytes(2, "big")
+            for t in soll:
+                sub += zk(t) + b"\x00"
+            s.sendall(bytes([0x82]) + laenge(len(sub)) + sub)
+            ende = time.monotonic() + 3.0
+            while time.monotonic() < ende:
+                try:
+                    k, r = paket()
+                except OSError:                        # Zeitablauf: nichts mehr gekommen
+                    break
+                art = k >> 4
+                if art == 9:
+                    bestaetigt = True
+                    # Zurueckbehaltenes kommt unmittelbar nach dem SUBACK.
+                    ende = min(ende, time.monotonic() + 1.0)
+                elif art == 3 and len(r) >= 2:
+                    tl = int.from_bytes(r[0:2], "big")
+                    t = r[2:2 + tl].decode("utf-8", "replace")
+                    versatz = 2 + tl + (2 if (k >> 1) & 3 else 0)
+                    if t in soll and (k & 1) and r[versatz:]:
+                        belegt.add(t)
+                        if len(belegt) == len(soll):
+                            break
+            try:
+                s.sendall(b"\xe0\x00")
+            except OSError:
+                pass
+    except OSError:
+        pass
+    finally:
+        s.close()
+    return ("ok" if (bestaetigt or belegt) else "unbekannt"), belegt
+
+
+def altlast_lage(praefix: str) -> tuple:
+    """Welche Altwerte aus ALTWERTE_LOESCHEN muessen in diesem Lauf noch weg?
+
+    Rueckgabe (lage, themen) - themen ohne Praefix:
+      Merker mit passender Kennung      -> ("erledigt", []), der Broker wird
+                                           nicht gefragt;
+      der Broker bestaetigt: keines der
+      Themen steht zurueckbehalten      -> Merker schreiben, ("erledigt", []);
+      er nennt belegte Themen           -> ("belegt", genau diese), KEIN
+                                           Merker - der naechste Lauf fragt
+                                           wieder, das ist das Nachlesen;
+      er ist nicht zu fragen            -> ("unbekannt", alle), kein Merker,
+                                           einmal je Stunde ins Protokoll.
+    Die Kennung ist "leer-bestaetigt <praefix>: <Themenliste>". Ein Merker
+    aus 0.9.26 bis 0.9.31 ("<praefix> ts,ok,...") ist nach blossem Senden
+    geschrieben worden und gilt deshalb nicht (Fall R6); ein anderes Praefix
+    oder eine andere Liste ebenso. Der Dateiname bleibt, damit kein alter
+    Merker daneben liegen bleibt. purge_installation raeumt ihn bei jedem
+    Upgrade mit ab (Regeln/06); dann wird genau einmal nachgefragt.
+    """
+    liste = list(ALTWERTE_LOESCHEN)
+    if not liste:
+        return "erledigt", []
+    kennung = "leer-bestaetigt %s: %s" % (praefix, " ".join(liste))
     try:
         schon = DATEI_RETAIN_GERAEUMT.read_text(encoding="utf-8").strip()
     except OSError:
         schon = ""
     if schon == kennung:
-        return
-    for t in ALTWERTE_LOESCHEN:
-        # Ein Leerzeichen hinter dem Thema, sonst keine Nutzlast: genau die
-        # Form, die das Gateway als Loeschung liest.
-        s.sendto("retain {0}/{1} ".format(praefix, t).encode("utf-8"),
-                 ("127.0.0.1", port))
-    try:
-        DATEI_RETAIN_GERAEUMT.parent.mkdir(parents=True, exist_ok=True)
-        DATEI_RETAIN_GERAEUMT.write_text(kennung + "\n", encoding="utf-8")
-    except OSError as err:
-        # Ohne Merker geschieht die Loeschung bei jedem Lauf erneut. Schaden
-        # richtet das nicht an - der gueltige Wert folgt jedes Mal unmittelbar
-        # -, aber es gehoert gemeldet statt verschwiegen.
-        melde_gebremst("retain_merker",
-                       "Der Merker {0} liess sich nicht schreiben ({1}); der "
-                       "zurueckbehaltene Altwert wird deshalb bei jedem Lauf "
-                       "erneut abgeraeumt.".format(DATEI_RETAIN_GERAEUMT, err))
+        return "erledigt", []
+    lage, belegt = mqtt_behalten_liste(["%s/%s" % (praefix, t) for t in liste])
+    if lage == "ok" and not belegt:
+        try:
+            DATEI_RETAIN_GERAEUMT.parent.mkdir(parents=True, exist_ok=True)
+            DATEI_RETAIN_GERAEUMT.write_text(kennung + "\n", encoding="utf-8")
+            _LOG.info("MQTT: unter %s/ steht keines der %d frueher zurueckbehaltenen "
+                      "Themen mehr im Broker (vom Broker bestaetigt).", praefix, len(liste))
+        except OSError as err:
+            melde_gebremst("retain_merker",
+                           "Der Merker {0} liess sich nicht schreiben ({1}); der Broker "
+                           "wird im naechsten Lauf wieder gefragt.".format(
+                               DATEI_RETAIN_GERAEUMT, err))
+        return "erledigt", []
+    if lage == "ok":
+        return "belegt", [t for t in liste if "%s/%s" % (praefix, t) in belegt]
+    grund = ("in der general.json steht kein Brokerport" if not mqtt_zugang()["port"]
+             else "keine Verbindung, keine Antwort oder Anmeldung abgewiesen")
+    melde_gebremst("mqtt_rueckfrage",
+                   "MQTT: der Broker liess sich nicht befragen, ob unter {0}/ noch frueher "
+                   "zurueckbehaltene Werte stehen ({1}). Sie werden deshalb unmittelbar vor "
+                   "jedem Senden geloescht, bis er antwortet.".format(praefix, grund))
+    return "unbekannt", liste
 
 
 def mqtt_senden(paare: dict, praefix: str) -> None:
@@ -747,25 +923,45 @@ def mqtt_senden(paare: dict, praefix: str) -> None:
                        "MQTT: das Gateway ist nicht auf Autostart gestellt "
                        "(System -> MQTT Gateway). Es wird gesendet, aber vermutlich "
                        "hoert niemand zu.")
+    # Die Altwerte frueher zurueckbehaltener Themen abraeumen, solange der
+    # Broker sie noch haelt - altlast_lage() fragt ihn VORHER.
+    lage, raeumen = altlast_lage(praefix)
+    raeumen = list(raeumen)
+    ziel = ("127.0.0.1", z["udpport"])
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     except OSError as err:
         melde_gebremst("mqtt_socket", f"MQTT: Socket nicht moeglich ({err}).")
         return
     try:
-        # Erst der Altwert, dann der gueltige Wert - in derselben Sendefolge.
-        altwerte_abraeumen(s, praefix, z["udpport"])
         for k, v in paare.items():
             if v is None:
                 continue
             wert = mqtt_wert_saeubern(v)
+            # Die leere retain-Nutzlast loescht den zurueckbehaltenen Wert
+            # (mqttgateway.pl:281, :311-315, :357; am Geraet am 19.09.2026
+            # belegt, Regeln/07). Sie geht UNMITTELBAR vor dem gueltigen Wert
+            # hinaus: wer das Thema abonniert hat, bekommt die Loeschung als
+            # leere Nachricht, und der Wert steht gleich dahinter. Bis 0.9.31
+            # gingen alle Loeschungen am Anfang der Sendefolge hinaus
+            # (Fall R1b). Ein Leerzeichen hinter dem Thema, sonst keine
+            # Nutzlast: die Form, die das Gateway als Loeschung liest.
+            if k in raeumen:
+                s.sendto("retain {0}/{1} ".format(praefix, k).encode("utf-8"), ziel)
+                raeumen.remove(k)
             # Der UDP-Eingang des Gateways kennt "publish" und "retain"
             # (mqttgateway.pl:293, Ausfuehrung in :354-357). Ein leerer Wert
             # geht IMMER als publish hinaus: eine leere Nutzlast mit Retain
             # loescht das zurueckbehaltene Thema im Broker.
             befehl = "retain" if (wert != "" and retain_fuer(k)) else "publish"
-            s.sendto(f"{befehl} {praefix}/{k} {wert}".encode("utf-8"),
-                     ("127.0.0.1", z["udpport"]))
+            s.sendto(f"{befehl} {praefix}/{k} {wert}".encode("utf-8"), ziel)
+        # Was der Broker als belegt meldet, in diesem Lauf aber keinen Wert
+        # hat, wird allein geloescht - der Altwert ist ohnehin falsch. Bei
+        # unbekannter Lage nicht: dann gehen die Loeschungen nur unmittelbar
+        # vor einem Wert hinaus.
+        if lage == "belegt":
+            for k in raeumen:
+                s.sendto("retain {0}/{1} ".format(praefix, k).encode("utf-8"), ziel)
     except OSError as err:
         melde_gebremst("mqtt_senden", f"MQTT: Senden fehlgeschlagen ({err}).")
     finally:
@@ -796,17 +992,17 @@ def mqtt_senden(paare: dict, praefix: str) -> None:
 # (fortschritt, restzeit_min, ...), bleibt unberuehrt: eine leere Nachricht
 # darauf loeschte nichts, kaeme aber am Miniserver als leerer Wert an.
 #
-# Der Weg ist der einzige, den diese Linie hat: der UDP-Eingang des
-# Gateways, dieselbe Loeschform wie in altwerte_abraeumen() - "retain
-# <thema> " mit leerer Nutzlast (mqttgateway.pl, am Geraet belegt: die leere
-# Nachricht geht als Loeschung an den Broker, Regeln/07).
-#
-# GRENZE: UDP bestaetigt nichts, der Eingang verwirft unter Last Datagramme
-# (Regeln/07: an dieser Anlage gemessen bis etwa 70 %), und sendto() meldet
-# auch fuer ein verworfenes Datagramm Erfolg. Nachlesen ist ohne eigene
-# Brokerverbindung nicht moeglich. Deshalb geht jede Loeschung
-# LEEREN_RUNDEN-mal hinaus, mit Pause dazwischen - das senkt den Verlust,
-# beseitigt ihn nicht. Die Ausgabe sagt das, die README auch.
+# Geloescht wird ueber den UDP-Eingang des Gateways - "retain <thema> " mit
+# leerer Nutzlast (mqttgateway.pl, am Geraet belegt: die leere Nachricht geht
+# als Loeschung an den Broker, Regeln/07). Der Eingang bestaetigt nichts und
+# verwirft unter Last Datagramme (an dieser Anlage gemessen bis etwa 70 %).
+# Deshalb wird VOR der ersten Runde und nach jeder Runde beim Broker
+# nachgelesen (mqtt_behalten_liste()); hinaus geht nur, was dort noch steht,
+# hoechstens LEEREN_RUNDEN Runden. Steht nichts da, geht nichts hinaus. Bis
+# 0.9.31 gingen alle Themen dreimal blind hinaus, und die Ausgabe konnte nur
+# sagen, dass gesendet wurde (Faelle U1b bis U3b). Ist der Broker nicht zu
+# fragen, gehen alle Themen in jeder Runde hinaus, und die Ausgabe sagt, dass
+# nicht nachgelesen wurde. Bauart Tibber 0.9.19 (tb_mqtt_leeren()).
 # ---------------------------------------------------------------------------
 LEEREN_RUNDEN = 3
 LEEREN_PAUSE_S = 1.0
@@ -837,7 +1033,8 @@ def mqtt_leer_themen() -> list:
 
 
 def mqtt_leeren(runden: int = LEEREN_RUNDEN, pause: float = LEEREN_PAUSE_S) -> int:
-    """Rueckgabe 0 gesendet, 1 Senden gescheitert, 2 nicht moeglich.
+    """Rueckgabe 0 geleert (vom Broker bestaetigt) oder nicht nachpruefbar,
+    1 es steht noch etwas bzw. das Senden scheiterte, 2 nicht moeglich.
     Schreibt kein Protokoll und legt nichts an - es laeuft aus der
     Deinstallation."""
     praefix = str(config().get("mqtt_topic") or "weissware").strip("/") or "weissware"
@@ -851,8 +1048,17 @@ def mqtt_leeren(runden: int = LEEREN_RUNDEN, pause: float = LEEREN_PAUSE_S) -> i
         print("<INFO> MQTT: in general.json steht kein UDP-Eingangsport des Gateways - "
               "zurueckbehaltene Themen unter %s/ wurden nicht geleert." % praefix)
         return 2
-    themen = mqtt_leer_themen()
+    alle = ["%s/%s" % (praefix, t) for t in mqtt_leer_themen()]
+    lage, belegt = mqtt_behalten_liste(alle)
+    nachgelesen = (lage == "ok")
+    offen = [t for t in alle if t in belegt] if nachgelesen else list(alle)
+    if nachgelesen and not offen:
+        print("<OK> MQTT: der Broker bestaetigt: keines der %d Themen unter %s/ steht "
+              "zurueckbehalten - nichts zu leeren." % (len(alle), praefix))
+        return 0
+    zu_leeren = len(offen)
     gesendet = 0
+    runde = 0
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     except OSError as err:
@@ -860,15 +1066,22 @@ def mqtt_leeren(runden: int = LEEREN_RUNDEN, pause: float = LEEREN_PAUSE_S) -> i
               "wurden nicht geleert." % (err, praefix))
         return 2
     try:
-        for r in range(max(1, int(runden))):
-            if r:
+        while offen and runde < max(1, int(runden)):
+            if runde:
                 time.sleep(pause)
-            for t in themen:
+            runde += 1
+            for t in offen:
                 # Ein Leerzeichen hinter dem Thema, sonst keine Nutzlast: die
                 # Form, die das Gateway als Loeschung liest.
-                s.sendto(("retain %s/%s " % (praefix, t)).encode("utf-8"),
-                         ("127.0.0.1", z["udpport"]))
+                s.sendto(("retain %s " % t).encode("utf-8"), ("127.0.0.1", z["udpport"]))
                 gesendet += 1
+            if nachgelesen:
+                time.sleep(0.3)             # dem Gateway Zeit bis zum Broker lassen
+                lage, belegt = mqtt_behalten_liste(offen)
+                if lage == "ok":
+                    offen = [t for t in offen if t in belegt]
+                else:
+                    nachgelesen = False
     except OSError as err:
         print("<WARNING> MQTT: Senden an den UDP-Eingang %d gescheitert (%s) - "
               "zurueckbehaltene Themen unter %s/ stehen womoeglich noch im Broker."
@@ -876,15 +1089,24 @@ def mqtt_leeren(runden: int = LEEREN_RUNDEN, pause: float = LEEREN_PAUSE_S) -> i
         return 1
     finally:
         s.close()
-    print("<INFO> MQTT: %d zurueckbehaltene Themen unter %s/ je %d-mal mit leerer "
-          "Nutzlast an den UDP-Eingang %d des Gateways gesendet (%d Datagramme)."
-          % (len(themen), praefix, max(1, int(runden)), z["udpport"], gesendet))
+    print("<INFO> MQTT: %d von %d Themen unter %s/ mit leerer Nutzlast an den UDP-Eingang "
+          "%d des Gateways gesendet (%d Runde(n), %d Datagramme)."
+          % (zu_leeren, len(alle), praefix, z["udpport"], runde, gesendet))
     if not z["autostart"]:
         print("<INFO> MQTT: das Gateway steht nicht auf Autostart - vermutlich hat "
               "niemand zugehoert.")
-    print("<INFO> MQTT: Nachlesen ist ueber diesen Weg nicht moeglich; der Eingang "
-          "verwirft unter Last Datagramme. Was dennoch stehen bleibt, laesst sich mit "
-          "mosquitto_pub -r -n -t <thema> von Hand loeschen.")
+    if nachgelesen and not offen:
+        print("<OK> MQTT: der Broker bestaetigt: keines der %d Themen steht mehr "
+              "zurueckbehalten." % len(alle))
+        return 0
+    if nachgelesen:
+        print("<WARNING> MQTT: %d Themen stehen noch zurueckbehalten im Broker (%s%s). "
+              "Von Hand: mosquitto_pub -r -n -t <thema>"
+              % (len(offen), ", ".join(offen[:5]), ", ..." if len(offen) > 5 else ""))
+        return 1
+    print("<INFO> MQTT: der Broker liess sich nicht befragen - Nachlesen war nicht "
+          "moeglich. Der UDP-Eingang verwirft unter Last Datagramme; was stehen "
+          "bleibt, laesst sich mit mosquitto_pub -r -n -t <thema> von Hand loeschen.")
     return 0
 
 
@@ -1943,6 +2165,56 @@ def befehl_ausfuehren(sitzung, cfg: dict, z: dict, marken: dict, geraete: list,
             {"geraet": g.get("id"), "http": antwort.status_code})
 
 
+# Ein Auftrag, der beim Dienststart aelter ist, hat niemanden mehr, der auf
+# ihn wartet: wer einreiht, wartet hoechstens WW_WARTEN_WEB = 12 s auf die
+# Antwort (ww_lib.php). 60 s wie BatterieBMS 0.9.25 und ZendureSolarFlow
+# 0.9.26 (Entscheidung des Hausherrn vom 18.09.2026).
+BEFEHL_VERFALL_S = 60
+
+
+def alte_befehle_verwerfen() -> None:
+    """Beim Dienststart: liegende Auftraege, die aelter als BEFEHL_VERFALL_S
+    sind, verwerfen statt ausfuehren.
+
+    Bis 0.9.31 fuehrte ein frisch gestarteter Dienst jeden liegenden Auftrag
+    aus, gleich wie alt - der Reiter Test reihte auch ohne laufenden Dienst
+    ein. Ein "start" fuer die Waschmaschine lief damit Stunden spaeter
+    ungefragt an (in WSL gemessen, Pruefung-Weissware-0.9.32, Faelle B1, B3).
+    Der Zeitpunkt kommt aus dem Auftrag ("ts", seit 0.9.32 von
+    ww_befehl_absetzen() gesetzt), sonst aus der Datei. Mehr als 5 s in der
+    Zukunft (Uhr zurueckgesprungen) gilt ebenfalls als veraltet. Nur beim
+    Start; im Betrieb holt der Dienst jeden Auftrag im naechsten Durchlauf ab.
+    """
+    try:
+        dateien = sorted(ORDNER_BEFEHLE.glob("*.json"))
+    except OSError:
+        return
+    jetzt = time.time()
+    for datei in dateien:
+        b = json_lesen(datei)
+        ts = str(b.get("ts", ""))
+        if re.fullmatch(r"[0-9]{1,12}", ts):
+            alter = jetzt - int(ts)
+        else:
+            try:
+                alter = jetzt - datei.stat().st_mtime
+            except OSError:
+                continue
+        if -5 <= alter <= BEFEHL_VERFALL_S:
+            continue
+        try:
+            datei.unlink()
+        except OSError as err:
+            melde_gebremst("queue_alt_" + datei.stem,
+                           "Veralteter Auftrag {0} liess sich nicht entfernen ({1}).".format(
+                               datei.name, err), 900)
+            continue
+        antwort_schreiben(datei.stem, 0, "Beim Dienststart verworfen: veraltet.")
+        _LOG.warning("Warteschlange beim Start: Auftrag %s, %d s alt - VERWORFEN, nicht "
+                     "ausgefuehrt.", re.sub(r"[^a-z0-9_]", "", str(b.get("aktion") or "?")),
+                     int(alter))
+
+
 def warteschlange(sitzung, cfg: dict, z: dict, marken: dict, geraete: list) -> int:
     """Arbeitet die Warteschlange ab.
 
@@ -2160,6 +2432,9 @@ def dienst(einmal: bool = False) -> int:
     cfg = config()
     z = zugang()
     marken = token_lesen()
+    # Vor allem anderen: was beim Start schon liegt und veraltet ist, faellt
+    # heraus (alte_befehle_verwerfen(); Fall B3a).
+    alte_befehle_verwerfen()
     if not any(cfg.get(k) for k in ("hc_ein", "miele_ein", "st_ein")):
         _LOG.error("Es ist kein Anbieter eingeschaltet. Reiter Einstellungen oeffnen.")
         # ausfaelle MUSS mitgeschrieben werden, auch leer.
@@ -2521,7 +2796,55 @@ def selbsttest() -> int:
     return 1 if fehler else 0
 
 
+def anlage_gilt() -> bool:
+    """Gilt die gefundene Wurzel als Anlage DIESES Aufrufs?
+
+    Ja, wenn diese Datei in deren bin/plugins/<ordner> liegt (physisch
+    verglichen) oder der Aufrufer Wurzel UND Ordner ausdruecklich nennt
+    ($LBHOMEDIR und $LBPPLUGINDIR, und config/plugins/<ordner> ist dort
+    eingerichtet - so ruft uninstall/uninstall). Sonst kommt der Aufruf aus
+    einem ausgepackten Archiv oder einem Pruefordner.
+
+    Bis 0.9.31 nahm ein Archiv unter einer echten Wurzel diese Wurzel und -
+    weil der Ablageort dort "bin" heisst - den festen Namen weissware: der
+    Selbsttest las Fassung und Einrichtung der Anlage und legte deren
+    Protokollordner an, ein Dienst aus dem Archiv haette ihre Daten
+    geschrieben und ihre Themen gesendet (in WSL gemessen,
+    Pruefung-Weissware-0.9.32, Fall A1; Muster 3 der Nachlese, Vorbild
+    Spotpreis-Tibber 0.9.19). Geprueft wird in main(), nicht beim Laden:
+    Pruefwerkzeuge laden das Modul, um Tabellen und Fassung zu lesen.
+    """
+    try:
+        if (LBHOME / "bin" / "plugins" / PNAME).resolve() == SELF:
+            return True
+    except OSError:
+        pass
+    h = os.environ.get("LBHOMEDIR") or ""
+    p = (os.environ.get("LBPPLUGINDIR") or "").strip("/")
+    if not h or not p or p != PNAME:
+        return False
+    try:
+        return (Path(h).resolve() == LBHOME.resolve()
+                and (LBHOME / "config" / "plugins" / PNAME).is_dir())
+    except OSError:
+        return False
+
+
 def main() -> int:
+    # Muster 3: aus einem Archiv heraus nichts an der Anlage (anlage_gilt()).
+    # Als Erstes - vor dem Protokoll und vor --mqtt-leeren.
+    if not anlage_gilt():
+        text = ("%s ist nicht der bin-Ordner von '%s' unter %s, und LBHOMEDIR und "
+                "LBPPLUGINDIR nennen die Anlage nicht beide. Der Aufruf kommt offenbar "
+                "aus einem ausgepackten Archiv oder einem Pruefordner - es wurde nichts "
+                "gelesen, angelegt oder gesendet. Abhilfe: aus <LoxBerry-Wurzel>/bin/"
+                "plugins/<ordner> aufrufen oder LBHOMEDIR und LBPPLUGINDIR setzen."
+                % (SELF, PNAME, LBHOME))
+        if "--selbsttest" in sys.argv:
+            print("[FEHL] " + text)
+        else:
+            sys.stderr.write("FEHLER: " + text + "\n")
+        return 1
     # VOR log_einrichten(): --mqtt-leeren laeuft aus der Deinstallation, und
     # dort soll kein Protokollordner mehr entstehen (Fall U15; Vorbild
     # VolkswagenID, vw.py --mqtt-leeren).

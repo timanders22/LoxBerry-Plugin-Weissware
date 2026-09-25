@@ -10,12 +10,62 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.31 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.32 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.32
+
+- **Die Altwerte gelten erst als abgeräumt, wenn der Broker es bestätigt.**
+  Seit 0.9.26 räumt der Dienst einmal die Themen ab, die ältere Fassungen
+  zurückbehalten gesendet haben (`ts`, `ok`, `fehler_folge`, `ausfaelle`,
+  `ausfall/…`) — mit einer leeren Nachricht mit `retain` an den UDP-Eingang
+  des MQTT-Gateways. Bis 0.9.31 setzte er danach sofort seinen Merker „erledigt".
+  Der UDP-Eingang verwirft unter Last aber Datagramme, ohne dass der Absender
+  davon etwas merkt; ging die Löschung verloren, blieb der Altwert für immer
+  im Broker, und der Dienst versuchte es nie wieder. Jetzt fragt der Dienst den
+  Broker selbst (mit den Zugangsdaten des MQTT-Gateways aus der
+  LoxBerry-Konfiguration, ohne zusätzliche Bibliothek), ob noch etwas dasteht.
+  Den Merker setzt er erst, wenn der Broker sagt: nichts mehr. Bis dahin geht
+  die Löschung in jedem Lauf mit hinaus, jeweils **unmittelbar vor** dem
+  gültigen Wert desselben Themas (bisher alle am Anfang). Ein Merker aus einer
+  früheren Fassung gilt nicht, der Broker wird einmal gefragt.
+  **Grenze:** lässt sich der Broker nicht befragen (kein Port in der
+  Konfiguration, keine Verbindung, Anmeldung abgewiesen), gibt es keinen
+  Merker — dann geht die Löschung in jedem Lauf unmittelbar vor dem gültigen
+  Wert hinaus, und im Protokoll steht einmal je Stunde, warum. Ohne
+  eingetragenen Port wird nicht auf 1883 geraten.
+- **Die Deinstallation liest beim Broker nach.** Sie fragt vorher, welche
+  Themen der Linie noch zurückbehalten stehen, schickt nur für diese die leere
+  Nachricht und fragt nach jeder Runde erneut (höchstens drei Runden). Die
+  Ausgabe sagt, was der Broker bestätigt hat — „nichts zu leeren", „keines
+  steht mehr" oder welche Themen noch stehen. Lässt sich der Broker nicht
+  befragen, geht wie bisher jedes Thema dreimal hinaus, und die Ausgabe sagt,
+  dass nicht nachgelesen wurde.
+- **Ein ausgepacktes Archiv wirkt nicht mehr auf die installierte Anlage.**
+  Lag ein Archiv unter einer echten LoxBerry-Wurzel (oder war nur `LBHOMEDIR`
+  gesetzt, wie auf jedem LoxBerry), nahmen `bin/weissware.py`, `bin/dienst.sh`
+  und die Oberfläche die Anlage: der Selbsttest legte deren Protokollordner an,
+  `dienst.sh stop` nahm ihr den Merker „soll laufen", der Knopf „Dienst
+  anhalten" rief ihr Dienstskript. Jetzt gilt die Anlage nur, wenn die Datei
+  dort installiert liegt oder `LBHOMEDIR` **und** `LBPPLUGINDIR` beide gesetzt
+  sind; sonst steigen die Programme mit einer Meldung aus, und die Oberfläche
+  arbeitet auf dem eigenen Ordner. Ausdrücklich gerufen verwaltet `dienst.sh`
+  den Dienst der Anlage, nicht den des Archivs.
+- **Der Reiter *Test* reiht ohne laufenden Dienst nichts mehr ein**, wie der
+  Miniserver-Endpunkt schon bisher. Ein Auftrag trägt seinen Zeitpunkt, und
+  der Dienst verwirft beim Start, was älter als 60 Sekunden ist — bisher lief
+  ein so eingereihter Befehl beim nächsten Start ungefragt an.
+- **Die Marke „Aktualisierung läuft" verträgt eine Uhr, die zurückspringt.**
+  Bis zu 300 Sekunden „aus der Zukunft" gilt sie noch (bisher: jede Sekunde
+  Zukunft machte sie ungültig).
+
+Gemessen in WSL, nicht am Gerät und nicht an einem echten Broker (an seiner
+Stelle ein Nachbau von Gateway-Eingang und Broker, der auch verlorene
+Löschungen spielen kann): 58 Prüffälle, vorher 35 rot, nachher alle grün.
 
 ## Neu in 0.9.31
 

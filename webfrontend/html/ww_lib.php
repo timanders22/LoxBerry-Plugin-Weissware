@@ -120,6 +120,28 @@ function ww_paths()
     } elseif ($dir === '' || $dir === '.' || $dir === '/' || $dir === 'html') {
         $dir = 'weissware';
     }
+    /* Muster 3 (Archiv unter echter Wurzel). Die Pfade DER ANLAGE gelten nur,
+     * wenn diese Bibliothek dort installiert liegt
+     * (<Wurzel>/webfrontend/html/plugins/<ordner>, physisch verglichen) oder
+     * der Aufrufer Wurzel UND Ordner ausdruecklich nennt ($LBHOMEDIR und
+     * $LBPPLUGINDIR). Sonst ist das ein ausgepacktes Archiv oder ein
+     * Pruefordner: alles bleibt in dessen eigenem Ordner. Bis 0.9.31 nahm ein
+     * Archiv unterhalb einer echten Wurzel diese Wurzel und den festen Namen
+     * weissware - Konfiguration, Warteschlange, Daten der Anlage, und der
+     * Knopf "Dienst anhalten" rief deren dienst.sh (in WSL gemessen,
+     * Pruefung-Weissware-0.9.32, Faelle A6, A7). Dieselbe Regel wie
+     * anlage_gilt() in bin/weissware.py. Vorbild Spotpreis-Tibber 0.9.19. */
+    if ($home) {
+        $soll = @realpath($home . '/webfrontend/html/plugins/' . basename(__DIR__));
+        $ist = @realpath(__DIR__);
+        $installiert = ($soll !== false && $ist !== false && $soll === $ist);
+        $umg = (string) getenv('LBHOMEDIR');
+        $ausdruecklich = $lbp && $umg !== '' && @realpath($umg) !== false
+            && @realpath($umg) === @realpath($home);
+        if (!$installiert && !$ausdruecklich) {
+            $home = '';
+        }
+    }
     if ($home) {
         $p = array(
             'home'      => $home,
@@ -914,9 +936,9 @@ function ww_dienst_soll()
  * Aktualisierung - im Reiter Test steht zu jedem Fall ein eigener Satz.
  *
  * Die Datei liegt NEBEN dem Datenordner (data/plugins/<ordner>.upgrade_laeuft),
- * weil purge_installation den Ordner beim Upgrade abraeumt. Die Grenze 3600 s
- * ist dieselbe wie in bin/dienst.sh, marke_sperrt(); wer eine der beiden
- * aendert, aendert beide. preg_match statt ctype_digit: ctype ist eine
+ * weil purge_installation den Ordner beim Upgrade abraeumt. Die Grenzen 3600 s
+ * und 300 s Vorlauf (seit 0.9.32; Fall M3) sind dieselben wie in
+ * bin/dienst.sh, marke_sperrt(); wer eine der beiden aendert, aendert beide. preg_match statt ctype_digit: ctype ist eine
  * Erweiterung, die nicht garantiert geladen ist (Regeln/02).
  */
 function ww_upgrade_marke()
@@ -934,10 +956,10 @@ function ww_upgrade_marke()
         return array(1, 0, -1);
     }
     $alter = time() - (int) $roh;
-    if ($alter < 0 || $alter > 3600) {
+    if ($alter < -300 || $alter > 3600) {
         return array(1, 0, $alter);
     }
-    return array(1, 1, $alter);
+    return array(1, 1, max(0, $alter));
 }
 
 /** $befehl ist 'start', 'stop' oder 'restart'. Rueckgabe: array(ok, Ausgabe) */
@@ -1052,6 +1074,9 @@ function ww_befehl_absetzen($befehl, $wartezeit = null)
      * Warteschlange. Der Dienst faende dort einen Befehl, den er nicht deuten
      * kann. Deshalb zuerst kodieren und den Rueckgabewert ansehen - so, wie es
      * ww_config_speichern() weiter oben schon tut. */
+    /* Der Zeitpunkt reist mit: der Dienst verwirft beim Start, was aelter als
+     * 60 s ist (alte_befehle_verwerfen() in bin/weissware.py; Fall B2b). */
+    $befehl['ts'] = time();
     $ww_js = json_encode($befehl);
     if ($ww_js === false) {
         return array(0, 'Der Befehl liess sich nicht als JSON darstellen (ungueltiges UTF-8).');
