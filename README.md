@@ -10,12 +10,24 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.32 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.33 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.33
+
+Die Rückfrage beim Broker, ob früher zurückbehaltene Dienstwerte (`ts`, `ok`,
+`fehler_folge`, `ausfaelle` …) noch dastehen, liest jetzt die Antwort auf das
+Abonnement (SUBACK). Lehnt der Broker das Lesen ab (Rückgabe 0x80, etwa durch eine
+Zugriffsregel) oder antwortet er nicht zu jedem Thema, gilt er als „nicht zu
+fragen“: kein Merker „vom Broker bestätigt“, die Altwerte werden weiter unmittelbar
+vor dem gültigen Wert gelöscht, das Protokoll sagt es (und nennt das abgelehnte
+Abonnement als möglichen Grund), und die Deinstallation leert, statt „nichts zu
+leeren“ zu melden. Bis 0.9.32 galt eine Ablehnung als „nichts belegt“ (gemessen in
+WSL, `Pruefung-Weissware-0.9.33`, Fälle S3, S4, S7, S9, S11).
 
 ## Neu in 0.9.32
 

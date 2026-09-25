@@ -836,6 +836,18 @@ def mqtt_behalten_liste(themen) -> tuple:
                     break
                 art = k >> 4
                 if art == 9:
+                    # Je Filter ein Rueckgabebyte hinter der Paketkennung, in der
+                    # Reihenfolge des SUBSCRIBE; ab 0x80 heisst abgelehnt (etwa durch
+                    # eine ACL). Danach schickt der Broker nichts - ungeprueft hiesse
+                    # das "nichts belegt", und der Merker laege auf einer Antwort, die
+                    # keine war (in WSL gemessen, Pruefung-Weissware-0.9.33,
+                    # Faelle S3, S4, S7, S9, S11). Bauart bw_mqtt_behalten_liste(),
+                    # Beschattungswaechter 0.9.21.
+                    rc = r[2:]
+                    if len(rc) != len(soll):
+                        break
+                    if any(b >= 0x80 for b in rc):
+                        break
                     bestaetigt = True
                     # Zurueckbehaltenes kommt unmittelbar nach dem SUBACK.
                     ende = min(ende, time.monotonic() + 1.0)
@@ -904,7 +916,7 @@ def altlast_lage(praefix: str) -> tuple:
     if lage == "ok":
         return "belegt", [t for t in liste if "%s/%s" % (praefix, t) in belegt]
     grund = ("in der general.json steht kein Brokerport" if not mqtt_zugang()["port"]
-             else "keine Verbindung, keine Antwort oder Anmeldung abgewiesen")
+             else "keine Verbindung, keine Antwort, Anmeldung abgewiesen oder Abonnement abgelehnt")
     melde_gebremst("mqtt_rueckfrage",
                    "MQTT: der Broker liess sich nicht befragen, ob unter {0}/ noch frueher "
                    "zurueckbehaltene Werte stehen ({1}). Sie werden deshalb unmittelbar vor "
