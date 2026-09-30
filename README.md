@@ -10,12 +10,20 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.34 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.35 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.35
+
+Sammelnachzug vom 30.09.2026, sonst keine Änderung: `curl_close()` wird nur
+noch unter PHP 7 aufgerufen. Ab PHP 8.0 wirkt der Aufruf nicht mehr, und
+PHP 8.5 meldet ihn zur Laufzeit als veraltet. Bei eingeschalteter
+Fehleranzeige konnte diese Meldung vor einer Antwort an Loxone landen. Am
+LoxBerry mit PHP 7.4 ändert sich nichts.
 
 ## Neu in 0.9.34
 

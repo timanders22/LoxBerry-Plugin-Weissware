@@ -799,7 +799,7 @@ function ww_endpunkt_pruefen($frisch = false)
                                      CURLOPT_CONNECTTIMEOUT => 3, CURLOPT_FOLLOWLOCATION => false));
         $rumpf = curl_exec($ch);
         $stand = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-        curl_close($ch);
+        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
     } elseif (ini_get('allow_url_fopen')) {
         $ctx = stream_context_create(array('http' => array(
             'timeout' => 5, 'ignore_errors' => true)));
