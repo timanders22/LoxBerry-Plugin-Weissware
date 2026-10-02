@@ -25,6 +25,12 @@ if (!function_exists('ww_e')) {
 }
 
 
+/* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php,
+ * Nr. 36 b, Stufe 1). Liegt neben dieser Datei; sie legt beim Einbinden nur
+ * Funktionen an und schuetzt sich selbst gegen doppeltes Laden. */
+require_once __DIR__ . '/sprachausgabe.php';
+
+
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
  * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
@@ -2135,16 +2141,6 @@ function ww_ansage_log($msg)
         '[' . date('Y-m-d H:i:s') . '] ' . $msg . "\n", FILE_APPEND);
 }
 
-function ww_http_get($url, $tmo = 20)
-{
-    $ctx = stream_context_create(array('http' => array(
-        'timeout' => $tmo,
-        'user_agent' => 'Mozilla/5.0 (LoxBerry Weissware)',
-        'follow_location' => 1,
-    ), 'ssl' => array('verify_peer' => true)));
-    return @file_get_contents($url, false, $ctx);
-}
-
 /** TTS-Einstellungen mit Vorgaben (wie AWM-Abfuhr). */
 function ww_tts()
 {
@@ -2195,6 +2191,14 @@ function ww_webport()
     return 80;
 }
 
+/** Kontext fuer die gemeinsame Sprachausgabe (Nr. 36 b): Webport und Kopfzeile
+ *  dieses Plugins. Keine Merkdatei des Moduls - <art>_letzte.json fuehrt die
+ *  Linie in Stufe 1 weiter selbst. */
+function ww_ansage_k($ua = 'LoxBerry Weissware')
+{
+    return array('port' => ww_webport(), 'kopf' => array('User-Agent: ' . $ua), 'ordner' => '');
+}
+
 /** Kennung, Schluesselvorsatz in tts und Adresse je Ausgabeart. */
 function ww_ng_art($art)
 {
@@ -2208,7 +2212,7 @@ function ww_ng_art($art)
  *  Chromecast 4 Lox NG es annehmen). */
 function ww_ng_token_ok($t)
 {
-    return is_string($t) && preg_match('/^[A-Za-z0-9_\-]{8,128}\z/', $t) === 1;
+    return ansage_token_ok($t);     // Nr. 36 b: dieselbe Form, eine Quelle
 }
 
 /** Geraet: leer (= Standardgeraet) oder 1 bis 200 Zeichen UTF-8, ohne
@@ -2238,84 +2242,18 @@ function ww_ng_laut_ok($l)
  */
 function ww_ng_rufen($url, array $felder, $tmo = 10)
 {
-    $koerper = http_build_query($felder, '', '&');
-    $kopf = array('User-Agent: LoxBerry Weissware', 'Content-Type: application/x-www-form-urlencoded');
-    $code = 0;
-    $rumpf = '';
-    $gid = '';
-    if (function_exists('curl_init')) {
-        $ch = curl_init($url);
-        curl_setopt_array($ch, array(
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => $koerper,
-            CURLOPT_FOLLOWLOCATION => false,
-            CURLOPT_NOPROXY => '127.0.0.1',
-            CURLOPT_TIMEOUT => $tmo,
-            CURLOPT_CONNECTTIMEOUT => min(3, $tmo),
-            CURLOPT_HTTPHEADER => $kopf,
-        ));
-        $r = curl_exec($ch);
-        $errno = curl_errno($ch);
-        if ($r !== false) {
-            $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            $rumpf = (string) $r;
-        }
-        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
-        if ($r === false) {
-            $gid = ($errno === 28) ? 'HTTP_ZEIT' : (($errno === 7) ? 'HTTP_ABGEWIESEN' : 'HTTP_FEHLER');
-        }
-    } else {
-        $alt = ini_get('default_socket_timeout');
-        @ini_set('default_socket_timeout', (string) min(3, $tmo));
-        $ctx = stream_context_create(array('http' => array(
-            'method' => 'POST',
-            'header' => implode("\r\n", $kopf),
-            'content' => $koerper,
-            'timeout' => $tmo,
-            'follow_location' => 0,
-            'ignore_errors' => true,
-        )));
-        // Monotone Uhr, wo es sie gibt: ein Sprung der Wanduhr hiesse sonst
-        // "Verbindungsfehler" statt "Zeitueberschreitung" (Robonect-Frage 4).
-        $t0 = function_exists('hrtime') ? hrtime(true) / 1e9 : microtime(true);
-        $fh = @fopen($url, 'rb', false, $ctx);
-        if ($fh !== false) {
-            $r = stream_get_contents($fh);
-            $meta = stream_get_meta_data($fh);
-            fclose($fh);
-            if (!empty($meta['timed_out'])) {
-                $gid = 'HTTP_ZEIT';
-            } else {
-                $rumpf = (string) $r;
-                if (isset($meta['wrapper_data']) && is_array($meta['wrapper_data'])) {
-                    foreach ($meta['wrapper_data'] as $z) {
-                        if (preg_match('#^HTTP/\S+\s+(\d{3})#', (string) $z, $m)) { $code = (int) $m[1]; }
-                    }
-                }
-                if ($code === 0) { $gid = 'HTTP_FEHLER'; }
-            }
-        } else {
-            $l = error_get_last();
-            $msg = is_array($l) ? (string) $l['message'] : '';
-            $t1 = function_exists('hrtime') ? hrtime(true) / 1e9 : microtime(true);
-            if (stripos($msg, 'timed out') !== false || $t1 - $t0 >= $tmo - 0.5) {
-                $gid = 'HTTP_ZEIT';
-            } elseif (stripos($msg, 'refused') !== false || stripos($msg, 'verweigert') !== false) {
-                $gid = 'HTTP_ABGEWIESEN';
-            } else {
-                $gid = 'HTTP_FEHLER';
-            }
-        }
-        @ini_set('default_socket_timeout', (string) $alt);
+    /* Nr. 36 b, Stufe 1: gerufen ueber die gemeinsame Sprachausgabe (curl, sonst
+     * Datenstrom; ohne Weiterleitung, ohne Proxy; Verbindungsaufbau hoechstens
+     * 3 s, gesamt $tmo wie bisher). Rueckgabe wie bisher; von den
+     * Transportkennungen des Moduls bleiben die drei der Linie (HTTP_ZEIT,
+     * HTTP_ABGEWIESEN, sonst HTTP_FEHLER), damit Texte und Merkdateien gleich
+     * bleiben. */
+    $a = ansage_ng_rufen((string) $url, $felder, $tmo, ww_ansage_k());
+    $gid = $a['grund_id'];
+    if ($gid !== '' && $gid !== 'HTTP_ZEIT' && $gid !== 'HTTP_ABGEWIESEN') {
+        $gid = 'HTTP_FEHLER';
     }
-    $zeilen = preg_split('/\r?\n/', trim($rumpf));
-    $erste = trim((string) $zeilen[0]);
-    if (isset($felder['token']) && is_string($felder['token']) && $felder['token'] !== '') {
-        $erste = str_replace($felder['token'], '***', $erste);
-    }
-    $erste = substr((string) preg_replace('/[\x00-\x1F\x7F]/', '', $erste), 0, 200);
-    return array('code' => $code, 'zeile' => $erste, 'grund_id' => $gid, 'tmo' => (int) $tmo);
+    return array('code' => $a['code'], 'zeile' => $a['zeile'], 'grund_id' => $gid, 'tmo' => (int) $tmo);
 }
 
 /**
@@ -2550,58 +2488,23 @@ function ww_praefixe_alt($cfg = null)
 
 function ww_tts_url($text)
 {
+    /* Nr. 36 b, Stufe 1: die Adresse baut die gemeinsame Sprachausgabe
+     * (ansage_tts_url()) - dieselbe Zonenliste (einmal fuer alle Modi
+     * normalisiert), dieselbe Lautstaerke je Zone, dieselbe Vorgabe-Vorlage
+     * fuer MS4H, die IP nur, wenn die Vorlage sie benutzt. Wie bisher laeuft
+     * jeder Wert von mode ausser musicserver und audioserver ueber die
+     * Vorlage; Zahlen in den Textfeldern gelten wie bisher als Text. */
     $tts = ww_tts();
-    $mode = $tts['mode'];
-    if ($mode === 'audioserver') {
+    if ($tts['mode'] === 'audioserver') {
         return null; // Original Loxone Audioserver: TTS nur ueber Loxone Config (Textgenerator -> TTS-Eingang)
     }
-
-    /* Zonenliste EINMAL fuer alle Modi normalisieren.
-     *
-     * Bis hierher wurde nur im Modus musicserver je Zone getrimmt. In den
-     * Modi ms4h und "eigene Vorlage" ging die Eingabe roh in {zones} - aus
-     * "2, 4, 6" wurde eine Adresse mit Leerzeichen, also eine kaputte
-     * Adresse. Der Hilfetext sagt zu, dass beide Schreibweisen gehen;
-     * hier wird das eingeloest. */
-    $zl = array();
-    foreach (explode(',', (string) $tts['zones']) as $z) {
-        $z = trim($z);
-        if ($z !== '') { $zl[] = $z; }
+    if ($tts['mode'] !== 'musicserver') {
+        $tts['mode'] = 'custom';
     }
-    $tts['zones'] = implode(',', $zl);
-    if ($mode === 'musicserver' && (string) $tts['ip'] === '') {
-        return '';   // ohne IP laesst sich die Music-Server-Adresse nicht bauen
+    foreach (array('ip', 'zones', 'lang', 'template') as $s) {
+        if (is_scalar($tts[$s])) { $tts[$s] = (string) $tts[$s]; }
     }
-    if ($mode === 'musicserver') {
-        // Zonenliste normalisieren: "2,4,6" + Lautstaerke-Feld -> "2~8,4~8,6~8".
-        // Explizite Angaben "Zone~Lautstaerke" haben Vorrang.
-        $vol = max(1, min(100, (int) $tts['volume']));
-        $zones = array();
-        foreach (explode(',', (string) $tts['zones']) as $z) {
-            $z = trim($z);
-            if ($z === '') {
-                continue;
-            }
-            $zones[] = (strpos($z, '~') === false) ? $z . '~' . $vol : $z;
-        }
-        $zoneStr = $zones ? implode(',', $zones) : '1~' . $vol;
-        return 'http://' . $tts['ip'] . ':' . (int) $tts['port'] . '/audio/grouped/tts/' . $zoneStr . '/' . rawurlencode($tts['lang'] . '|' . $text);
-    }
-    // ms4h (MusicServer4Home / Audioserver4Home) und custom: Vorlage mit Platzhaltern
-    $tpl = trim((string) $tts['template']);
-    if ($tpl === '') {
-        // Standard-Vorlage MusicServer4Home
-        $tpl = 'http://{ip}:{port}/tts?text={text}&zone={zones}&vol={vol}';
-    }
-    // Die IP wird nur verlangt, wenn die Vorlage sie auch verwendet.
-    if ((string) $tts['ip'] === '' && strpos($tpl, '{ip}') !== false) {
-        return '';
-    }
-    return str_replace(
-        array('{ip}', '{port}', '{zones}', '{vol}', '{lang}', '{text}'),
-        array($tts['ip'], (int) $tts['port'], $tts['zones'], (int) $tts['volume'], $tts['lang'], rawurlencode($text)),
-        $tpl
-    );
+    return ansage_tts_url((string) $text, $tts);
 }
 
 function ww_say($text)
@@ -2645,9 +2548,16 @@ function ww_sagen($text)
         ww_ansage_log('Ansage uebersprungen: keine TTS-IP konfiguriert');
         return array(false, '', '');
     }
-    $r = ww_http_get($url, 10);
-    ww_ansage_log('Ansage gesendet: "' . $text . '" -> ' . ($r !== false ? 'OK' : 'FEHLER'));
-    return array($r !== false, '', '');
+    /* Nr. 36 b, Stufe 1: abgerufen ueber die gemeinsame Sprachausgabe - ohne
+     * Weiterleitung, ohne Proxy; gesendet heisst HTTP 2xx. Die Zeitgrenze bleibt
+     * 10 s (mit curl hoechstens 3 s fuer den Verbindungsaufbau). Ins Protokoll
+     * kommt vom Ansagetext nur seine Laenge (Entscheidung Nr. 40), gezaehlt wie
+     * in den Zeilen fuer Alexa-NG und Google darueber. */
+    $k36 = ww_ansage_k('Mozilla/5.0 (LoxBerry Weissware)');
+    $a36 = ansage_ausfuehren(ansage_anfrage('GET', $url, null, 10, $k36), $k36);
+    $ok = ($a36['code'] >= 200 && $a36['code'] < 300);
+    ww_ansage_log('Ansage gesendet (' . strlen((string) $text) . ' Zeichen) -> ' . ($ok ? 'OK' : 'FEHLER'));
+    return array($ok, '', '');
 }
 
 /**
@@ -2906,8 +2816,7 @@ function ww_sicherung_bauen()
     /* Die Sprechtoken von Alexa-NG und Chromecast 4 Lox NG gehoeren NICHT
      * hinein (Bauliste A1): eine Datei mit Token wird beim Zurueckspielen
      * abgewiesen, und nach dem Zurueckspielen bleiben die geltenden. */
-    $tts = ww_tts();
-    unset($tts['alexa_token'], $tts['google_token']);
+    $tts = ansage_sicherung_bereinigen(ww_tts());   // Nr. 36 b: ohne Sprechtoken, eine Quelle
     $cfg['tts'] = $tts;
     $cfg['_hinweis'] = 'Sicherung des Plugins Weissware Cloud. Enthaelt das '
                      . 'Aktionstoken und die Zugangsdaten der Anbieter - wie ein '
@@ -2934,8 +2843,7 @@ function ww_sicherung_warnung($daten = null)
 {
     if (!is_array($daten)) {
         $daten = ww_config();
-        $tts = ww_tts();
-        unset($tts['alexa_token'], $tts['google_token']);
+        $tts = ansage_sicherung_bereinigen(ww_tts());   // Nr. 36 b: ohne Sprechtoken
         $daten['tts'] = $tts;
         $daten['zugang'] = ww_json_lesen(ww_paths()['zugang']);
     }

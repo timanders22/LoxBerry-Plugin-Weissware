@@ -10,12 +10,34 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.37 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.38 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.38
+
+Gemeinsame Sprachausgabe (Entscheidung 40, Stufe 1).
+Gemessen gegen Attrappen (Music Server, Alexa-NG,
+Chromecast 4 Lox NG) unter PHP 7.4 und 8.5 (Windows) und PHP 8.3 mit und ohne curl (WSL), dazu die Oberfläche unter
+PHP 7.4 und 8.5. Nicht am Gerät, nicht an einem echten Lautsprecher.
+
+* **Ansagen laufen über die gemeinsame Sprachausgabe des Hauses** (`webfrontend/html/sprachausgabe.php`, Fassung
+  1.0.2, in jedem Plugin mit Sprachausgabe dieselbe Datei). Einstellungen, Formular, Texte, Reiter Test und
+  Sicherungsdatei bleiben, wie sie sind; eine Sicherung älterer Fassungen lässt sich weiter zurückspielen.
+* **Der Ansagetext steht nicht mehr im Protokoll**, nur seine Länge, z. B. `Ansage gesendet (37 Zeichen) -> OK`.
+  Das betrifft Music Server, MusicServer4Home und die eigene Vorlage; bei Alexa-NG und Google-Lautsprechern stand
+  schon bisher nur die Länge da. Die Länge zählt wie in den übrigen Zeilen dieses Protokolls die Bytes (ein Umlaut
+  zählt zwei).
+* **Music Server und eigene Vorlage:** Eine Umleitung (HTTP 3xx) wird nicht mehr verfolgt, und als gesendet gilt nur
+  eine Antwort 2xx. Ein Proxy aus der Umgebung wird nicht benutzt. Die Wartezeit bleibt 10 s.
+* Alexa-NG und Google-Lautsprecher: dieselben Antworten, Meldungen und Wartezeit 10 s. Berichtigt: Unter PHP 7.4
+  ohne curl konnte eine Antwort, die mitten im Rumpf abbricht, nach 12 s als gesendet gelten; jetzt ist das eine
+  Zeitüberschreitung nach 10 s.
+
+**In Loxone:** nichts zu tun.
 
 ## Neu in 0.9.37
 
