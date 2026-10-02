@@ -2509,6 +2509,39 @@ def ableiten(g: dict) -> dict:
     return g
 
 
+# Weissware-c1 (02.10.2026): die Felder, die bei einem getrennten Geraet aus dem
+# letzten Stand stehen bleiben - alle Zustandsfelder der Ausgabewege. Nicht
+# dabei: Name, Anbieter, verbunden (die liefert der Anbieter auch fuer ein
+# getrenntes Geraet) sowie ok und ts (die setzt der Dienst je Lauf).
+GETRENNT_STEHEN = tuple(f for f in MQTT_FELDER
+                        if f not in ("name", "anbieter", "verbunden", "ok", "ts")) + ("programm", "gewaehlt")
+
+
+def getrennt_fortschreiben(vorher: dict, jetzt: dict) -> None:
+    """Ein Geraet, das sein Anbieter als getrennt fuehrt (verbunden = 0), liefert
+    keine Zustaende. Seine zuletzt gemessenen bleiben stehen (Entscheidung 8) -
+    wie die retained Themen ueber MQTT; verbunden = 0 sagt, dass sie alt sind.
+
+    Bis 0.9.36 standen im Abbild None, und der Endpunkt antwortete
+    ZUSTAND=-;LAEUFT=-;..., waehrend MQTT die Zustaende stehen liess
+    (Baubericht vb_ww, Frage 3; VERBESSERUNGEN_OFFEN, Weissware-c1).
+
+    Uebernommen wird nur von DEMSELBEN Geraet (Anbieter und Kennung) unter
+    derselben Nummer, und nur, was der Anbieter in diesem Lauf nicht liefert.
+    Gab es nie einen Stand (getrennt seit dem ersten Abruf), bleibt es beim
+    Strich: dann liegt der Wert nicht vor."""
+    for nr, g in jetzt.items():
+        if g.get("verbunden") != 0:
+            continue
+        alt = vorher.get(nr)
+        if not isinstance(alt, dict) or geraet_schluessel(alt) != geraet_schluessel(g):
+            continue
+        for feld in GETRENNT_STEHEN:
+            if g.get(feld) is None or g.get(feld) == "":
+                if alt.get(feld) is not None and alt.get(feld) != "":
+                    g[feld] = alt[feld]
+
+
 def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str, ausfaelle: dict,
                      fehler_folge: int = 0) -> dict:
     """Bei einem fehlgeschlagenen Abruf bleiben die zuletzt gueltigen Werte
@@ -2572,7 +2605,9 @@ def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str, ausfaelle: di
                 # Ein Feld, das ein erfolgreicher Abruf nicht liefert, geht als
                 # "-" hinaus (Bauliste C11, Nr. 5). Ein getrenntes Geraet
                 # (verbunden = 0) liefert gar nichts - seine Zustaende bleiben
-                # stehen (Nr. 8, weissware_agenten/code: ohne Befund).
+                # stehen (Nr. 8, weissware_agenten/code: ohne Befund). Seit
+                # Weissware-c1 traegt das Abbild sie (getrennt_fortschreiben());
+                # was es nie gab, geht auch hier nicht als "-" hinaus.
                 ohne = None if g.get("verbunden") == 0 else "-"
                 for feld in MQTT_FELDER:
                     if feld in ("ok", "ts"):
@@ -2951,6 +2986,9 @@ def _dienst_lauf(einmal: bool = False) -> int:
                     g["ts"] = jetzt_ts
                 for g in sorted(liste, key=lambda x: x["nummer"]):
                     geraete[str(g["nummer"])] = ableiten(g)
+                # Weissware-c1 (02.10.2026, Entscheidung 8): ein getrenntes Geraet
+                # behaelt seine zuletzt gemessenen Zustaende (getrennt_fortschreiben()).
+                getrennt_fortschreiben(stand.get("geraete") or {}, geraete)
                 # Bauliste C5 (02.10.2026): die Geraete eines Anbieters, der in
                 # diesem Lauf schweigt, bleiben mit ihrem letzten Stand im Abbild,
                 # gekennzeichnet mit ok = 0. Bis 0.9.36 verschwanden sie: HTTP sagte

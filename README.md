@@ -10,12 +10,23 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.36 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.37 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.37
+
+Getrennte Geräte und ehrliche Überschriften (Verbesserungsliste Weissware-c1).
+Gemessen mit Attrappen für die Hersteller-Clouds, Broker und Gateway unter PHP 7.4, 8.3 und 8.5; nicht am Gerät, nicht an echten Hausgeräten.
+
+* **Getrenntes Gerät:** Verliert ein Gerät die Verbindung zur Hersteller-Cloud, behält auch der HTTP-Endpunkt die zuletzt gemessenen Zustände (`ZUSTAND`, `LAEUFT`, `RESTMIN` …) und meldet `VERBUNDEN=0`, wie es MQTT schon tat. Bisher kamen über HTTP nur Striche. Das gilt auch nach einem Neustart des Dienstes. Ein Gerät, das noch nie gemessen wurde, zeigt weiter `-`.
+* **Fertig-Ansage nach Trennung:** Meldet sich ein Gerät nach einer Trennung als fertig zurück, kommt die Fertig-Ansage jetzt. Bisher ging sie verloren.
+* **Überschrift „Der Vorgang ist nicht gelungen“:** Sie steht über Fehlern von Dienstknöpfen, Testansage, Aktionen im Reiter Test, Anmeldung über den Dienst, „Log leeren“ und Zurückspielen der Zugangsdaten. Bisher stand dort „Es wurde nichts gespeichert“, obwohl nichts zu speichern war. Bei Beanstandungen im Formular bleibt „Es wurde nichts gespeichert“.
+
+**In Loxone:** Wer bei einer Trennung über HTTP mit Strichen gerechnet hat, beachtet jetzt `VERBUNDEN`.
 
 ## Neu in 0.9.36
 
@@ -924,6 +935,11 @@ Werten stehen und antworten mit `OK=0`; über MQTT geht je Gerät
 ein fehlerfrei antwortender Anbieter nicht mehr führt, gilt als entfernt:
 `GRUND=GERAET_ENTFERNT`, und seine zurückbehaltenen MQTT-Themen bekommen
 einmal `-`. Kommt es zurück, bekommt es seine alte Nummer.
+
+**Getrenntes Gerät.** Führt der Anbieter ein Gerät als getrennt (`VERBUNDEN=0`, etwa
+eine Home-Connect-Waschmaschine ohne WLAN), bleiben am Endpunkt wie über MQTT die
+zuletzt gemessenen Zustände stehen; `VERBUNDEN=0` sagt, dass sie alt sind. Ein Strich
+steht nur, wenn es seit dem ersten Abruf nie einen Wert gab.
 
 ## Was nicht jeder Anbieter liefert
 

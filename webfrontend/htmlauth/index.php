@@ -74,6 +74,10 @@ $ww_fehler = array();      // Beanstandungen - gesammelt, nicht ueberschrieben
 /* Die dritte Art (Bauliste O7, I6): eine Lage, die der Bediener lesen soll,
  * die aber weder Erfolg noch Beanstandung ist - gelb. */
 $ww_hinweise = array();
+/* Weissware-c1 (02.10.2026): die vierte Art - ein Vorgang, der nichts speichern
+ * wollte, ist gescheitert (Testansage, Dienstknoepfe, Anmeldung ...). Eigene
+ * Ueberschrift; bis 0.9.36 stand darueber "Es wurde nichts gespeichert". */
+$ww_misslungen = array();
 $ww_testausgabe = '';
 /* X-2 (Bauliste O2, Regeln/04): nach einer Beanstandung reisen die Eingaben
  * des EINEN Formulars mit der Einmalmeldung zurueck - ohne Geheimnisse.
@@ -86,12 +90,13 @@ $ww_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '')
  * kommt aus der Adresse (?form=), auf die der POST umgeleitet hat. */
 if (!$ww_post) {
     $ww_flash = ww_einmal_lesen();
-    foreach (array('meldungen', 'fehler', 'hinweise') as $ww_fk) {
+    foreach (array('meldungen', 'fehler', 'hinweise', 'misslungen') as $ww_fk) {
         if (!isset($ww_flash[$ww_fk]) || !is_array($ww_flash[$ww_fk])) { continue; }
         foreach ($ww_flash[$ww_fk] as $ww_fz) {
             if (!is_string($ww_fz)) { continue; }
             if ($ww_fk === 'meldungen') { $ww_meldungen[] = $ww_fz; }
             elseif ($ww_fk === 'fehler') { $ww_fehler[] = $ww_fz; }
+            elseif ($ww_fk === 'misslungen') { $ww_misslungen[] = $ww_fz; }
             else { $ww_hinweise[] = $ww_fz; }
         }
     }
@@ -510,7 +515,7 @@ if ($ww_post && isset($_POST['dienst'])) {
     $ww_cfg0 = ww_config();
     if (in_array($ww_befehl, array('start', 'restart'), true)
         && empty($ww_cfg0['hc_ein']) && empty($ww_cfg0['miele_ein']) && empty($ww_cfg0['st_ein'])) {
-        $ww_fehler[] = ww_t('EINST.FEHLER_KEIN_ANBIETER');
+        $ww_misslungen[] = ww_t('EINST.FEHLER_KEIN_ANBIETER');
         $ww_tab = 'tab-settings';
         $ww_befehl = '';
     }
@@ -519,7 +524,7 @@ if ($ww_post && isset($_POST['dienst'])) {
         if ($ww_ok) {
             $ww_meldungen[] = ww_t('EINST.DIENST_' . strtoupper($ww_befehl)) . ' ' . ww_e($ww_ausgabe);
         } else {
-            $ww_fehler[] = ww_e($ww_ausgabe);
+            $ww_misslungen[] = ww_e($ww_ausgabe);
         }
         $ww_tab = 'tab-settings';
     }
@@ -538,16 +543,16 @@ if ($ww_post && isset($_POST['anmelden'])) {
         if ($ww_c === 0) {
             $ww_meldungen[] = ww_t('EINST.HC_BEGONNEN');
         } else {
-            $ww_fehler[] = ww_e($ww_a);
+            $ww_misslungen[] = ww_e($ww_a);
         }
     } elseif ($ww_was === 'hc_fertig') {
         list($ww_c, $ww_a) = ww_dienst_schalter('--hc-fertig');
         if ($ww_c === 0) {
             $ww_meldungen[] = ww_t('EINST.HC_FERTIG');
         } elseif ($ww_c === 2) {
-            $ww_fehler[] = ww_t('EINST.HC_NOCH_NICHT');
+            $ww_misslungen[] = ww_t('EINST.HC_NOCH_NICHT');
         } else {
-            $ww_fehler[] = ww_e($ww_a);
+            $ww_misslungen[] = ww_e($ww_a);
         }
     } elseif ($ww_was === 'miele_code') {
         $ww_code = (string) ww_post_text('miele_code');
@@ -561,13 +566,13 @@ if ($ww_post && isset($_POST['anmelden'])) {
         } elseif (!ww_miele_code_ablegen($ww_code)) {
             /* Bauliste C14: der Code geht ueber eine 0600-Datei an den
              * Dienst, nie ueber die Befehlszeile. */
-            $ww_fehler[] = sprintf(ww_t('EINST.FEHLER_MIELE_ABLAGE'), ww_e($ww_p['datadir']));
+            $ww_misslungen[] = sprintf(ww_t('EINST.FEHLER_MIELE_ABLAGE'), ww_e($ww_p['datadir']));
         } else {
             list($ww_c, $ww_a) = ww_dienst_schalter('--miele-code');
             if ($ww_c === 0) {
                 $ww_meldungen[] = ww_t('EINST.MIELE_FERTIG');
             } else {
-                $ww_fehler[] = ww_e($ww_a);
+                $ww_misslungen[] = ww_e($ww_a);
             }
             @unlink($ww_p['datadir'] . '/miele_code');
         }
@@ -590,7 +595,7 @@ if ($ww_post && isset($_POST['anmelden'])) {
             if (is_file($ww_datei) && @unlink($ww_datei)) {
                 $ww_meldungen[] = ww_t('EINST.SITZUNG_VERWORFEN');
             } elseif (is_file($ww_datei)) {
-                $ww_fehler[] = sprintf(ww_t('EINST.SITZUNG_FEHLER'), ww_e($ww_datei));
+                $ww_misslungen[] = sprintf(ww_t('EINST.SITZUNG_FEHLER'), ww_e($ww_datei));
             } else {
                 $ww_meldungen[] = ww_t('EINST.SITZUNG_KEINE');
             }
@@ -632,7 +637,7 @@ if ($ww_post && isset($_POST['log_leeren'])) {
     if (@file_put_contents($ww_p['log'], $ww_lz) === strlen($ww_lz)) {
         $ww_meldungen[] = ww_t('LOG.GELEERT');
     } else {
-        $ww_fehler[] = sprintf(ww_t('LOG.LEEREN_FEHLER'), ww_e($ww_p['log']));
+        $ww_misslungen[] = sprintf(ww_t('LOG.LEEREN_FEHLER'), ww_e($ww_p['log']));
     }
     $ww_tab = 'tab-log';
 }
@@ -643,7 +648,7 @@ if ($ww_post && isset($_POST['test'])) {
     if ($ww_stand === 1) {
         $ww_meldungen[] = ww_e($ww_text);
     } else {
-        $ww_fehler[] = ww_e($ww_text);
+        $ww_misslungen[] = ww_e($ww_text);
     }
     $ww_tab = 'tab-test';
 }
@@ -695,13 +700,13 @@ if ($ww_post && isset($_POST['ansage_test'])) {
         if ($ww_aok) {
             $ww_meldungen[] = ww_e(sprintf(ww_t('ANSAGE.TEST_NG_OK'), $ww_aantw));
         } else {
-            $ww_fehler[] = ww_e(sprintf(ww_t('ANSAGE.TEST_NG_FEHLER'), $ww_agrund))
+            $ww_misslungen[] = ww_e(sprintf(ww_t('ANSAGE.TEST_NG_FEHLER'), $ww_agrund))
                 . ($ww_aantw !== '' ? ' ' . ww_e(sprintf(ww_t('ANSAGE.NG_ANTWORT'), $ww_aantw)) : '');
         }
     } elseif ($ww_aok) {
         $ww_meldungen[] = ww_t('ANSAGE.TEST_OK');
     } else {
-        $ww_fehler[] = ww_t('ANSAGE.TEST_FEHLER');
+        $ww_misslungen[] = ww_t('ANSAGE.TEST_FEHLER');
     }
     $ww_tab = 'tab-test';
 }
@@ -755,7 +760,7 @@ if ($ww_post && isset($_POST['ww_zurueck'])) {
                 $ww_hinweise[] = $ww_sh;
             }
             if (is_array($ww_zneu) && $ww_zneu && !ww_zugang_speichern($ww_zneu)) {
-                $ww_fehler[] = ww_t('EINST.SICH_ZUGANG_FEHL');
+                $ww_misslungen[] = ww_t('EINST.SICH_ZUGANG_FEHL');
             }
             /* Den Dienst nachziehen und SAGEN, was mit ihm geschah. */
             if (ww_dienst_pid() > 0) {
@@ -782,12 +787,13 @@ if ($ww_post && isset($_POST['ww_zurueck'])) {
 if ($ww_post) {
     $ww_ziel = in_array($ww_tab, $ww_reiter_ids, true) ? $ww_tab : 'tab-settings';
     if (ww_einmal_schreiben(array('meldungen' => $ww_meldungen, 'fehler' => $ww_fehler,
+                                  'misslungen' => $ww_misslungen,
                                   'hinweise' => $ww_hinweise, 'testausgabe' => $ww_testausgabe,
                                   'eingaben' => $ww_eingaben))) {
         header('Location: index.php?form=' . substr($ww_ziel, 4), true, 303);
         exit;
     }
-    $ww_fehler[] = sprintf(ww_t('ALLG.EINMAL_FEHLER'), ww_e($ww_p['datadir']));
+    $ww_misslungen[] = sprintf(ww_t('ALLG.EINMAL_FEHLER'), ww_e($ww_p['datadir']));
 }
 
 /* ---------------- Laden ---------------- */
@@ -956,6 +962,12 @@ if ($ww_rahmen) {
 <div class="sm-fehler"><b><?= ww_e(ww_t('ALLG.BEANSTANDUNG')) ?></b>
 <ul style="margin:6px 0 0 18px;padding:0;">
 <?php foreach ($ww_fehler as $ww_f) { ?><li><?= $ww_f ?></li><?php } ?>
+</ul></div>
+<?php } ?>
+<?php if ($ww_misslungen) { ?>
+<div class="sm-fehler"><b><?= ww_e(ww_t('ALLG.MISSLUNGEN')) ?></b>
+<ul style="margin:6px 0 0 18px;padding:0;">
+<?php foreach ($ww_misslungen as $ww_f) { ?><li><?= $ww_f ?></li><?php } ?>
 </ul></div>
 <?php } ?>
 
