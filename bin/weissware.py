@@ -443,7 +443,13 @@ def json_schreiben(pfad: Path, daten, rechte: int | None = None) -> bool:
     eine halb geschriebene Datei."""
     try:
         pfad.parent.mkdir(parents=True, exist_ok=True)
-        tmp = pfad.with_suffix(pfad.suffix + ".tmp")
+        # Die Nebendatei traegt die Prozessnummer (Bauliste C13, 02.10.2026):
+        # Dienst und Einmallaeufe aus der Oberflaeche (--hc-fertig,
+        # --miele-code) schreiben dieselben Dateien. Bis 0.9.36 hiess die
+        # Nebendatei fuer alle gleich; zwei Schreiber oeffneten sie mit O_TRUNC,
+        # einer bekam beim Umbenennen "No such file" oder einen gemischten
+        # Inhalt (weissware_agenten/code, Befund 13).
+        tmp = pfad.with_name(pfad.name + ".tmp.%d" % os.getpid())
         # Die Rechte gehoeren an das ANLEGEN, nicht hinterher.
         #
         # Bis 0.9.0 wurde die Nebendatei mit tmp.open("w") angelegt und erst
@@ -465,6 +471,10 @@ def json_schreiben(pfad: Path, daten, rechte: int | None = None) -> bool:
         return True
     except (OSError, TypeError, ValueError) as err:
         _LOG.error("Datei %s konnte nicht geschrieben werden: %s", pfad, err)
+        try:
+            os.unlink(str(pfad.with_name(pfad.name + ".tmp.%d" % os.getpid())))
+        except OSError:
+            pass
         return False
 
 
@@ -505,8 +515,37 @@ def token_lesen() -> dict:
     return json_lesen(DATEI_TOKEN)
 
 
-def token_schreiben(daten: dict) -> None:
-    json_schreiben(DATEI_TOKEN, daten, rechte=0o600)
+def token_eintragen(anbieter: str, marke) -> bool:
+    """Die Anmeldemarke EINES Anbieters in token.json eintragen (None entfernt sie).
+
+    Bauliste C13 (02.10.2026): unter einer Sperre wird token.json FRISCH gelesen
+    und nur der eigene Anbieter ersetzt. Bis 0.9.36 schrieb der Dienst den
+    ganzen Stand vom Anfang seines Durchlaufs zurueck: eine Miele-Anmeldung, die
+    in der Zwischenzeit aus der Oberflaeche abgeschlossen wurde, ging bei der
+    naechsten Home-Connect-Erneuerung verloren (weissware_agenten/code,
+    Befund 13). Rueckgabe: ob die Datei geschrieben ist - ein Fehlschlag wird
+    vom Aufrufer gemeldet, nicht verschluckt (Befund 3 C).
+    """
+    import fcntl
+    try:
+        PDATA.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(PDATA / "token.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as err:
+        _LOG.error("Sperrdatei fuer %s nicht zu oeffnen: %s", DATEI_TOKEN, err)
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        frisch = token_lesen()
+        if marke is None:
+            frisch.pop(anbieter, None)
+        else:
+            frisch[anbieter] = marke
+        return json_schreiben(DATEI_TOKEN, frisch, rechte=0o600)
+    except OSError as err:
+        _LOG.error("token.json: Sperre nicht zu bekommen: %s", err)
+        return False
+    finally:
+        os.close(fd)
 
 
 # ---------------------------------------------------------------------------
@@ -608,9 +647,15 @@ def mqtt_zustand() -> dict:
 #   schleuderdrehzahl  RETAINED: keine Messung, sondern eine Einstellung des
 #                   gewaehlten Programms.
 #
-# Ein LEERER Wert geht immer als "publish" hinaus, egal was hier steht: eine
-# leere Nutzlast mit Retain LOESCHT das Thema im Broker (am 14.09.2026 am
-# Geraet gemessen).
+# Ein LEERER Wert geht nie hinaus (Bauliste C11, Entscheidung Nr. 5, 02.10.2026):
+# ein Feld ohne Aussage geht als "-" hinaus, bei retained Staemmen retained.
+# Eine leere Nutzlast mit Retain LOESCHT das Thema im Broker (am 14.09.2026
+# am Geraet gemessen) - bis 0.9.36 ging ein leerer Programmtext deshalb als
+# publish hinaus, und der alte Text blieb retained stehen (Befund 11/MQTT 3).
+#
+# geraetN/ok und geraetN/ts (Bauliste C5, Festlegung zu MQTT Befund 1):
+# je Geraet, ob sein Anbieter in diesem Lauf geantwortet hat, und der
+# Zeitpunkt seines letzten erfolgreichen Abrufs - beide fluechtig wie ok/ts.
 RETAIN = {
     # --- anlagenweit ---
     "ok":                         False,
@@ -644,6 +689,8 @@ RETAIN = {
     "geraetN/energie_kwh":        False,
     "geraetN/wasser_l":           False,
     "geraetN/temperatur":         False,
+    "geraetN/ok":                 False,
+    "geraetN/ts":                 False,
 }
 
 # Themen, deren zurueckbehaltener ALTWERT einmal abgeraeumt werden muss.
@@ -746,13 +793,15 @@ def mqtt_zugang() -> dict:
             "pass": hol("Brokerpass", "brokerpass")}
 
 
-def mqtt_behalten_liste(themen) -> tuple:
+def mqtt_behalten_liste(themen, werte=None) -> tuple:
     """Fragt den Broker in EINER Verbindung, welche der Themen er zurueckbehaelt.
 
     Rueckgabe (lage, belegt). lage "ok": der Broker hat das Abonnement
     bestaetigt (oder einen Wert geschickt) - was dann nicht in belegt steht,
     ist leer. "unbekannt": er war nicht zu fragen (kein Port, keine
     Verbindung, Anmeldung abgewiesen, keine Antwort).
+    werte (ein Verzeichnis, wahlweise) bekommt je belegtem Thema die Nutzlast -
+    gebraucht, um ein "-" nachzulesen (Bauliste M2).
     """
     soll = []
     for t in themen:
@@ -857,6 +906,8 @@ def mqtt_behalten_liste(themen) -> tuple:
                     versatz = 2 + tl + (2 if (k >> 1) & 3 else 0)
                     if t in soll and (k & 1) and r[versatz:]:
                         belegt.add(t)
+                        if werte is not None:
+                            werte[t] = r[versatz:].decode("utf-8", "replace")
                         if len(belegt) == len(soll):
                             break
             try:
@@ -924,7 +975,32 @@ def altlast_lage(praefix: str) -> tuple:
     return "unbekannt", liste
 
 
-def mqtt_senden(paare: dict, praefix: str) -> None:
+# M8 (Bauliste, Entscheidung Nr. 26): nur Geaendertes senden, das Lebenszeichen
+# in jedem Lauf, den vollen Satz alle MQTT_VOLL_S Sekunden und nach dem Start.
+# Bis 0.9.36 ging jeder Lauf mit dem vollen Satz hinaus - mit zwei Geraeten 46
+# Datagramme je Minute in einen Eingang, der 17-70 % verwirft (MQTT Befund 8).
+MQTT_VOLL_S = 1800
+_MQTT_GESENDET: dict = {}
+_MQTT_VOLL = {"praefix": None, "ts": 0.0}
+
+
+def mqtt_voll_faellig(praefix: str) -> bool:
+    """Ist der volle Satz faellig? Beim ersten Lauf, nach einem Praefixwechsel
+    und nach MQTT_VOLL_S Sekunden - dann wird der Merker der gesendeten Werte
+    geleert, und alles geht hinaus."""
+    jetzt = time.time()
+    if _MQTT_VOLL["praefix"] != praefix or not 0 <= jetzt - _MQTT_VOLL["ts"] < MQTT_VOLL_S:
+        _MQTT_VOLL["praefix"] = praefix
+        _MQTT_VOLL["ts"] = jetzt
+        _MQTT_GESENDET.clear()
+        return True
+    return False
+
+
+def mqtt_senden(paare: dict, praefix: str, immer=None) -> None:
+    """immer: None = alles senden; sonst die Themen, die in jedem Lauf hinausgehen
+    (Lebenszeichen) - die uebrigen nur, wenn sich Befehl oder Wert seit dem
+    letzten Senden geaendert haben (M8)."""
     z = mqtt_zustand()
     if not z["udpport"]:
         melde_gebremst("mqtt_kein_port",
@@ -950,6 +1026,10 @@ def mqtt_senden(paare: dict, praefix: str) -> None:
             if v is None:
                 continue
             wert = mqtt_wert_saeubern(v)
+            # Nie eine leere Nutzlast (Bauliste C11): ein leerer Text ist keine
+            # Aussage und geht als "-" hinaus - retained auf retained Staemmen.
+            if wert == "":
+                wert = "-"
             # Die leere retain-Nutzlast loescht den zurueckbehaltenen Wert
             # (mqttgateway.pl:281, :311-315, :357; am Geraet am 19.09.2026
             # belegt, Regeln/07). Sie geht UNMITTELBAR vor dem gueltigen Wert
@@ -962,11 +1042,15 @@ def mqtt_senden(paare: dict, praefix: str) -> None:
                 s.sendto("retain {0}/{1} ".format(praefix, k).encode("utf-8"), ziel)
                 raeumen.remove(k)
             # Der UDP-Eingang des Gateways kennt "publish" und "retain"
-            # (mqttgateway.pl:293, Ausfuehrung in :354-357). Ein leerer Wert
-            # geht IMMER als publish hinaus: eine leere Nutzlast mit Retain
-            # loescht das zurueckbehaltene Thema im Broker.
-            befehl = "retain" if (wert != "" and retain_fuer(k)) else "publish"
+            # (mqttgateway.pl:293, Ausfuehrung in :354-357). Leer ist hier
+            # nichts mehr (siehe oben).
+            befehl = "retain" if retain_fuer(k) else "publish"
+            schluessel = "%s/%s" % (praefix, k)
+            if immer is not None and k not in immer \
+                    and _MQTT_GESENDET.get(schluessel) == (befehl, wert):
+                continue
             s.sendto(f"{befehl} {praefix}/{k} {wert}".encode("utf-8"), ziel)
+            _MQTT_GESENDET[schluessel] = (befehl, wert)
         # Was der Broker als belegt meldet, in diesem Lauf aber keinen Wert
         # hat, wird allein geloescht - der Altwert ist ohnehin falsch. Bei
         # unbekannter Lage nicht: dann gehen die Loeschungen nur unmittelbar
@@ -1048,8 +1132,25 @@ def mqtt_leeren(runden: int = LEEREN_RUNDEN, pause: float = LEEREN_PAUSE_S) -> i
     """Rueckgabe 0 geleert (vom Broker bestaetigt) oder nicht nachpruefbar,
     1 es steht noch etwas bzw. das Senden scheiterte, 2 nicht moeglich.
     Schreibt kein Protokoll und legt nichts an - es laeuft aus der
-    Deinstallation."""
-    praefix = str(config().get("mqtt_topic") or "weissware").strip("/") or "weissware"
+    Deinstallation.
+
+    Bauliste I6 (Entscheidung Nr. 26, 02.10.2026): geleert wird das aktuelle
+    Praefix UND jedes vorgemerkte fruehere (mqtt_topic_alt in weissware.json).
+    Bis 0.9.36 blieben nach einem Praefixwechsel alle retained Themen unter dem
+    alten Praefix fuer immer im Broker, auch ueber die Deinstallation hinaus
+    (weissware_agenten/mqtt Befund 6, installer I6). Der schlechteste Ausgang
+    der einzelnen Praefixe gilt."""
+    cfg = config()
+    aktuell = str(cfg.get("mqtt_topic") or "weissware").strip("/") or "weissware"
+    rc = 0
+    for p in [aktuell] + [x for x in praefixe_alt(cfg) if x != aktuell]:
+        rc = max(rc, _mqtt_leeren_praefix(p, runden, pause))
+    return rc
+
+
+def _mqtt_leeren_praefix(praefix: str, runden: int, pause: float) -> int:
+    """Leert die zurueckbehaltenen Themen unter EINEM Praefix (Rueckgabe wie
+    mqtt_leeren()), mit Nachlesen beim Broker."""
     if any(z in praefix for z in "#+ \t\r\n"):
         print("<WARNING> MQTT: das Themenpraefix '%s' enthaelt einen Platzhalter oder "
               "ein Leerzeichen - zurueckbehaltene Themen wurden nicht geleert."
@@ -1379,7 +1480,13 @@ def kopfzeilen(token: str, sprache: str = "") -> dict:
 # ---------------------------------------------------------------------------
 # Fehlermeldungen, die sagen, wer geantwortet hat
 # ---------------------------------------------------------------------------
+class AnmeldungAbgewiesen(RuntimeError):
+    """Bauliste C3: der Token-Endpunkt weist das Erneuerungstoken ab (invalid_grant)."""
+
+
 def fehlertext(err: Exception) -> str:
+    if isinstance(err, AnmeldungAbgewiesen):
+        return str(err)
     name = type(err).__name__
     inhalt = str(err) or name
     klein = inhalt.lower()
@@ -1875,18 +1982,74 @@ def st_befehl(sitzung, cfg: dict, token: str, kennung: str, aktion: str, wert=No
 # ===========================================================================
 # Token verwalten
 # ===========================================================================
-def hc_token_erneuern(sitzung, cfg: dict, z: dict, marken: dict) -> str:
+def _token_erneuern(sitzung, anbieter: str, titel: str, url: str, daten: dict,
+                    vorgabe_s: int, marken: dict) -> str:
     """Gibt ein gueltiges Zugriffstoken zurueck, erneuert es bei Bedarf.
 
-    Das Zugriffstoken laeuft laut Dokumentation nach 86400 s ab. Erneuert wird
-    zehn Minuten vorher - wer bis zur letzten Sekunde wartet, faengt sich bei
-    jeder Uhrabweichung eine 401 ein.
+    Bauliste C3 (02.10.2026; weissware_agenten/code Befunde 3 und 16):
+      * eine Antwort ohne nicht leeres access_token ist ein Fehlschlag mit Grund
+        (bis 0.9.36: "Zugriffstoken erneuert" und null in token.json);
+      * laesst sich token.json nicht schreiben, gilt die Erneuerung als
+        gescheitert - gemeldet, nicht als Erfolg protokolliert;
+      * 400/401 mit invalid_grant heisst: Anmeldung abgelaufen oder
+        zurueckgezogen, bitte neu anmelden (AnmeldungAbgewiesen);
+      * solange das alte Zugriffstoken gilt, wird mit ihm weitergelesen - ein
+        einzelner gescheiterter Versuch im Vorlauf laesst den Anbieter nicht
+        mehr ausfallen.
+    Erneuert wird zehn Minuten vor Ablauf - wer bis zur letzten Sekunde
+    wartet, faengt sich bei jeder Uhrabweichung eine 401 ein.
     """
-    hc = marken.get("homeconnect") or {}
-    if hc.get("access_token") and time.time() < ganz(hc.get("gueltig_bis"), 0) - 600:
-        return hc["access_token"]
-    if not hc.get("refresh_token"):
-        raise RuntimeError("Home Connect ist nicht angemeldet.")
+    alt = marken.get(anbieter) or {}
+    jetzt = time.time()
+    bis = ganz(alt.get("gueltig_bis"), 0)
+    alt_token = alt.get("access_token") if isinstance(alt.get("access_token"), str) else ""
+    if alt_token and jetzt < bis - 600:
+        return alt_token
+    if not alt.get("refresh_token"):
+        raise RuntimeError("%s ist nicht angemeldet." % titel)
+    try:
+        a = sitzung.post(url, data=daten, timeout=30)
+        if a.status_code in (400, 401) and "invalid_grant" in str(getattr(a, "text", "") or ""):
+            raise AnmeldungAbgewiesen(
+                "%s hat das Erneuerungstoken abgewiesen (HTTP %d, invalid_grant): die Anmeldung "
+                "ist abgelaufen oder zurueckgezogen - bitte im Reiter Einstellungen neu anmelden."
+                % (titel, a.status_code))
+        a.raise_for_status()
+        try:
+            neu = a.json() or {}
+        except ValueError:
+            neu = {}
+        if not isinstance(neu, dict):
+            neu = {}
+        zugriff = neu.get("access_token")
+        if not isinstance(zugriff, str) or not zugriff.strip():
+            raise RuntimeError("%s: Antwort ohne Zugriffstoken (HTTP %d) - die Erneuerung gilt "
+                               "als gescheitert." % (titel, a.status_code))
+        erneuerung = neu.get("refresh_token")
+        marke = {
+            "access_token": zugriff,
+            "refresh_token": erneuerung if isinstance(erneuerung, str) and erneuerung
+            else alt["refresh_token"],
+            "gueltig_bis": int(time.time()) + ganz(neu.get("expires_in"), vorgabe_s),
+        }
+        if not token_eintragen(anbieter, marke):
+            raise RuntimeError("%s: das erneuerte Zugriffstoken liess sich nicht in %s schreiben "
+                               "- die Erneuerung gilt als gescheitert." % (titel, DATEI_TOKEN))
+    except Exception as err:  # noqa: BLE001
+        if alt_token and jetzt < bis:
+            melde_gebremst("erneuern_" + anbieter,
+                           "%s: Erneuerung gescheitert (%s) - es wird mit dem bisherigen "
+                           "Zugriffstoken weitergelesen, gueltig noch %d s."
+                           % (titel, fehlertext(err), int(bis - jetzt)), 900)
+            return alt_token
+        raise
+    marken[anbieter] = marke
+    _LOG.info("%s: Zugriffstoken erneuert.", titel)
+    return zugriff
+
+
+def hc_token_erneuern(sitzung, cfg: dict, z: dict, marken: dict) -> str:
+    """Home Connect: das Zugriffstoken laeuft laut Dokumentation nach 86400 s ab."""
     # client_secret NUR mitsenden, wenn eines hinterlegt ist.
     #
     # Eine Anwendung, die bei Home Connect mit dem Device Flow angelegt wurde,
@@ -1902,47 +2065,24 @@ def hc_token_erneuern(sitzung, cfg: dict, z: dict, marken: dict) -> str:
     # Weg ist trotzdem der sichere - ein weggelassener optionaler Parameter
     # ist nie schlechter als ein leerer -, und fuer Anwendungen MIT Geheimnis
     # aendert sich nichts.
+    hc = marken.get("homeconnect") or {}
     daten = {"grant_type": "refresh_token",
-             "refresh_token": hc["refresh_token"],
+             "refresh_token": hc.get("refresh_token"),
              "client_id": z["hc_client_id"]}
     if z["hc_client_secret"]:
         daten["client_secret"] = z["hc_client_secret"]
-    a = sitzung.post(hc_host(cfg) + "/security/oauth/token",
-                     data=daten, timeout=30)
-    a.raise_for_status()
-    neu = a.json() or {}
-    marken["homeconnect"] = {
-        "access_token": neu.get("access_token"),
-        "refresh_token": neu.get("refresh_token") or hc["refresh_token"],
-        "gueltig_bis": int(time.time()) + ganz(neu.get("expires_in"), 86400),
-    }
-    token_schreiben(marken)
-    _LOG.info("Home Connect: Zugriffstoken erneuert.")
-    return marken["homeconnect"]["access_token"]
+    return _token_erneuern(sitzung, "homeconnect", "Home Connect",
+                           hc_host(cfg) + "/security/oauth/token", daten, 86400, marken)
 
 
 def miele_token_erneuern(sitzung, cfg: dict, z: dict, marken: dict) -> str:
     mi = marken.get("miele") or {}
-    if mi.get("access_token") and time.time() < ganz(mi.get("gueltig_bis"), 0) - 600:
-        return mi["access_token"]
-    if not mi.get("refresh_token"):
-        raise RuntimeError("Miele ist nicht angemeldet.")
-    a = sitzung.post(MIELE_HOST + "/thirdparty/token",
-                     data={"grant_type": "refresh_token",
-                           "refresh_token": mi["refresh_token"],
-                           "client_id": z["miele_client_id"],
-                           "client_secret": z["miele_client_secret"]},
-                     timeout=30)
-    a.raise_for_status()
-    neu = a.json() or {}
-    marken["miele"] = {
-        "access_token": neu.get("access_token"),
-        "refresh_token": neu.get("refresh_token") or mi["refresh_token"],
-        "gueltig_bis": int(time.time()) + ganz(neu.get("expires_in"), 2592000),
-    }
-    token_schreiben(marken)
-    _LOG.info("Miele: Zugriffstoken erneuert.")
-    return marken["miele"]["access_token"]
+    return _token_erneuern(sitzung, "miele", "Miele", MIELE_HOST + "/thirdparty/token",
+                           {"grant_type": "refresh_token",
+                            "refresh_token": mi.get("refresh_token"),
+                            "client_id": z["miele_client_id"],
+                            "client_secret": z["miele_client_secret"]},
+                           2592000, marken)
 
 
 # ===========================================================================
@@ -2157,6 +2297,19 @@ def befehl_ausfuehren(sitzung, cfg: dict, z: dict, marken: dict, geraete: list,
                    f"Befehl ausschliesslich das am Geraet gewaehlte Programm. Den Parameter "
                    f"'programm' weglassen.", {})
 
+    if aktion in SOLLWERT_AKTIONEN:
+        # Bauliste C7 (X-7, Entscheidung Nr. 19, 02.10.2026): Ein/Aus ist ein
+        # Sollwert. Derselbe Wert an dasselbe Geraet binnen SOLLWERT_FENSTER_S,
+        # verglichen mit dem zuletzt GESENDETEN, geht nicht noch einmal hinaus.
+        # Start, Stopp und Pause sind Auftraege und bleiben ungebremst (Nr. 28).
+        # Bis 0.9.36 gingen drei gleiche "aus" als drei PUT an Home Connect
+        # (weissware_agenten/code, Befund 7).
+        letzte = _LETZTER_SOLLWERT.get(geraet_schluessel(g))
+        if letzte and letzte[0] == aktion and 0 <= time.time() - letzte[1] <= SOLLWERT_FENSTER_S:
+            return (1, f"'{aktion}' an '{g.get('name')}' wurde vor {int(time.time() - letzte[1])} s "
+                       f"gesendet - derselbe Wert geht binnen {SOLLWERT_FENSTER_S} s nicht noch "
+                       f"einmal hinaus (unveraendert).",
+                    {"geraet": g.get("id"), "anbieter": g.get("anbieter"), "unveraendert": 1})
     nachsatz = (" Der Anbieter hat die Anfrage angenommen; ob das Geraet den Befehl "
                 "ausfuehrt, zeigt der naechste Abruf.")
     try:
@@ -2166,6 +2319,8 @@ def befehl_ausfuehren(sitzung, cfg: dict, z: dict, marken: dict, geraete: list,
     if antwort is None:
         return (0, "Der Anbieter hat nicht geantwortet.", {})
     if 200 <= antwort.status_code < 300:
+        if aktion in SOLLWERT_AKTIONEN:
+            _LETZTER_SOLLWERT[geraet_schluessel(g)] = (aktion, time.time())
         return (1, f"'{aktion}' an '{g.get('name')}' gesendet." + nachsatz,
                 {"geraet": g.get("id"), "anbieter": g.get("anbieter"),
                  "http": antwort.status_code})
@@ -2182,6 +2337,23 @@ def befehl_ausfuehren(sitzung, cfg: dict, z: dict, marken: dict, geraete: list,
 # Antwort (ww_lib.php). 60 s wie BatterieBMS 0.9.25 und ZendureSolarFlow
 # 0.9.26 (Entscheidung des Hausherrn vom 18.09.2026).
 BEFEHL_VERFALL_S = 60
+
+# Bauliste C7: Ein/Aus eines Geraets ist ein Sollwert (X-7, Nr. 19).
+SOLLWERT_AKTIONEN = ("ein", "aus")
+SOLLWERT_FENSTER_S = 60
+_LETZTER_SOLLWERT: dict = {}
+
+
+def befehl_alter(b: dict, datei: Path):
+    """Alter eines Auftrags in Sekunden: aus seinem "ts", sonst aus der Datei;
+    None, wenn beides fehlt."""
+    ts = str(b.get("ts", ""))
+    if re.fullmatch(r"[0-9]{1,12}", ts):
+        return time.time() - int(ts)
+    try:
+        return time.time() - datei.stat().st_mtime
+    except OSError:
+        return None
 
 
 def alte_befehle_verwerfen() -> None:
@@ -2238,6 +2410,9 @@ def warteschlange(sitzung, cfg: dict, z: dict, marken: dict, geraete: list) -> i
     for datei in sorted(ORDNER_BEFEHLE.glob("*.json")):
         b = json_lesen(datei)
         kennung = datei.stem
+        # Bauliste C8: das Alter VOR dem Loeschen bestimmen (die Datei ist der
+        # Rueckfall, wenn der Auftrag kein ts traegt).
+        alter = befehl_alter(b, datei)
         # ERST loeschen, DANN ausfuehren - und wenn das Loeschen scheitert,
         # gar nicht ausfuehren.
         #
@@ -2259,6 +2434,20 @@ def warteschlange(sitzung, cfg: dict, z: dict, marken: dict, geraete: list) -> i
         if not b:
             antwort_schreiben(kennung, 0, "Befehlsdatei war leer oder unlesbar.")
             continue
+        if alter is None or not -5 <= alter <= BEFEHL_VERFALL_S:
+            # Bauliste C8 (02.10.2026): die Verfallspruefung gilt auch im
+            # laufenden Betrieb, nicht nur beim Dienststart. Hing der Dienst in
+            # einem Abruf, lief ein "start" bis 0.9.36 Minuten spaeter ungefragt
+            # an (weissware_agenten/code, Befund 8). Fehlt jede Zeitangabe,
+            # faellt die Pruefung geschlossen aus.
+            antwort_schreiben(kennung, 0, "Verworfen: veraltet - der Auftrag lag %s in der "
+                              "Warteschlange (Grenze %d s)." % (
+                                  "unbestimmt lange" if alter is None else "%d s" % int(alter),
+                                  BEFEHL_VERFALL_S))
+            _LOG.warning("Warteschlange: Auftrag %s, %s alt - VERWORFEN, nicht ausgefuehrt.",
+                         re.sub(r"[^a-z0-9_]", "", str(b.get("aktion") or "?")),
+                         "?" if alter is None else "%d s" % int(alter))
+            continue
         try:
             ok, meldung, zusatz = befehl_ausfuehren(sitzung, cfg, z, marken, geraete, b)
         except Exception as err:  # noqa: BLE001
@@ -2269,7 +2458,8 @@ def warteschlange(sitzung, cfg: dict, z: dict, marken: dict, geraete: list) -> i
             continue
         if b.get("aktion") == "abruf":
             sofort = 0
-        elif b.get("aktion") in SCHALTAKTIONEN and (sofort < 0 or sofort > NACHFASS_S):
+        elif b.get("aktion") in SCHALTAKTIONEN and (sofort < 0 or sofort > NACHFASS_S) \
+                and not (zusatz or {}).get("unveraendert"):
             # Nachfass-Abruf: ohne ihn stehen LAEUFT und ZUSTAND bis zum
             # naechsten regulaeren Takt auf dem alten Wert - ab Werk 300 s,
             # einstellbar bis 7200 s. Die eigene Anleitung verlangt aber vom
@@ -2294,6 +2484,9 @@ MQTT_FELDER = (
     "fertig_um",
     # Das am Geraet gewaehlte Programm - nur Home Connect fuehrt es.
     "gewaehlt_text",
+    # Bauliste C5: ob der Anbieter dieses Geraets im letzten Lauf geantwortet
+    # hat, und wann es zuletzt gelesen wurde - beide fluechtig, in jedem Lauf.
+    "ok", "ts",
 )
 
 
@@ -2306,7 +2499,13 @@ def ableiten(g: dict) -> dict:
     if not g.get("zustand_text"):
         g["zustand_text"] = ZUSTAND_TEXT.get(z, "")
     rest = g.get("restzeit_min")
-    g["fertig_um"] = None if rest is None else int(time.time() + rest * 60)
+    # Bauliste C11 (Festlegung fertig_um, 02.10.2026): der Fertigzeitpunkt gilt
+    # nur, solange ein Programm laeuft (laeuft oder pausiert). Danach hat er
+    # keine Aussage und geht einmal als "-" hinaus - ein vergangener Zeitpunkt
+    # bleibt nie stehen. Bis 0.9.36 blieb er nach dem Programmende retained
+    # stehen (weissware_agenten/mqtt Befund 3).
+    g["fertig_um"] = (int(time.time() + rest * 60)
+                      if rest is not None and z in (LAEUFT, PAUSIERT) else None)
     return g
 
 
@@ -2351,18 +2550,220 @@ def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str, ausfaelle: di
     for a in ANBIETER:
         grund["ausfall/" + a] = 1 if a in (ausfaelle or {}) else 0
     grund["ausfaelle"] = len(ausfaelle or {})
-    if not ok:
-        if cfg.get("mqtt_ein"):
-            mqtt_senden(grund, praefix)
-        return lox
+    # Bauliste C5 (Festlegung zu MQTT Befund 1, 02.10.2026): je Geraet ein
+    # eigenes ok und ts, fluechtig, in jedem Lauf. ok bleibt das Gesamtzeichen;
+    # schweigt nur ein Anbieter, gehen seine Geraete auf 0, ihre Zustaende
+    # bleiben stehen (Nr. 8). Faellt alles aus, sind alle Geraete 0.
+    for nummer, g in geraete.items():
+        grund["geraet%s/ok" % nummer] = 1 if ok and ganz(g.get("ok"), 1) == 1 else 0
+        grund["geraet%s/ts" % nummer] = ganz(g.get("ts"), ganz(stand.get("ts"), 0))
     if cfg.get("mqtt_ein"):
-        paare = dict(grund)
-        paare["geraete"] = len(geraete)
-        for nummer, g in geraete.items():
-            for feld in MQTT_FELDER:
-                paare[f"geraet{nummer}/{feld}"] = g.get(feld)
-        mqtt_senden(paare, praefix)
+        immer = None if mqtt_voll_faellig(praefix) else set(grund)
+        if not ok:
+            mqtt_senden(grund, praefix, immer)
+        else:
+            paare = dict(grund)
+            paare["geraete"] = len(geraete)
+            for nummer, g in geraete.items():
+                if ganz(g.get("ok"), 1) == 0:
+                    # Anbieter schweigt: die Zustaende bleiben stehen (Nr. 8),
+                    # es geht nur geraetN/ok = 0 hinaus (oben).
+                    continue
+                # Ein Feld, das ein erfolgreicher Abruf nicht liefert, geht als
+                # "-" hinaus (Bauliste C11, Nr. 5). Ein getrenntes Geraet
+                # (verbunden = 0) liefert gar nichts - seine Zustaende bleiben
+                # stehen (Nr. 8, weissware_agenten/code: ohne Befund).
+                ohne = None if g.get("verbunden") == 0 else "-"
+                for feld in MQTT_FELDER:
+                    if feld in ("ok", "ts"):
+                        continue
+                    v = g.get(feld)
+                    paare[f"geraet{nummer}/{feld}"] = ohne if (v is None or v == "") else v
+            mqtt_senden(paare, praefix, immer)
+            entfernte_raeumen(praefix)
+    praefixe_raeumen(cfg, praefix)
     return lox
+
+
+# ===========================================================================
+# Entfernte Geraete (Bauliste M2, Entscheidungen Nr. 8/16, 02.10.2026)
+#
+# Fuehrt ein Anbieter, der fehlerfrei geantwortet hat, ein Geraet nicht mehr,
+# gilt es als entfernt: seine retained Themen bekommen EINMAL "-" retained, mit
+# Merker in entfernt.json und Nachlesen beim Broker; der Endpunkt antwortet
+# fuer diese Nummer GRUND=GERAET_ENTFERNT. Kommt das Geraet zurueck, bekommt es
+# seine alte Nummer (geraetenummern.json) und der Eintrag faellt weg. Bis
+# 0.9.36 blieben alle retained geraetN/* stehen, und HTTP sagte
+# GERAET_UNBEKANNT wie bei einem Ausfall (weissware_agenten/mqtt Befund 2).
+# ===========================================================================
+DATEI_ENTFERNT = PDATA / "entfernt.json"
+
+
+def entfernte_merken(vorher: dict, jetzt: dict, antwortend) -> None:
+    """vorher/jetzt: Geraete nach Nummer; antwortend: Anbieter, die in diesem
+    Lauf fehlerfrei geantwortet haben (nur deren Geraete koennen entfernt sein)."""
+    d = json_lesen(DATEI_ENTFERNT)
+    geaendert = False
+    for nr in list(d):
+        if nr in jetzt:
+            del d[nr]
+            geaendert = True
+            _LOG.info("Geraet %s wird wieder gefuehrt - es gilt nicht mehr als entfernt.", nr)
+    for nr, g in sorted(vorher.items(), key=lambda kv: ganz(kv[0], 0)):
+        if nr in jetzt or nr in d or not isinstance(g, dict):
+            continue
+        if str(g.get("anbieter") or "") not in antwortend:
+            continue
+        d[nr] = {"anbieter": str(g.get("anbieter") or ""), "id": str(g.get("id") or ""),
+                 "name": str(g.get("name") or ""), "seit": int(time.time()),
+                 "geraeumt": 0, "versuche": 0}
+        geaendert = True
+        _LOG.warning("Geraet %s (%s, %s) wird vom Anbieter nicht mehr gefuehrt und gilt als "
+                     "entfernt - seine zurueckbehaltenen MQTT-Themen bekommen einmal '-'.",
+                     nr, d[nr]["anbieter"], mqtt_wert_saeubern(d[nr]["name"]))
+    if geaendert:
+        json_schreiben(DATEI_ENTFERNT, d)
+
+
+def entfernte_raeumen(praefix: str) -> None:
+    """Fuer jedes entfernte Geraet ohne Bestaetigung: alle retained Staemme
+    einmal mit "-" retained senden, danach beim Broker nachlesen. Bestaetigt
+    ist es erst, wenn der Broker auf jedem Thema "-" fuehrt (geraeumt 1). Ist
+    der Broker nicht zu fragen, wird hoechstens dreimal gesendet (geraeumt 2,
+    unbestaetigt); widerspricht er, hoechstens zehnmal (geraeumt 3)."""
+    d = json_lesen(DATEI_ENTFERNT)
+    offen = [nr for nr, e in d.items() if isinstance(e, dict) and ganz(e.get("geraeumt"), 0) == 0]
+    if not offen:
+        return
+    z = mqtt_zustand()
+    if not z["udpport"]:
+        return
+    staemme = [k[len("geraetN/"):] for k, v in RETAIN.items() if v and k.startswith("geraetN/")]
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    except OSError as err:
+        melde_gebremst("mqtt_socket", f"MQTT: Socket nicht moeglich ({err}).")
+        return
+    try:
+        for nr in offen:
+            themen = ["%s/geraet%s/%s" % (praefix, nr, st) for st in staemme]
+            for t in themen:
+                s.sendto(("retain %s -" % t).encode("utf-8"), ("127.0.0.1", z["udpport"]))
+            for k in list(_MQTT_GESENDET):
+                if k.startswith("%s/geraet%s/" % (praefix, nr)):
+                    del _MQTT_GESENDET[k]
+            time.sleep(0.3)
+            werte: dict = {}
+            lage, _ = mqtt_behalten_liste(themen, werte)
+            e = d[nr]
+            e["versuche"] = ganz(e.get("versuche"), 0) + 1
+            if lage == "ok" and all(werte.get(t) == "-" for t in themen):
+                e["geraeumt"] = 1
+                _LOG.info("MQTT: Geraet %s gilt als entfernt - der Broker bestaetigt '-' auf "
+                          "%d Themen.", nr, len(themen))
+            elif lage != "ok" and e["versuche"] >= 3:
+                e["geraeumt"] = 2
+                _LOG.warning("MQTT: Geraet %s gilt als entfernt - '-' dreimal gesendet, der Broker "
+                             "liess sich nicht befragen (unbestaetigt).", nr)
+            elif e["versuche"] >= 10:
+                e["geraeumt"] = 3
+                _LOG.warning("MQTT: Geraet %s - der Broker fuehrt nach zehn Versuchen nicht auf allen "
+                             "Themen '-'. Von Hand: mosquitto_pub -r -t <thema> -m -", nr)
+    except OSError as err:
+        melde_gebremst("mqtt_senden", f"MQTT: Senden fehlgeschlagen ({err}).")
+    finally:
+        s.close()
+    json_schreiben(DATEI_ENTFERNT, d)
+
+
+# ===========================================================================
+# Fruehere Praefixe und "MQTT aus" (Bauliste I6, Entscheidung Nr. 26, 02.10.2026)
+#
+# Die Oberflaeche merkt beim Praefixwechsel das bisherige Praefix in
+# weissware.json (mqtt_topic_alt) vor - damit steht es auch in der Zweitschrift.
+# Der Dienst raeumt die retained Themen darunter ab, mit Nachlesen beim Broker,
+# und haelt das Ergebnis in mqtt_praefixe_geraeumt.json fest; ist MQTT aus,
+# raeumt er so EINMAL das aktuelle Praefix ab. Schaltet MQTT wieder ein, faellt
+# der Merker des aktuellen Praefixes weg. Bis 0.9.36 blieben die Themen in beiden
+# Faellen fuer immer stehen (weissware_agenten/mqtt Befunde 6 und 7).
+# ===========================================================================
+DATEI_PRAEFIXE_GERAEUMT = PDATA / "mqtt_praefixe_geraeumt.json"
+PRAEFIX_FORM = re.compile(r"^[A-Za-z0-9_\-]+(/[A-Za-z0-9_\-]+)*$")
+
+
+def praefixe_alt(cfg: dict) -> list:
+    """Die vorgemerkten frueheren Praefixe - nur, was die Form eines Praefixes hat."""
+    roh = cfg.get("mqtt_topic_alt")
+    aus = []
+    for p in (roh if isinstance(roh, list) else []):
+        p = str(p).strip()
+        if 0 < len(p) <= 64 and PRAEFIX_FORM.match(p) and p not in aus:
+            aus.append(p)
+    return aus
+
+
+def praefix_raeumen_einmal(praefix: str) -> str:
+    """Eine Runde: nachlesen, was retained steht, leere Nutzlast darauf, wieder
+    nachlesen. Rueckgabe bestaetigt | offen | unbekannt."""
+    z = mqtt_zustand()
+    if not z["udpport"]:
+        return "unbekannt"
+    alle = ["%s/%s" % (praefix, t) for t in mqtt_leer_themen()]
+    lage, belegt = mqtt_behalten_liste(alle)
+    if lage == "ok" and not belegt:
+        return "bestaetigt"
+    senden = [t for t in alle if t in belegt] if lage == "ok" else alle
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            for t in senden:
+                s.sendto(("retain %s " % t).encode("utf-8"), ("127.0.0.1", z["udpport"]))
+        finally:
+            s.close()
+    except OSError as err:
+        melde_gebremst("mqtt_senden", f"MQTT: Senden fehlgeschlagen ({err}).")
+        return "unbekannt"
+    if lage != "ok":
+        return "unbekannt"
+    time.sleep(0.3)
+    lage2, belegt2 = mqtt_behalten_liste(senden)
+    if lage2 == "ok":
+        return "bestaetigt" if not belegt2 else "offen"
+    return "unbekannt"
+
+
+def praefixe_raeumen(cfg: dict, praefix: str) -> None:
+    ziele = [p for p in praefixe_alt(cfg) if p != praefix]
+    aus = not cfg.get("mqtt_ein")
+    if aus:
+        ziele.append(praefix)
+    merk = json_lesen(DATEI_PRAEFIXE_GERAEUMT)
+    geaendert = False
+    if not aus and praefix in merk:
+        # MQTT ist (wieder) an: der naechste Ausschalter raeumt erneut ab.
+        del merk[praefix]
+        geaendert = True
+    jetzt = int(time.time())
+    for p in ziele:
+        e = merk.get(p) if isinstance(merk.get(p), dict) else {}
+        if e.get("stand") == "bestaetigt":
+            continue
+        if e.get("stand") == "unbekannt" and 0 <= jetzt - ganz(e.get("ts"), 0) < 3600:
+            continue
+        neu = praefix_raeumen_einmal(p)
+        merk[p] = {"stand": neu, "ts": jetzt}
+        geaendert = True
+        if neu == "bestaetigt":
+            _LOG.info("MQTT: unter %s/ steht nichts mehr zurueckbehalten (vom Broker bestaetigt; %s).",
+                      p, "MQTT aus" if p == praefix else "frueheres Praefix")
+        elif neu == "offen":
+            _LOG.warning("MQTT: unter %s/ stehen nach dem Abraeumen noch zurueckbehaltene Themen - "
+                         "der naechste Lauf versucht es wieder.", p)
+        else:
+            melde_gebremst("praefix_" + p, "MQTT: unter %s/ wurde abgeraeumt, der Broker liess sich "
+                           "aber nicht befragen - wiederholt wird in einer Stunde." % p)
+    if geaendert:
+        json_schreiben(DATEI_PRAEFIXE_GERAEUMT, merk)
 
 
 DATEI_LAEUFE = PDATA / "laeufe.json"
@@ -2438,7 +2839,58 @@ def signal_behandeln(*_):
     _LOG.info("Beendigungssignal erhalten - Dienst haelt an.")
 
 
+def dienst_sperre():
+    """Bauliste C1 (02.10.2026): eine Einzelinstanz-Sperre im Dienst selbst.
+
+    fcntl.flock auf data/plugins/<ordner>/dienst.lock, ohne zu warten. Der
+    Deskriptor ist nicht vererbbar (Python oeffnet ihn mit O_CLOEXEC) - ein
+    Kindprozess haelt die Sperre also nie fest (Regeln, Erfahrung
+    Einspeisebremse). Bis 0.9.36 gab es keine: zwei Waechter in derselben
+    Sekunde ergaben in 10 von 10 Versuchen zwei Dienste (weissware_agenten/code
+    Befund 1, installer I4). Rueckgabe: der Deskriptor oder None.
+    """
+    import fcntl
+    try:
+        PDATA.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(PDATA / "dienst.lock"), os.O_RDWR | os.O_CREAT, 0o644)
+    except OSError as err:
+        _LOG.error("Die Dienstsperre %s laesst sich nicht oeffnen: %s", PDATA / "dienst.lock", err)
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return None
+    return fd
+
+
 def dienst(einmal: bool = False) -> int:
+    sperre = dienst_sperre()
+    if sperre is None:
+        _LOG.warning("Ein anderer Abrufdienst haelt die Sperre %s - dieser Aufruf endet, ohne "
+                     "abzurufen (nie zwei Dienste zugleich).", PDATA / "dienst.lock")
+        return 1
+    try:
+        return _dienst_lauf(einmal)
+    finally:
+        os.close(sperre)
+
+
+def stand_laden() -> dict:
+    """Bauliste C6 (02.10.2026): der Stand beim Dienststart ist der zuletzt
+    abgelegte (loxone.json), nicht leer. Bis 0.9.36 begann jeder Start mit
+    {"ts": 0, "geraete": {}}; ein Neustart ohne Netz ueberschrieb die zuletzt
+    gemessenen Werte, ALTER sprang auf -1 und das retained ts auf 0
+    (weissware_agenten/code Befund 6, mqtt Befund 5)."""
+    lox = json_lesen(DATEI_LOXONE)
+    g = lox.get("geraete")
+    ts = ganz(lox.get("ts"), 0)
+    if isinstance(g, dict) and ts > 0:
+        return {"ts": ts, "geraete": {str(k): v for k, v in g.items() if isinstance(v, dict)}}
+    return {"ts": 0, "geraete": {}}
+
+
+def _dienst_lauf(einmal: bool = False) -> int:
     import requests
 
     cfg = config()
@@ -2468,9 +2920,14 @@ def dienst(einmal: bool = False) -> int:
     # Der Mitschnitt liegt UM die Sitzung, nicht in den einzelnen Aufrufen:
     # sonst muesste jede der vierzehn Stellen daran denken.
     sitzung = Mitschnittsitzung(requests.Session(), config)
-    stand: dict = {"ts": 0, "geraete": {}}
+    # Bauliste C6: der zuletzt abgelegte Stand, nicht leer (stand_laden()).
+    stand = stand_laden()
+    # Beendete Laeufe werden nur gegen einen Stand DIESES Dienstes gezaehlt:
+    # gegen den von der Platte entstuende bei jedem Neustart ein Lauf, der
+    # laengst vorbei ist (wie bis 0.9.36: der erste Lauf zaehlte nie).
+    stand_von_platte = bool(stand["geraete"])
     fehler_folge = 0
-    liste: list = []
+    befehl_liste: list = list(stand["geraete"].values())
 
     try:
         while _LAUF:
@@ -2480,20 +2937,39 @@ def dienst(einmal: bool = False) -> int:
             ok = 0
             fehler = ""
             geraete: dict = {}
+            ausfaelle: dict = {}
             try:
                 liste, ausfaelle = alle_lesen(sitzung, cfg, z, marken)
                 # Feste Nummern statt enumerate(): siehe nummern_zuordnen().
                 # Die Nummer haengt danach am Geraet selbst, damit die
                 # Warteschlange dieselbe Zuordnung benutzt wie der Endpunkt.
                 nummern = nummern_zuordnen(liste)
+                jetzt_ts = int(time.time())
                 for g in liste:
                     g["nummer"] = nummern[geraet_schluessel(g)]
+                    g["ok"] = 1
+                    g["ts"] = jetzt_ts
                 for g in sorted(liste, key=lambda x: x["nummer"]):
                     geraete[str(g["nummer"])] = ableiten(g)
-                ok = 1 if geraete else 0
+                # Bauliste C5 (02.10.2026): die Geraete eines Anbieters, der in
+                # diesem Lauf schweigt, bleiben mit ihrem letzten Stand im Abbild,
+                # gekennzeichnet mit ok = 0. Bis 0.9.36 verschwanden sie: HTTP sagte
+                # GERAET_UNBEKANNT, geraete zaehlte sie nicht mehr, und die
+                # Fertigmeldung nach seiner Rueckkehr fiel aus (weissware_agenten/
+                # code Befund 5, mqtt Befund 1).
+                for nr, alt in sorted((stand.get("geraete") or {}).items(),
+                                      key=lambda kv: ganz(kv[0], 0)):
+                    if nr in geraete or not isinstance(alt, dict):
+                        continue
+                    if str(alt.get("anbieter") or "") in ausfaelle:
+                        kopie = dict(alt)
+                        kopie["ok"] = 0
+                        geraete[nr] = kopie
+                geraete = dict(sorted(geraete.items(), key=lambda kv: ganz(kv[0], 0)))
+                ok = 1 if liste else 0
                 if not liste and not ausfaelle:
                     fehler = "Die eingeschalteten Anbieter fuehren kein Geraet."
-                elif ausfaelle and not geraete:
+                elif ausfaelle and not liste:
                     fehler = "; ".join(f"{a}: {t}" for a, t in ausfaelle.items())
                 fehler_folge = 0 if ok else fehler_folge + 1
             except Exception as err:  # noqa: BLE001
@@ -2505,9 +2981,20 @@ def dienst(einmal: bool = False) -> int:
             if ok:
                 # Vor dem Ueberschreiben: der beendete Lauf ist nur im
                 # Vergleich mit dem vorigen Stand zu sehen.
-                laeufe_fortschreiben(stand.get("geraete") or {}, geraete)
+                if not stand_von_platte:
+                    laeufe_fortschreiben(stand.get("geraete") or {}, geraete)
+                stand_von_platte = False
+                # Bauliste M2: was ein fehlerfrei antwortender Anbieter nicht
+                # mehr fuehrt, gilt als entfernt.
+                antwortend = {a for a, k in (("homeconnect", "hc_ein"), ("miele", "miele_ein"),
+                                             ("smartthings", "st_ein"))
+                              if cfg.get(k) and a not in ausfaelle}
+                entfernte_merken(stand.get("geraete") or {}, geraete, antwortend)
                 stand = {"ts": int(time.time()), "geraete": geraete}
             abbild_schreiben(stand, cfg, ok, fehler, ausfaelle, fehler_folge)
+            # Die Warteschlange kennt alle Geraete des Abbilds (auch die eines
+            # schweigenden Anbieters - ein Befehl an sie scheitert dann mit Grund).
+            befehl_liste = list(stand["geraete"].values())
             # Adaptiver Takt: laeuft ein Geraet, wird enger abgefragt. Das ist
             # der Grund, warum ein Plugin hier besser ist als ein starrer
             # Abfragezyklus - man bekommt eine brauchbare Restzeit, ohne im
@@ -2541,7 +3028,7 @@ def dienst(einmal: bool = False) -> int:
                                1800)
             while rest > 0 and _LAUF:
                 try:
-                    nachfass = warteschlange(sitzung, cfg, z, marken, liste)
+                    nachfass = warteschlange(sitzung, cfg, z, marken, befehl_liste)
                     if nachfass == 0:
                         break
                     if nachfass > 0:
@@ -2624,13 +3111,13 @@ def hc_anmeldung_abschliessen() -> int:
         print("[FEHL] Home Connect hat abgelehnt: %s - %s"
               % (grund, d.get("error_description") or ""))
         return 1
-    marken = token_lesen()
-    marken["homeconnect"] = {
-        "access_token": d.get("access_token"),
-        "refresh_token": d.get("refresh_token"),
-        "gueltig_bis": int(time.time()) + ganz(d.get("expires_in"), 86400),
-    }
-    token_schreiben(marken)
+    if not token_eintragen("homeconnect", {
+            "access_token": d.get("access_token"),
+            "refresh_token": d.get("refresh_token"),
+            "gueltig_bis": int(time.time()) + ganz(d.get("expires_in"), 86400)}):
+        print("[FEHL] Home Connect hat angemeldet, aber %s liess sich nicht schreiben - "
+              "die Anmeldung ist NICHT gespeichert (Schreibrecht? Platz?)." % DATEI_TOKEN)
+        return 1
     try:
         (PDATA / "hc_anmeldung.json").unlink()
     except OSError:
@@ -2659,13 +3146,13 @@ def miele_anmeldung_abschliessen(code: str) -> int:
               % (a.status_code, (a.text or "")[:300]))
         return 1
     d = a.json() or {}
-    marken = token_lesen()
-    marken["miele"] = {
-        "access_token": d.get("access_token"),
-        "refresh_token": d.get("refresh_token"),
-        "gueltig_bis": int(time.time()) + ganz(d.get("expires_in"), 2592000),
-    }
-    token_schreiben(marken)
+    if not token_eintragen("miele", {
+            "access_token": d.get("access_token"),
+            "refresh_token": d.get("refresh_token"),
+            "gueltig_bis": int(time.time()) + ganz(d.get("expires_in"), 2592000)}):
+        print("[FEHL] Miele hat angemeldet, aber %s liess sich nicht schreiben - "
+              "die Anmeldung ist NICHT gespeichert (Schreibrecht? Platz?)." % DATEI_TOKEN)
+        return 1
     print("[OK]   Miele ist angemeldet.")
     return 0
 
@@ -2878,11 +3365,24 @@ def main() -> int:
             return 1
         return trockenlauf(rest[0], rest[1], rest[2] if len(rest) > 2 else "")
     if "--miele-code" in sys.argv:
-        i = sys.argv.index("--miele-code")
-        if i + 1 >= len(sys.argv):
-            print("[FEHL] Es wurde kein Code uebergeben.")
+        # Bauliste C14 (02.10.2026): der Code kommt aus einer 0600-Datei im
+        # Datenordner, die die Oberflaeche ablegt, und wird nach dem Lesen
+        # geloescht. Bis 0.9.36 stand er als Argument in der Befehlszeile und
+        # damit fuer jeden Systembenutzer in /proc/<pid>/cmdline
+        # (weissware_agenten/code Befund 14, oberflaeche Befund 11).
+        datei = PDATA / "miele_code"
+        try:
+            code = datei.read_text(encoding="utf-8").strip()
+        except OSError:
+            code = ""
+        try:
+            datei.unlink()
+        except OSError:
+            pass
+        if not code:
+            print("[FEHL] Es liegt kein Miele-Code bereit (%s)." % datei)
             return 1
-        return miele_anmeldung_abschliessen(sys.argv[i + 1])
+        return miele_anmeldung_abschliessen(code)
     signal.signal(signal.SIGTERM, signal_behandeln)
     signal.signal(signal.SIGINT, signal_behandeln)
     try:

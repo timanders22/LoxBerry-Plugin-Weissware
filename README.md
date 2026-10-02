@@ -10,12 +10,83 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.35 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.36 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.36
+
+Durchgang mit vier Prüfern (Befunde: `Pruefung-Durchgang-2026-09-29/Weissware_BEFUNDE_UND_VERBESSERUNGEN.md`, Entscheidungen 1, 4, 5, 8, 16, 19, 26) und Ansage-2/Ansage-3.
+Gemessen mit Attrappen für die Hersteller-Clouds, Broker, Gateway, Alexa NG und Chromecast 4 Lox NG unter PHP 7.4, 8.3 und 8.5 sowie im Installer-Prüfstand; nicht am Gerät, nicht an echten Hausgeräten.
+
+**Verhalten, das Loxone sieht**
+
+
+- **`OK=0` nach dem Alter.** Liegt der letzte erfolgreiche Abruf mehr als dreimal den Ruhetakt zurück oder mehr als
+  5 s in der Zukunft, antworten `status`, `verbrauch`, `dienst` und `geraete` mit `OK=0`; `ALTER` steht unverändert
+  daneben. Bisher blieb `OK=1` stehen, auch wenn der Dienst seit Tagen tot war.
+- **Ein schweigender Anbieter.** Bei mehreren Anbietern bleiben die Geräte eines ausgefallenen Anbieters mit ihren
+  zuletzt gemessenen Werten stehen und antworten mit `OK=0` (bisher `GERAET_UNBEKANNT`); die Fertigmeldung nach seiner
+  Rückkehr kommt. Über MQTT neu je Gerät `geraetN/ok` und `geraetN/ts` (nie zurückbehalten).
+- **Ohne gemessenen Stand** antworten `status` und `verbrauch` mit HTTP 503 `GRUND=KEINE_DATEN`; ein Neustart ohne
+  Netz überschreibt die zuletzt gemessenen Werte nicht mehr.
+- **Entfernte Geräte:** Führt ein fehlerfrei antwortender Anbieter ein Gerät nicht mehr, antwortet der Endpunkt
+  `GRUND=GERAET_ENTFERNT`, und seine zurückbehaltenen MQTT-Themen bekommen einmal `-` (vom Broker nachgelesen).
+- **Schaltende Befehle brauchen `geraet=`** (sonst HTTP 400 `GRUND=GERAET_FEHLT`; bisher traf es still Gerät 1).
+  `ein`/`aus` mit demselben Wert binnen 60 s werden nicht noch einmal gesendet (`UNVERAENDERT=1` in der Antwort, vor
+  `MELDUNG`). Ein Auftrag, der älter als 60 s in der Warteschlange liegt, wird auch im laufenden Betrieb verworfen.
+- **Parameter als Liste** (`token[]=…`, `geraet[]=…`) werden mit HTTP 400 `GRUND=PARAMETER` abgewiesen.
+- **MQTT ohne leere Nutzlast:** Felder ohne Aussage gehen als `-` hinaus (retained auf retained Themen); nach dem
+  Programmende bleibt kein alter Programmtext, keine alte Schleuderdrehzahl und kein vergangener `fertig_um` stehen.
+- **MQTT sendet nur Geändertes;** Lebenszeichen in jedem Lauf, der volle Satz alle 30 Minuten und nach dem Start.
+- **Präfixwechsel und „MQTT aus“:** das bisherige Präfix wird vorgemerkt; der Dienst räumt die zurückbehaltenen Themen
+  darunter ab (mit Nachlesen beim Broker), „MQTT aus“ räumt einmal ab, die Deinstallation leert auch vorgemerkte
+  Präfixe.
+
+**Ansage**
+
+
+- **Zwei neue Ausgabearten, ab Werk nicht gewählt:** Alexa-NG (Amazon Echo) und Google-Lautsprecher über
+  Chromecast 4 Lox NG (ab 1.3.15) – je mit eigenem Sprechtoken, Gerät und Lautstärke. Das Token steht nie in Seite,
+  Sicherung oder Protokoll; vom Ansagetext nur die Länge. Die Testansage zeigt die Antwortzeile, der Reiter Test
+  prüft das Token ohne Ansage. Fällt das andere Plugin aus, entfällt die Ansage.
+- **Fertigmeldung bei gleichnamigen Geräten** kommt nur noch einmal (Merkschlüssel ist jetzt die Gerätekennung).
+
+**Oberfläche**
+
+
+- **Kein Wiederholen mit F5:** jeder Knopf leitet um (PRG); „Neues Token“, Dienstknöpfe, Testansage und Schaltknöpfe
+  lösen beim Neuladen nichts mehr aus.
+- **Bei einer Beanstandung wird nichts gespeichert,** alle Mängel werden genannt, die eingetippten Werte stehen
+  markiert wieder im Formular (ohne Geheimnisse). Nichts wird mehr still geklemmt oder ersetzt (Port, Lautstärke,
+  Ausgabeart, Sprachkürzel, Anführungszeichen in Client-Geheimnissen, Schrägstriche am MQTT-Präfix).
+- Scheitert das Speichern im Reiter MQTT oder das Leeren der Logdatei, steht es auf der Seite.
+- **Sicherung:** dieselbe Musterliste wie das Formular (IPv6, Umlaute in Zonen); „Sichern“ warnt gelb und mit
+  `_warnung`, wenn ein gespeicherter Wert beim Zurückspielen abgewiesen würde; ein leeres Aktionstoken in der Datei
+  lässt das geltende stehen (mit Hinweis), ein Token in fremder Form wird abgewiesen; Sprechtoken sind nie enthalten.
+- **„Anmeldung neu erzwingen“** verlangt einen Bestätigungshaken und sagt, wie es weitergeht (Anmeldung im Browser).
+
+**Betrieb und Installation**
+
+
+- **Nie zwei Dienste:** Startsperre in `dienst.sh` und Einzelinstanz-Sperre im Dienst (zwei Wächter in derselben
+  Sekunde ergaben bisher zwei Dienste).
+- **Anmeldung:** eine Erneuerung ohne Zugriffstoken oder mit nicht schreibbarer `token.json` gilt als gescheitert
+  und wird gemeldet; „invalid_grant“ heißt „bitte neu anmelden“; solange das alte Zugriffstoken gilt, wird mit ihm
+  weitergelesen. Der Miele-Code geht über eine 0600-Datei, nie über die Befehlszeile. Zugangsdaten, Konfiguration und
+  Formularmerkwort werden mit „Rechte vor Inhalt“ geschrieben.
+- **Neuinstallation über Reste** spielt nichts mehr ein: frühere Sicherungen gehen nach `.alt` (eine `<WARNING>`), die
+  Deinstallation räumt sie ab. Ein Update holt eine bewusst verworfene Anmeldung nicht mehr zurück.
+- **Volle Karte beim Update:** Sicherungen werden über eine Nebendatei angelegt und geprüft; scheitert das, bleibt die
+  bisherige Sicherung stehen und das Protokoll sagt es (`<WARNING>` statt `<OK>`).
+- **Ein Protokoll ohne Widerspruch:** der zweite Aufruf von `postinstall.sh` aus `postupgrade.sh` wird übersprungen.
+- Unter PHP 8.5 keine Abkündigungsmeldung mehr; der Wächter liest seine Grenze auch dann richtig, wenn die
+  PHP-Kommandozeile Meldungen anzeigt.
+
+**In Loxone:** Schaltende Befehle brauchen jetzt `geraet=`; die Ausfallerkennung auf `OK` prüfen.
 
 ## Neu in 0.9.35
 
@@ -771,6 +842,29 @@ in der Fehlermeldung untergeht.
 Der gedachte Ablauf: Wäsche einfüllen, Programm wählen, Fernstart drücken —
 und Loxone drückt auf Start, wenn die Sonne scheint.
 
+## Ansage über Alexa oder Google-Lautsprecher
+
+Die Ansage („Gerät ist fertig“) kennt neben Loxone Music Server,
+MusicServer4Home/Audioserver4Home und einer eigenen Vorlage zwei Ausgabearten
+über andere Plugins **auf demselben LoxBerry**, beide ab Werk nicht gewählt:
+
+| Ausgabeart | Plugin | Adresse (nur 127.0.0.1) |
+|---|---|---|
+| Alexa-NG (Amazon Echo) | Alexa-NG | `/plugins/alexang/index.php` |
+| Google-Lautsprecher | Chromecast 4 Lox NG ab 1.3.15 | `/plugins/chromecast-4lox-ng/index.php` |
+
+Eingerichtet wird zuerst im anderen Plugin (Anmeldung bzw. „Sprachausgabe für
+andere Plugins“ und ein Sprechtoken), danach hier: Gerät (leer =
+Standardgerät), Lautstärke (leer = Ansagelautstärke) und dasselbe Sprechtoken.
+Jede Ausgabeart hat ihr eigenes Token. Das Token ist ein Geheimnis wie ein
+Kennwort: es geht nur im POST-Körper hinaus, steht nie in der Seite, nie in
+der Sicherung (eine Sicherung mit Token wird abgewiesen, beim Zurückspielen
+bleibt das geltende) und nie im Protokoll; vom Ansagetext steht dort nur die
+Länge. Als gesendet gilt nur HTTP 200 mit `SPRECHEN;OK=1`. Fällt das andere
+Plugin aus, entfällt die Ansage – es wird nicht auf einen anderen Lautsprecher
+ausgewichen. Die Testansage zeigt die Antwortzeile, der Reiter Test prüft das
+Token ohne Ansage (nur bei geöffnetem Reiter).
+
 ## Aufbau
 
     bin/weissware.py          Abrufdienst (Python, eigene venv)
@@ -796,8 +890,8 @@ der laufenden Nummer darf überall die Kennung des Anbieters stehen.
 | `?token=T&aktion=roh` | vollständiges Abbild als JSON |
 | `?token=T&aktion=start&geraet=N` | am Gerät gewähltes Programm starten |
 | `?token=T&aktion=start&geraet=N&programm=…` | bestimmtes Programm starten — **nur Home Connect** |
-| `?token=T&aktion=stop` / `pause` / `fortsetzen` | Programm abbrechen, anhalten, fortsetzen |
-| `?token=T&aktion=ein` / `aus` | Gerät ein- und ausschalten |
+| `?token=T&aktion=stop&geraet=N` / `pause` / `fortsetzen` | Programm abbrechen, anhalten, fortsetzen |
+| `?token=T&aktion=ein&geraet=N` / `aus` | Gerät ein- und ausschalten |
 | `?token=T&aktion=abruf` | sofort abrufen statt auf den Takt zu warten |
 
 `ZUSTAND` ist eine Stufe: `0` aus, `1` bereit, `2` läuft, `3` pausiert,
@@ -810,6 +904,26 @@ ausdrücklich „gerade kein Wert“, und 0 Minuten Restzeit hieße „fertig“
 **Was `OK=1` nicht heißt.** Der Anbieter hat die Anfrage angenommen. Ob das
 Gerät anläuft, zeigt erst der nächste Abruf; wer sicher sein will, wertet
 `LAEUFT` aus.
+
+**Schaltende Befehle brauchen `geraet=`.** Jeder schaltende Aufruf außer
+`abruf` nennt das Gerät; ohne antwortet das Plugin mit HTTP 400 und
+`SET;OK=0;GRUND=GERAET_FEHLT` und schaltet nichts. `ein` und `aus` sind ein
+Sollwert: derselbe Wert an dasselbe Gerät binnen 60 Sekunden geht nicht noch
+einmal hinaus, die Antwort trägt dann `UNVERAENDERT=1` (vor `MELDUNG`).
+Start, Stopp und Pause sind Aufträge und werden nicht gebremst.
+
+**Wann `OK=0` ist.** `OK` geht auf 0, sobald der letzte erfolgreiche Abruf
+mehr als dreimal den Ruhetakt zurückliegt (`ALTER` steht unverändert daneben)
+oder sein Zeitpunkt mehr als 5 Sekunden in der Zukunft liegt. Schweigt bei
+mehreren Anbietern einer, bleiben seine Geräte mit den zuletzt gemessenen
+Werten stehen und antworten mit `OK=0`; über MQTT geht je Gerät
+`geraetN/ok` (0/1) und `geraetN/ts` hinaus, beide nie zurückbehalten.
+
+**Antworten ohne Werte.** Gab es noch nie einen gemessenen Stand, antworten
+`status` und `verbrauch` mit HTTP 503 und `GRUND=KEINE_DATEN`. Ein Gerät, das
+ein fehlerfrei antwortender Anbieter nicht mehr führt, gilt als entfernt:
+`GRUND=GERAET_ENTFERNT`, und seine zurückbehaltenen MQTT-Themen bekommen
+einmal `-`. Kommt es zurück, bekommt es seine alte Nummer.
 
 ## Was nicht jeder Anbieter liefert
 
@@ -829,7 +943,8 @@ Zugangsdaten und Anmeldemarken liegen in
 `data/plugins/weissware/token.json`, beide mit den Rechten 0600, und nie in der
 Loxone-Projektdatei. Verbindungen gibt es nur zu den eingeschalteten Anbietern,
 bei der Installation zu PyPI und — wenn die Ansage eingeschaltet ist — zu dem
-Audio-Server, dessen Adresse Sie im Reiter Test eintragen.
+Audio-Server, dessen Adresse Sie im Reiter Einstellungen eintragen, bzw. zu
+Alexa-NG oder Chromecast 4 Lox NG auf diesem LoxBerry (127.0.0.1).
 
 ## Fassung 0.9.1 — nachgemessen und korrigiert
 

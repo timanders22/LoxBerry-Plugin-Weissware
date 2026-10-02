@@ -345,11 +345,40 @@ starten() {
     # wieder an - "der Ordner ist da" sagte dort also nichts ueber eine
     # gelungene Ruecksicherung.
     mkdir -p "$PDATA" "$PLOG" 2>/dev/null
+    # Startsperre (Bauliste C1, 02.10.2026). Bis 0.9.36 gab es keine: cron holt
+    # cron.01min nach einem Uhrsprung zweimal in derselben Sekunde nach (am
+    # Geraet 28.09.), und zwei Waechter starteten in 10 von 10 Versuchen zwei
+    # Dienste (weissware_agenten/code Befund 1, installer I4). flock -n: wer
+    # die Sperre nicht bekommt, startet nicht - der andere startet gerade.
+    # Unter der Sperre wird "laeuft" noch einmal gefragt. Der Deskriptor 9 geht
+    # NICHT an den Dienst (9>&- am nohup): ein Kind, das die Sperre erbt, haelt
+    # sie, solange es lebt, und kein spaeterer Start kaeme je durch (Erfahrung
+    # Einspeisebremse). Fehlt flock, bleibt die Einzelinstanz-Sperre im Dienst.
+    WW_SPERRE=0
+    if command -v flock >/dev/null 2>&1; then
+        if ! exec 9>>"$PDATA/start.lock"; then
+            echo "FEHLER: die Startsperre $PDATA/start.lock laesst sich nicht oeffnen."
+            return 1
+        fi
+        if ! flock -n 9; then
+            exec 9>&-
+            echo "ein anderer Aufruf startet den Dienst gerade - kein zweiter Start"
+            return 0
+        fi
+        WW_SPERRE=1
+        if laeuft; then
+            exec 9>&-
+            echo "laeuft bereits (PID $(cat "$PID"))"
+            return 0
+        fi
+    fi
     if [ ! -x "$PY" ]; then
+        [ "$WW_SPERRE" = 1 ] && exec 9>&-
         echo "FEHLER: virtuelle Python-Umgebung fehlt ($PY). Plugin neu installieren."
         return 1
     fi
     if [ ! -f "$PCONFIG/zugang.json" ]; then
+        [ "$WW_SPERRE" = 1 ] && exec 9>&-
         echo "FEHLER: Zugangsdaten fehlen ($PCONFIG/zugang.json). Erst in der Oberflaeche eintragen."
         return 1
     fi
@@ -358,13 +387,15 @@ starten() {
     # dort schreibt allein der Handler des Programms. Beim Start gekappt, damit
     # sie nur die Ausgabe EINES Laufes sammelt und nicht unbegrenzt waechst.
     : > "$STARTLOG"
-    nohup "$PY" "$SKRIPT" >> "$STARTLOG" 2>&1 &
+    nohup "$PY" "$SKRIPT" >> "$STARTLOG" 2>&1 9>&- &
     echo $! > "$PID"
     sleep 1
     if laeuft; then
+        [ "$WW_SPERRE" = 1 ] && exec 9>&-
         echo "gestartet (PID $(cat "$PID"))"
         return 0
     fi
+    [ "$WW_SPERRE" = 1 ] && exec 9>&-
     echo "FEHLER: Start fehlgeschlagen - siehe $STARTLOG und $LOGDATEI"
     rm -f "$PID"
     return 1
@@ -445,7 +476,12 @@ case "$1" in
         LIB="$LBHOMEDIR/webfrontend/html/plugins/$PNAME/ww_lib.php"
         GRENZE=""
         if command -v php >/dev/null 2>&1 && [ -f "$LIB" ]; then
-            GRENZE=$(php -r "require '$LIB'; echo ww_wache_grenze();" 2>/dev/null)
+            # display_errors=stderr (Bauliste C10, 02.10.2026): eine Meldung der
+            # PHP-CLI - unter 8.5 die Abkuendigung von $http_response_header -
+            # landete sonst auf stdout VOR der Zahl, GRENZE war nicht mehr
+            # numerisch und der Waechter wirkungslos (weissware_agenten/code
+            # Befund 10). stderr geht hier nach /dev/null.
+            GRENZE=$(php -d display_errors=stderr -r "require '$LIB'; echo ww_wache_grenze();" 2>/dev/null)
         fi
         # FAIL SAFE, und diesmal wirklich. Bis 0.9.11 galt hier bei fehlender
         # Auskunft die Untergrenze von 180 s - der Kommentar oben sagte das
@@ -492,7 +528,7 @@ case "$1" in
         # anstuende. Der Waechter laeuft minuetlich; ein zweiter
         # PHP-Aufruf je Minute waere Verschwendung fuer einen Fall, der fast
         # nie eintritt.
-        PAUSE=$(php -r "require '$LIB'; echo ww_pause_bis();" 2>/dev/null)
+        PAUSE=$(php -d display_errors=stderr -r "require '$LIB'; echo ww_pause_bis();" 2>/dev/null)
         case "$PAUSE" in
             ''|*[!0-9]*) PAUSE=0 ;;
         esac

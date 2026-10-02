@@ -37,6 +37,18 @@
  * keine 0 gesendet - eine 0 waere eine stille Falschaussage. Bei Miele ist das
  * besonders wichtig: dort heisst -32768 ausdruecklich "gerade kein Wert", und
  * 0 Minuten Restzeit hiesse "fertig".
+ *
+ * Durchgang 02.10.2026 (weissware_BAULISTE.md):
+ *   OK = 0, sobald ALTER groesser als das Dreifache des Ruhetakts ist oder der
+ *      Zeitstempel mehr als 5 s in der Zukunft liegt (C2, Entscheidung Nr. 4);
+ *      bei mehreren Anbietern zusaetzlich je Geraet, wenn sein Anbieter
+ *      schweigt - dann mit den zuletzt gemessenen Werten (C5, Nr. 8).
+ *   Ohne je einen gemessenen Stand: HTTP 503 GRUND=KEINE_DATEN (C6, Regeln/07).
+ *   Ein vom Anbieter nicht mehr gefuehrtes Geraet: GRUND=GERAET_ENTFERNT (M2).
+ *   Schaltende Aktionen ausser abruf verlangen geraet= (C9, sonst 400
+ *      GRUND=GERAET_FEHLT); ein/aus mit demselben Wert binnen 60 s:
+ *      UNVERAENDERT=1, es wird nichts gesendet (C7).
+ *   Jeder Parameter muss ein einzelner Wert sein (C15, sonst 400 PARAMETER).
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
@@ -50,6 +62,20 @@ header('Content-Type: text/plain; charset=utf-8');
  * Token wurde richtig abgewiesen und legte weissware.json trotzdem an. */
 $ww_cfg = ww_config(false);
 $ww_p = ww_paths();
+
+/* Bauliste C15 (02.10.2026): jeder Parameter ZUERST auf is_string pruefen,
+ * bevor irgendetwas ausgegeben oder umgewandelt wird. Bis 0.9.36 ergaben
+ * token[]=, aktion[]= und programm[]= "Array to string conversion" vor dem
+ * Statuscode (mit display_errors: HTTP 200), und geraet[]=1 wurde zu "Array"
+ * und passte ins Geraetemuster (weissware_agenten/code Befund 15). */
+foreach (array('token', 'aktion', 'geraet', 'programm') as $ww_pf) {
+    if (isset($_GET[$ww_pf]) && !is_string($_GET[$ww_pf])) {
+        http_response_code(400);
+        echo "FEHLER;OK=0;GRUND=PARAMETER\n";
+        echo 'Der Parameter ' . $ww_pf . " muss ein einzelner Wert sein.\n";
+        exit;
+    }
+}
 
 /* ---------------- Token ---------------- */
 $ww_soll = (string) $ww_cfg['aktionstoken'];
@@ -122,7 +148,8 @@ function ww_w($v)
 
 $ww_lox = ww_loxone();
 $ww_alter = ww_alter();
-$ww_ok = (!empty($ww_lox['ok']) && $ww_alter >= 0) ? 1 : 0;
+// Bauliste C2: OK nach dem Alter (ww_ok_jetzt()); ALTER bleibt daneben.
+$ww_ok = ww_ok_jetzt($ww_lox, $ww_cfg);
 $ww_alle = ww_geraete();
 
 /** Findet das Geraet zur laufenden Nummer oder zur Kennung des Anbieters. */
@@ -184,11 +211,37 @@ if ($ww_aktion === 'geraete') {
 
 $ww_f = ww_waehlen($ww_alle, $ww_geraet);
 
-if (in_array($ww_aktion, array('status', 'verbrauch'), true) && $ww_f === null) {
-    printf("%s;OK=0;GRUND=GERAET_UNBEKANNT;N=%d;ALTER=%d\n",
-        strtoupper($ww_aktion), count($ww_alle), $ww_alter);
+if (in_array($ww_aktion, array('status', 'verbrauch'), true) && $ww_alter < 0) {
+    /* Bauliste C6 (Regeln/07): ohne je einen gemessenen Stand gibt es keine
+     * Werte - 503, nicht 200 mit "Geraet unbekannt". Bis 0.9.36 antwortete
+     * ein Neustart ohne Netz STATUS;OK=0;GRUND=GERAET_UNBEKANNT mit HTTP 200
+     * (weissware_agenten/mqtt Befund 5). */
+    http_response_code(503);
+    printf("%s;OK=0;GRUND=KEINE_DATEN;N=0;ALTER=-1\n", strtoupper($ww_aktion));
     exit;
 }
+
+if (in_array($ww_aktion, array('status', 'verbrauch'), true) && $ww_f === null) {
+    /* Bauliste M2: ein Geraet, das sein Anbieter nicht mehr fuehrt, heisst
+     * entfernt - nicht unbekannt (das bleibt fuer eine Nummer, die es nie gab). */
+    $ww_grund = 'GERAET_UNBEKANNT';
+    foreach (ww_entfernt() as $ww_enr => $ww_eg) {
+        if ((string) $ww_enr === (string) $ww_geraet
+            || (is_array($ww_eg) && isset($ww_eg['id']) && $ww_eg['id'] !== ''
+                && strcasecmp((string) $ww_eg['id'], (string) $ww_geraet) === 0)) {
+            $ww_grund = 'GERAET_ENTFERNT';
+            break;
+        }
+    }
+    printf("%s;OK=0;GRUND=%s;N=%d;ALTER=%d\n",
+        strtoupper($ww_aktion), $ww_grund, count($ww_alle), $ww_alter);
+    exit;
+}
+
+/* Bauliste C5: schweigt der Anbieter dieses Geraets, gelten die zuletzt
+ * gemessenen Werte - mit OK=0. Ein Abbild aus einer Fassung vor 0.9.37 kennt
+ * das Feld nicht; dann gilt das Gesamtzeichen. */
+$ww_gok = ($ww_ok && is_array($ww_f) && (!isset($ww_f['ok']) || (int) $ww_f['ok'] === 1)) ? 1 : 0;
 
 /** Ein Wert aus dem Abbild, oder null. */
 function ww_v($f, $name)
@@ -205,7 +258,7 @@ if ($ww_aktion === 'status') {
     printf("WEISSWARE;OK=%d;ZUSTAND=%s;LAEUFT=%s;FERTIG=%s;VERBUNDEN=%s;TUER=%s;"
          . "FORTSCHR=%s;RESTMIN=%s;STARTMIN=%s;LAUFMIN=%s;FERNSTART=%s;FERNBED=%s;"
          . "NETZ=%s;ALTER=%d;FERTIGUM=%s\n",
-        $ww_ok,
+        $ww_gok,
         ww_w(ww_v($ww_f, 'zustand')), ww_w(ww_v($ww_f, 'laeuft')),
         ww_w(ww_v($ww_f, 'fertig')), ww_w(ww_v($ww_f, 'verbunden')),
         ww_w(ww_v($ww_f, 'tuer_offen')), ww_w(ww_v($ww_f, 'fortschritt')),
@@ -223,7 +276,7 @@ if ($ww_aktion === 'status') {
 
 if ($ww_aktion === 'verbrauch') {
     printf("VERBRAUCH;OK=%d;ENERGIE=%s;WASSER=%s;TEMP=%s;SCHLEUDER=%s;ALTER=%d\n",
-        $ww_ok,
+        $ww_gok,
         ww_w(ww_v($ww_f, 'energie_kwh')), ww_w(ww_v($ww_f, 'wasser_l')),
         ww_w(ww_v($ww_f, 'temperatur')), ww_w(ww_v($ww_f, 'schleuderdrehzahl')),
         $ww_alter);
@@ -231,6 +284,17 @@ if ($ww_aktion === 'verbrauch') {
 }
 
 /* ================= Schaltende Aktionen ================= */
+
+/* Bauliste C9 (02.10.2026): ein schaltender Befehl ohne geraet= wird
+ * abgewiesen. Bis 0.9.36 traf er still Geraet 1 - bei mehreren Geraeten das
+ * falsche (weissware_agenten/code Befund 9). Nur der Sofortabruf gilt der
+ * ganzen Anlage. */
+if ($ww_aktion !== 'abruf' && (!isset($_GET['geraet']) || $_GET['geraet'] === '')) {
+    http_response_code(400);
+    echo "SET;OK=0;GRUND=GERAET_FEHLT\n";
+    echo "Schaltende Befehle brauchen geraet=<Nummer oder Kennung>.\n";
+    exit;
+}
 
 if ($ww_aktion !== 'abruf' && empty($ww_cfg['steuerung_ein'])) {
     http_response_code(403);
@@ -252,9 +316,13 @@ if ($ww_aktion === 'start' && $ww_programm !== '') {
     $ww_befehl['programm'] = $ww_programm;
 }
 
-list($ww_erg, $ww_meldung) = ww_befehl_absetzen($ww_befehl);
+$ww_antw = ww_befehl_absetzen($ww_befehl);
+list($ww_erg, $ww_meldung) = $ww_antw;
 if ($ww_erg === 0) {
     http_response_code(500);
 }
-printf("SET;OK=%d;AKTION=%s;MELDUNG=%s\n", $ww_erg, $ww_aktion,
+/* UNVERAENDERT (Bauliste C7) steht VOR der Meldung, damit MELDUNG das letzte
+ * Feld bleibt; OK und AKTION behalten Platz und Bedeutung. */
+printf("SET;OK=%d;AKTION=%s;UNVERAENDERT=%d;MELDUNG=%s\n", $ww_erg, $ww_aktion,
+    !empty($ww_antw[2]) ? 1 : 0,
     str_replace(array("\r", "\n", ';'), ' ', $ww_meldung));

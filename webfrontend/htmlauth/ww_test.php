@@ -33,8 +33,10 @@ function ww_pruefzeile($stand, $frage, $antwort)
  */
 function ww_lebenszeichen_themen()
 {
+    // geraetN/ok und geraetN/ts: je Geraet, fluechtig (Bauliste C5, 02.10.2026).
     return array('ts', 'ok', 'fehler_folge', 'ausfaelle',
-                 'ausfall/homeconnect', 'ausfall/miele', 'ausfall/smartthings');
+                 'ausfall/homeconnect', 'ausfall/miele', 'ausfall/smartthings',
+                 'geraetN/ok', 'geraetN/ts');
 }
 
 /**
@@ -105,7 +107,10 @@ function ww_py_tabelle($anfang, $muster)
     return $m[1];
 }
 
-function ww_pruefungen()
+/** $offen: ist der Reiter Test die geladene Seite? Nur dann fragen die
+ *  Zeilen der Ausgabearten Alexa-NG und Chromecast 4 Lox NG die Gegenstelle
+ *  (Bauliste A1) - sonst kostete jeder Seitenaufbau bis zu 10 s. */
+function ww_pruefungen($offen = false)
 {
     $p = ww_paths();
     $cfg = ww_config();
@@ -333,7 +338,8 @@ function ww_pruefungen()
     }
 
     /* Gibt es eine Zweitschrift? Sie liegt NEBEN dem Konfigordner, damit sie
-     * ein Update und sogar eine Neuinstallation uebersteht. */
+     * ein Update uebersteht. Eine Neuinstallation legt sie beiseite
+     * (preinstall.sh, Bauliste I1, Entscheidung Nr. 1). */
     $zw = is_file($p['sicherung']);
     $zeilen[] = ww_pruefzeile($zw ? 1 : -1, ww_t('TEST.F_ZWEITSCHRIFT'),
         $zw ? sprintf(ww_t('TEST.A_ZWEITSCHRIFT_DA'), ww_e(basename($p['sicherung'])))
@@ -535,6 +541,17 @@ function ww_pruefungen()
 
     $zeilen[] = ww_pruefzeile(!empty($cfg['steuerung_ein']) ? 1 : -1, ww_t('TEST.F_STEUERUNG'),
         !empty($cfg['steuerung_ein']) ? ww_t('TEST.A_STEUERUNG_EIN') : ww_t('TEST.A_STEUERUNG_AUS'));
+
+    /* Ausgabearten Alexa-NG und Google-Lautsprecher (Bauliste A1): eine Zeile
+     * nur fuer die gewaehlte, Selbsttest ohne Ansage. */
+    $tts = ww_tts();
+    if ($tts['mode'] === 'alexang') {
+        list($st, $tx) = ww_ng_pruef($tts, $offen, 'alexa');
+        $zeilen[] = ww_pruefzeile($st, ww_t('TEST.F_ALEXANG'), $tx);
+    } elseif ($tts['mode'] === 'cc4lox') {
+        list($st, $tx) = ww_ng_pruef($tts, $offen, 'google');
+        $zeilen[] = ww_pruefzeile($st, ww_t('TEST.F_CC4LOX'), $tx);
+    }
 
     return $zeilen;
 }

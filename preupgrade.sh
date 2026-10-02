@@ -218,11 +218,49 @@ ww_hat_wert() {
     return 1
 }
 
+# Ist diese Datei lesbares JSON (auch das leere Objekt)? Fuer die Pruefung
+# der frisch kopierten Nebendatei (Bauliste I3): sie muss sich lesen lassen
+# wie die Quelle.
+ww_json_lesbar() {
+    D=$1
+    [ -f "$D" ] || return 1
+    if command -v php >/dev/null 2>&1; then
+        php -r '$d=json_decode((string)@file_get_contents($argv[1]),true); exit(is_array($d) ? 0 : 1);' "$D" >/dev/null 2>&1
+        return $?
+    fi
+    I=$(tr -d ' \t\n\r' < "$D" 2>/dev/null)
+    case "$I" in
+        '{'*'}'|'['*']') return 0 ;;
+    esac
+    return 1
+}
+
+# Eine Sicherung anlegen - erst in eine Nebendatei, pruefen, dann ersetzen
+# (Bauliste I3, 02.10.2026). Bis 0.9.36 stand hier "cp -p QUELLE ZIEL || true":
+# cp kuerzt das Ziel zuerst, und auf einer vollen Karte blieb eine
+# abgeschnittene Sicherung UND danach kein Original (purge), waehrend das
+# Protokoll "<OK> preupgrade abgeschlossen" meldete - die Anmeldung an drei
+# Clouds war fort (weissware_agenten/installer I3, Fall P). Jetzt: Nebendatei
+# <ziel>.neu, gleiche Groesse wie die Quelle, lesbares JSON, dann mv. Scheitert
+# ein Schritt, bleibt das bisherige Ziel unberuehrt. Rueckgabe 0 = gesichert.
+WW_GESCHEITERT=""
+ww_sichern() {   # $1 Quelle  $2 Ziel
+    q=$1; z=$2; n="$z.neu"
+    rm -f "$n" 2>/dev/null
+    if ! cp -p "$q" "$n" 2>/dev/null; then rm -f "$n" 2>/dev/null; return 1; fi
+    if [ "$(stat -c %s "$q" 2>/dev/null)" != "$(stat -c %s "$n" 2>/dev/null)" ]; then rm -f "$n" 2>/dev/null; return 1; fi
+    if ! ww_json_lesbar "$n"; then rm -f "$n" 2>/dev/null; return 1; fi
+    if ! mv -f "$n" "$z" 2>/dev/null; then rm -f "$n" 2>/dev/null; return 1; fi
+    return 0
+}
+
 # Konfiguration
 #
 # Die Zweitschrift wird NUR erneuert, wenn der neue Stand traegt, was dort
 # schon steht. Sonst bleibt sie stehen, und das Protokoll sagt es - das
-# Upgrade laeuft trotzdem weiter.
+# Upgrade laeuft trotzdem weiter. Sie ist zugleich die Zweitschrift der
+# Selbstheilung (ww_paths()['sicherung']) und wird deshalb nicht vorher
+# weggeraeumt: scheitert das neue Anlegen, bleibt sie stehen (I3).
 for f in weissware.json zugang.json; do
     [ -f "$CFGDIR/$f" ] || continue
     case "$f" in
@@ -234,7 +272,11 @@ for f in weissware.json zugang.json; do
         echo "<INFO> die Sicherung bleibt unveraendert ($SCHLUESSEL)."
         continue
     fi
-    cp -p "$CFGDIR/$f" "$SICHER/$PFOLDER.backup.$f" || true
+    if ! ww_sichern "$CFGDIR/$f" "$SICHER/$PFOLDER.backup.$f"; then
+        WW_GESCHEITERT="$WW_GESCHEITERT $f"
+        echo "<WARNING> $f liess sich nicht sichern (Platz auf der Karte? Schreibrecht?) - die bisherige"
+        echo "<WARNING> Sicherung bleibt unveraendert stehen: $SICHER/$PFOLDER.backup.$f"
+    fi
 done
 
 # Ist diese Datei gueltiges JSON mit mindestens einem Eintrag? Wortgleich mit
@@ -269,20 +311,30 @@ ww_json_traegt() {
 
 # Daten, die ein Upgrade sonst nicht ueberleben
 #
-# Dieselbe Wache wie oben bei der Konfiguration, nur fuer die Daten: eine
-# abgeschnittene Datei darf die heile Sicherung nicht verdraengen. Bis 0.9.25
-# wurde hier unbedingt kopiert - eine halb geschriebene token.json
-# ueberschrieb die letzte heile Abschrift der Anmeldung an drei
-# Herstellerclouds, und postinstall.sh konnte danach nichts mehr zurueckholen.
-# Nachgestellt in Pruefung-Weissware-0.9.26, Fall C6.
+# Bauliste I2 (Entscheidung Nr. 1, letzter Satz; 02.10.2026): ein Bestand aus
+# einem FRUEHEREN Vorgang wird weggeraeumt, BEVOR der neue angelegt wird - bei
+# einem Upgrade wird nie ein alter Bestand eingespielt. Bis 0.9.36 blieb
+# .backup.token.json nach dem Upgrade liegen; drueckte der Bediener danach
+# "Anmeldung neu erzwingen", holte das naechste Update die verworfene
+# Anmeldung zurueck (weissware_agenten/installer I2, Fall A2). Fehlt die
+# Quelle, gibt es also auch keine Sicherung. Die Wache "eine abgeschnittene
+# Datei verdraengt die heile Sicherung nicht" galt fuer einen Bestand aus
+# einem frueheren Lauf und entfaellt damit: eine unlesbare Quelle wird nicht
+# gesichert, und das Protokoll sagt es.
 for f in token.json geraetenummern.json laeufe.json; do
+    BK="$SICHER/$PFOLDER.backup.$f"
+    rm -f "$BK" "$BK.neu" 2>/dev/null
     [ -f "$PDATA/$f" ] || continue
-    if ww_json_traegt "$SICHER/$PFOLDER.backup.$f" && ! ww_json_traegt "$PDATA/$f"; then
-        echo "<INFO> $f traegt keinen lesbaren Inhalt mehr - die vorhandene"
-        echo "<INFO> Sicherung bleibt unveraendert."
+    if ! ww_json_traegt "$PDATA/$f"; then
+        echo "<WARNING> $f traegt keinen lesbaren Inhalt - es wird nicht gesichert und nach"
+        echo "<WARNING> dem Upgrade nicht zurueckgespielt."
         continue
     fi
-    cp -p "$PDATA/$f" "$SICHER/$PFOLDER.backup.$f" || true
+    if ! ww_sichern "$PDATA/$f" "$BK"; then
+        WW_GESCHEITERT="$WW_GESCHEITERT $f"
+        echo "<WARNING> $f liess sich nicht sichern (Platz auf der Karte? Schreibrecht?) - es geht beim"
+        echo "<WARNING> Upgrade verloren. Abhilfe: Platz schaffen und das Upgrade wiederholen."
+    fi
 done
 
 # Beide Geheimnisdateien auf 0600 - weissware.json traegt das Aktionstoken,
@@ -290,5 +342,10 @@ done
 for f in zugang.json weissware.json token.json; do
     chmod 600 "$SICHER/$PFOLDER.backup.$f" 2>/dev/null || true
 done
-echo "<OK> preupgrade abgeschlossen."
+# "abgeschlossen" nur, wenn jede Sicherung traegt (Bauliste I3).
+if [ -n "$WW_GESCHEITERT" ]; then
+    echo "<WARNING> preupgrade abgeschlossen, aber nicht gesichert:$WW_GESCHEITERT"
+else
+    echo "<OK> preupgrade abgeschlossen."
+fi
 exit 0

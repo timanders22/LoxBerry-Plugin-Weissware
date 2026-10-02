@@ -80,6 +80,55 @@ MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
 ww_marke_weg() { rm -f "$MARKE"; }
 trap ww_marke_weg EXIT
 
+# ---------- Nur einmal je Einbau (Bauliste I5, Regeln/06) ----------
+# LoxBerry ruft beim Upgrade postinstall UND postupgrade auf, und
+# postupgrade.sh leitet hierher weiter. Bis 0.9.36 lief dieses Skript zweimal:
+# der zweite Lauf meldete "Der Dienst lief vor dem Upgrade nicht und wurde nicht
+# gestartet", obwohl der erste ihn gerade gestartet hatte (weissware_agenten/
+# installer I5, Fall L). Der Merker traegt Auspackordner ($1) UND Fassung ($4) -
+# ein spaeterer Einbau hat eine andere Kennung. Er liegt im Datenordner (den
+# purge_installation bei jedem Upgrade abraeumt) und wird erst am Ende eines
+# GELUNGENEN Laufs geschrieben: bricht der erste ab, holt der zweite nach.
+EINBAU="$PDATA/.postinstall_lauf"
+KENNUNG="$(basename "${1:-ohne-tempordner}")|${4:-ohne-fassung}"
+if [ -f "$EINBAU" ] && [ "$(cat "$EINBAU" 2>/dev/null)" = "$KENNUNG" ]; then
+    echo "<INFO> postinstall lief in diesem Einbau bereits - der zweite Aufruf"
+    echo "<INFO> aus postupgrade.sh wird uebersprungen."
+    exit 0
+fi
+
+# ---------- Neuinstallation oder Aktualisierung? (Bauliste I1) ----------
+# Entscheidung des Hausherrn vom 29.09.2026 (Nr. 1): zurueckgespielt wird nur
+# bei einer AKTUALISIERUNG, erkannt an der Marke aus preupgrade.sh - ohne
+# Altersvergleich (die 3600 s gelten nur fuer die Startsperre des Dienstes).
+# Bei einer Neuinstallation hat preinstall.sh liegengebliebene Sicherungen
+# schon nach <name>.alt gelegt; der Zweig unten ist der Rueckfall fuer einen
+# Installer, der preinstall.sh nicht kennt, und schweigt sonst.
+WW_MARKE=0
+[ -f "$MARKE" ] && WW_MARKE=1
+if [ "$WW_MARKE" != "1" ]; then
+    WW_BEISEITE=""
+    for ww_bk in "$BASE/config/plugins/$PFOLDER.backup.weissware.json" \
+                 "$BASE/config/plugins/$PFOLDER.backup.zugang.json" \
+                 "$BASE/config/plugins/$PFOLDER.backup.token.json" \
+                 "$BASE/config/plugins/$PFOLDER.backup.geraetenummern.json" \
+                 "$BASE/config/plugins/$PFOLDER.backup.laeufe.json" \
+                 "$BASE/config/plugins/$PFOLDER.backup.lief"; do
+        [ -f "$ww_bk" ] || continue
+        if mv -f "$ww_bk" "$ww_bk.alt" 2>/dev/null; then
+            chmod 600 "$ww_bk.alt" 2>/dev/null
+            WW_BEISEITE="$WW_BEISEITE $ww_bk.alt"
+        else
+            echo "<WARNING> $ww_bk liess sich nicht beiseitelegen. Sie wurde NICHT eingespielt,"
+            echo "<WARNING> liegt aber noch da; bitte von Hand entfernen."
+        fi
+    done
+    if [ -n "$WW_BEISEITE" ]; then
+        echo "<WARNING> Neuinstallation: Einstellungen einer frueheren Installation wurden nicht"
+        echo "<WARNING> uebernommen, sondern beiseitegelegt:$WW_BEISEITE"
+    fi
+fi
+
 # Auf eine Fassung festgenagelt, damit eine Installation von heute morgen und
 # eine von heute abend dasselbe ergeben.
 REQUESTS="2.32.3"
@@ -126,6 +175,8 @@ ww_hat_wert() {
 for f in weissware.json zugang.json; do
     BK="$BASE/config/plugins/$PFOLDER.backup.$f"
     CF="$PCONFIG/$f"
+    # Nur bei einer Aktualisierung (Bauliste I1, Nr. 1).
+    if [ "$WW_MARKE" != "1" ]; then continue; fi
     [ -f "$BK" ] || continue
     case "$f" in
         weissware.json) SCHLUESSEL="aktionstoken" ;;
@@ -195,6 +246,8 @@ ww_json_traegt() {
 for f in token.json geraetenummern.json laeufe.json; do
     BK="$BASE/config/plugins/$PFOLDER.backup.$f"
     DF="$PDATA/$f"
+    # Nur bei einer Aktualisierung (Bauliste I1, Nr. 1).
+    if [ "$WW_MARKE" != "1" ]; then continue; fi
     # Zurueckgeholt wird, wenn die Sicherung Inhalt traegt und der Datenstand
     # nicht. Der verdraengte Stand wird nicht weggeworfen: er liegt als
     # <datei>.kaputt daneben (0600 - in token.json steht ein gueltiger Zugang
@@ -299,7 +352,7 @@ if [ -f "$MARKE" ] && [ -x "$PBIN/dienst.sh" ]; then
     esac
 fi
 DIENST_LIEF=0
-if [ -f "$LIEF" ]; then
+if [ "$WW_MARKE" = "1" ] && [ -f "$LIEF" ]; then
     DIENST_LIEF=1
     if [ -x "$PBIN/dienst.sh" ] && WW_START_TROTZ_MARKE=1 "$PBIN/dienst.sh" start >/dev/null 2>&1; then
         echo "<OK> Der Dienst wurde wieder gestartet."
@@ -337,4 +390,6 @@ else
     echo "<INFO>   3. Anmelden (Home Connect ueber Code, Miele ueber Browser)"
     echo "<INFO>   4. Dienst starten"
 fi
+# Einbau-Merker (I5) erst am Ende eines gelungenen Laufs.
+printf '%s' "$KENNUNG" > "$EINBAU" 2>/dev/null || true
 exit 0

@@ -16,8 +16,10 @@
 #        config/plugins/<ordner>.backup.weissware.json
 #        config/plugins/<ordner>.backup.zugang.json
 #      Sie liegen bewusst NEBEN dem Konfigordner, damit sie ein Update
-#      und sogar eine Neuinstallation ueberstehen - preupgrade.sh legt
-#      sie an, postinstall.sh spielt sie zurueck. Geloescht wird beim
+#      ueberstehen - preupgrade.sh legt sie an, postinstall.sh spielt sie
+#      zurueck. Eine Neuinstallation spielt sie NICHT ein, sondern legt sie
+#      als <name>.alt beiseite (preinstall.sh, Bauliste I1, Entscheidung
+#      Nr. 1); auch die .alt raeumt dieses Skript ab. Geloescht wird beim
 #      Deinstallieren config/plugins/<ordner>/, also das VERZEICHNIS;
 #      eine Datei daneben bliebe liegen.
 #
@@ -212,7 +214,10 @@ fi
 # Seit 0.9.18 legt preupgrade.sh auch die Dateien aus dem Datenordner
 # hier ab (token.json traegt die Anmeldung an drei Herstellerclouds)
 # sowie den Merker .backup.lief.
-for f in weissware.json zugang.json token.json geraetenummern.json laeufe.json lief; do
+for f in weissware.json zugang.json token.json geraetenummern.json laeufe.json lief \
+         weissware.json.alt zugang.json.alt token.json.alt geraetenummern.json.alt \
+         laeufe.json.alt lief.alt \
+         weissware.json.neu zugang.json.neu token.json.neu geraetenummern.json.neu laeufe.json.neu; do
     BK="$PCONFIG/$PFOLDER.backup.$f"
     if [ -f "$BK" ]; then
         # Ueberschreiben, dann entfernen: nur unlink liesse den Inhalt
@@ -230,7 +235,7 @@ done
 # LoxBerry entfernt den Datenordner selbst - hier wird nur das
 # Empfindliche vorher ueberschrieben, falls die Karte spaeter ausgelesen
 # wird.
-for f in token.json hc_anmeldung.json; do
+for f in token.json hc_anmeldung.json miele_code einmalmeldung.json; do
     Z="$PDATA/$f"
     if [ -f "$Z" ]; then
         LAENGE=$(stat -c %s "$Z" 2>/dev/null || echo 0)

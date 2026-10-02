@@ -207,6 +207,12 @@ function ww_vorgaben()
         // das ist die Werkseinstellung. Muss zu VORGABEN in bin/weissware.py
         // passen; der Reiter Test misst die Uebereinstimmung nach.
         'mitschnitt_bis' => 0,
+        /* Fruehere MQTT-Praefixe (Bauliste I6, Entscheidung Nr. 26,
+         * 02.10.2026): beim Praefixwechsel merkt die Oberflaeche das bisherige
+         * hier vor - damit steht es auch in der Zweitschrift. Der Dienst raeumt
+         * die retained Themen darunter mit Nachlesen ab, die Deinstallation
+         * leert sie mit (bin/weissware.py, praefixe_raeumen()/mqtt_leeren()). */
+        'mqtt_topic_alt' => array(),
         /* Sprachausgabe. Stand bis 0.9.17 NICHT in den Vorgaben, obwohl
          * die Oberflaeche den Schluessel bei jedem Speichern schreibt.
          * Folge: ww_sicherung_lesen() pruefte gegen diese Liste und wies
@@ -221,6 +227,18 @@ function ww_vorgaben()
             'volume'   => 8,
             'lang'     => 'de',
             'template' => '',
+            /* Ausgabearten Alexa-NG und Google-Lautsprecher (Chromecast 4
+             * Lox NG), Bauliste A1 (Ansage-2/Ansage-3, 02.10.2026), ab Werk
+             * nicht gewaehlt. Geraet leer = Standardgeraet des Plugins,
+             * Lautstaerke -1 = Ansagelautstaerke. Die Sprechtoken sind
+             * Geheimnisse wie ein Kennwort: nie in der Seite, nie in der
+             * Sicherung, nie im Protokoll. */
+            'alexa_geraet'  => '',
+            'alexa_token'   => '',
+            'alexa_laut'    => -1,
+            'google_geraet' => '',
+            'google_token'  => '',
+            'google_laut'   => -1,
         ),
     );
 }
@@ -232,6 +250,39 @@ function ww_json_lesen($pfad)
     }
     $d = json_decode((string) @file_get_contents($pfad), true);
     return is_array($d) ? $d : array();
+}
+
+/**
+ * Eine Datei mit Geheimnis schreiben: RECHTE VOR INHALT (Regeln/03 Abschnitt 8).
+ *
+ * Bauliste C12 (02.10.2026): Nebendatei <ziel>.tmp.<pid> mit fopen('c')
+ * anlegen (leer), auf 0600 setzen, erst DANN den Inhalt schreiben, die Laenge
+ * vergleichen und umbenennen. Bis 0.9.36 stand der Inhalt zuerst da und die
+ * Rechte kamen danach: 3000 Speichervorgaenge unter umask 022 zeigten 1057-mal
+ * eine Nebendatei mit Client-Geheimnissen und 0644 (weissware_agenten/code,
+ * Befund 12, m8_beobachter.py). Rueckgabe: ob die Datei geschrieben ist.
+ */
+function ww_datei_geheim_schreiben($ziel, $inhalt)
+{
+    $inhalt = (string) $inhalt;
+    $tmp = $ziel . '.tmp.' . getmypid();
+    $fh = @fopen($tmp, 'c');
+    if ($fh === false) {
+        return false;
+    }
+    $bereit = @chmod($tmp, 0600) && @ftruncate($fh, 0);
+    $n = $bereit ? @fwrite($fh, $inhalt) : -1;
+    @fflush($fh);
+    @fclose($fh);
+    if (!$bereit || $n !== strlen($inhalt)) {
+        @unlink($tmp);
+        return false;
+    }
+    if (!@rename($tmp, $ziel)) {
+        @unlink($tmp);
+        return false;
+    }
+    return true;
 }
 
 /**
@@ -524,22 +575,11 @@ function ww_config_speichern($cfg)
     if ($json === false) {
         return false;
     }
-    /* Wie ww_zugang_speichern(): Nebendatei, Laengenvergleich, Rechte VOR
-     * dem Umbenennen. Diese Datei traegt das Aktionstoken, mit dem der
-     * Endpunkt schaltende Befehle annimmt - sie gehoert auf 0600, so wie
-     * zugang.json. Bis 0.9.17 wurde sie mit den Rechten aus der umask
-     * geschrieben und nie gechmoddet.
-     *
-     * === false allein genuegt nicht: ein Kurzschreiben (volle Ramdisk)
-     * liefert die Byte-Zahl, nicht false. */
-    $tmp = $p['config'] . '.tmp.' . getmypid();
-    if (@file_put_contents($tmp, $json) !== strlen($json)) {
-        @unlink($tmp);
-        return false;
-    }
-    @chmod($tmp, 0600);
-    if (!@rename($tmp, $p['config'])) {
-        @unlink($tmp);
+    /* Wie ww_zugang_speichern(): ww_datei_geheim_schreiben() - Rechte VOR
+     * dem Inhalt (Bauliste C12), Laengenvergleich, Umbenennen. Diese Datei
+     * traegt das Aktionstoken, mit dem der Endpunkt schaltende Befehle
+     * annimmt - sie gehoert auf 0600, so wie zugang.json. */
+    if (!ww_datei_geheim_schreiben($p['config'], $json)) {
         return false;
     }
     /* Die Zweitschrift wird NUR mitgezogen, wenn der Stand traegt, was dort
@@ -609,25 +649,16 @@ function ww_zugang_speichern($neu)
     if ($json === false) {
         return false;
     }
-    /* Ueber eine Nebendatei, und die Rechte werden VOR dem Umbenennen gesetzt.
-     * "schreiben, dann chmod" liesse die Datei fuer die Dauer des Schreibens
-     * mit den Rechten aus der umask dastehen - und darin stehen die
+    /* Ueber eine Nebendatei, und die Rechte stehen VOR dem Inhalt
+     * (ww_datei_geheim_schreiben(), Bauliste C12). Bis 0.9.36 kam der Inhalt
+     * zuerst und das chmod danach - trotz des Kommentars, der das Gegenteil
+     * sagte (weissware_agenten/code, Befund 12). Darin stehen die
      * Client-Geheimnisse von Home Connect und Miele sowie das
      * SmartThings-Token. Ausserdem liest der Dienst diese Datei; ein
      * einfaches file_put_contents kuerzt sie zuerst auf null, und wer in
      * diesem Augenblick liest, sieht keine Zugangsdaten und meldet sich
      * vergeblich an. */
-    $tmp = $p['zugang'] . '.tmp.' . getmypid();
-    if (@file_put_contents($tmp, $json) !== strlen($json)) {
-        @unlink($tmp);
-        return false;
-    }
-    @chmod($tmp, 0600);
-    if (!@rename($tmp, $p['zugang'])) {
-        @unlink($tmp);
-        return false;
-    }
-    return true;
+    return ww_datei_geheim_schreiben($p['zugang'], $json);
 }
 
 /** Ist ein Anbieter angemeldet? Liest die Markendatei des Dienstes. */
@@ -653,7 +684,9 @@ function ww_hc_anmeldung()
  * Zugangsdaten werden NIE ueber die Kommandozeile uebergeben - Argumente
  * stehen in der Prozessliste. Der Miele-Code ist kein Dauergeheimnis, er
  * verfaellt nach einmaligem Einloesen; er wird trotzdem ueber eine Datei
- * gereicht, damit die Regel keine Ausnahme bekommt.
+ * gereicht (ww_miele_code_ablegen(), Bauliste C14), damit die Regel keine
+ * Ausnahme bekommt. Bis 0.9.36 sagte dieser Kommentar das schon, der Code
+ * haengte den Code aber als Argument an (weissware_agenten/code Befund 14).
  */
 function ww_dienst_schalter($schalter, $wert = '')
 {
@@ -678,6 +711,20 @@ function ww_dienst_schalter($schalter, $wert = '')
     $code = -1;
     @exec($befehl . ' 2>&1', $ausgabe, $code);
     return array($code, implode("\n", $ausgabe));
+}
+
+/**
+ * Den Miele-Code fuer "weissware.py --miele-code" ablegen: data/.../miele_code,
+ * 0600, Rechte vor Inhalt. Der Dienst liest ihn und loescht die Datei.
+ * Rueckgabe: ob er bereitliegt.
+ */
+function ww_miele_code_ablegen($code)
+{
+    $p = ww_paths();
+    if (!is_dir($p['datadir']) && !@mkdir($p['datadir'], 0775, true) && !is_dir($p['datadir'])) {
+        return false;
+    }
+    return ww_datei_geheim_schreiben($p['datadir'] . '/miele_code', (string) $code);
 }
 
 /* ---------------- Trockenlauf und Mitschnitt ---------------- */
@@ -801,12 +848,25 @@ function ww_endpunkt_pruefen($frisch = false)
         $stand = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
         if (PHP_VERSION_ID < 80000) { curl_close($ch); }
     } elseif (ini_get('allow_url_fopen')) {
+        /* Bauliste C10 (02.10.2026): die Antwortzeile kommt aus den
+         * Metadaten des Datenstroms, nicht aus der magischen Variablen, die
+         * PHP 8.5 abkuendigt. Bis 0.9.36 meldete php -l unter 8.5 hier
+         * "Deprecated", und ohne ini ging die Meldung in der CLI auf stdout
+         * (weissware_agenten/code Befund 10). */
         $ctx = stream_context_create(array('http' => array(
             'timeout' => 5, 'ignore_errors' => true)));
-        $rumpf = @file_get_contents($url, false, $ctx);
-        if (isset($http_response_header[0])
-            && preg_match('# (\d{3}) #', ' ' . $http_response_header[0] . ' ', $m)) {
-            $stand = (int) $m[1];
+        $fh = @fopen($url, 'rb', false, $ctx);
+        if ($fh !== false) {
+            $rumpf = stream_get_contents($fh);
+            $meta = stream_get_meta_data($fh);
+            fclose($fh);
+            if (isset($meta['wrapper_data']) && is_array($meta['wrapper_data'])) {
+                foreach ($meta['wrapper_data'] as $kz) {
+                    if (preg_match('#^HTTP/\S+\s+(\d{3})#', (string) $kz, $m)) {
+                        $stand = (int) $m[1];
+                    }
+                }
+            }
         }
     } else {
         $erg = array('stand' => -1, 'http' => 0, 'text' => ww_t('TEST.A_EP_UNMESSBAR'),
@@ -842,6 +902,18 @@ function ww_endpunkt_merken($datei, $erg)
         }
         @file_put_contents($datei, $json);
     }
+}
+
+/**
+ * Hat ein Aktionstoken die Form, die ww_token_erzeugen() erzeugt?
+ * 24 Zeichen aus a-z ohne l und o und 2-9 (gelesen in 0.9.15 bis 0.9.36).
+ * Bauliste C15/O7 (02.10.2026): eine Sicherung mit einem anderen Token wird
+ * abgewiesen. Bis 0.9.36 nahm sie jedes Token mit 0 bis 64 Zeichen an - auch
+ * "Array" (weissware_agenten/oberflaeche Befund 8).
+ */
+function ww_token_form_ok($t)
+{
+    return is_string($t) && preg_match('/^[a-kmnp-z2-9]{24}\z/', $t) === 1;
 }
 
 /** Zufallstoken fuer den unangemeldeten Endpunkt. */
@@ -896,6 +968,39 @@ function ww_geraete()
 {
     $l = ww_loxone();
     return isset($l['geraete']) && is_array($l['geraete']) ? $l['geraete'] : array();
+}
+
+/**
+ * Gilt das Abbild als in Ordnung? Bauliste C2 (Entscheidung Nr. 4, 02.10.2026):
+ * OK = 0, sobald der letzte erfolgreiche Abruf (ts) mehr als dreimal den
+ * Ruhetakt zurueckliegt - der Dienst schreibt im Ruhetakt, das ist der
+ * groessere - oder mehr als 5 s in der Zukunft liegt (Uhrsprung). ALTER bleibt
+ * unveraendert daneben. Bis 0.9.36 meldete ein Abbild mit ok = 1 unbegrenzt
+ * OK = 1, auch 25 h nach dem Ende des Dienstes (weissware_agenten/code
+ * Befund 2, mqtt Befund 4).
+ */
+function ww_ok_jetzt($lox = null, $cfg = null)
+{
+    $lox = is_array($lox) ? $lox : ww_loxone();
+    $cfg = is_array($cfg) ? $cfg : ww_config(false);
+    if (empty($lox['ok']) || !isset($lox['ts']) || !is_numeric($lox['ts'])) {
+        return 0;
+    }
+    $roh = time() - (int) $lox['ts'];
+    if ($roh < -5) {
+        return 0;
+    }
+    $takt = max(60, min(7200, (int) (isset($cfg['takt_ruhe']) ? $cfg['takt_ruhe'] : 300)));
+    return ($roh > 3 * $takt) ? 0 : 1;
+}
+
+/**
+ * Die als entfernt gefuehrten Geraete (Bauliste M2): Nummer => Eintrag mit
+ * anbieter, id, name, seit. Der Dienst fuehrt die Datei (entfernte_merken()).
+ */
+function ww_entfernt()
+{
+    return ww_json_lesen(ww_paths()['datadir'] . '/entfernt.json');
 }
 
 /** Alter des Abbilds in Sekunden, oder -1 wenn es keines gibt. */
@@ -1092,8 +1197,11 @@ function ww_befehl_absetzen($befehl, $wartezeit = null)
             /* Gelesen ist erledigt. Bis 0.9.0 blieb die Datei liegen und
              * sammelte sich im Datenordner an. */
             @unlink($antwort);
+            /* Drittes Feld (Bauliste C7): 1, wenn der Dienst denselben
+             * Sollwert binnen 60 s nicht noch einmal gesendet hat. */
             return array((int) (isset($a['ok']) ? $a['ok'] : 0),
-                         (string) (isset($a['meldung']) ? $a['meldung'] : ''));
+                         (string) (isset($a['meldung']) ? $a['meldung'] : ''),
+                         !empty($a['unveraendert']) ? 1 : 0);
         }
         usleep(100000);
     }
@@ -1251,6 +1359,8 @@ function ww_mqtt_retain()
         'geraetN/energie_kwh'        => false,
         'geraetN/wasser_l'           => false,
         'geraetN/temperatur'         => false,
+        'geraetN/ok'                 => false,
+        'geraetN/ts'                 => false,
     );
 }
 
@@ -1317,6 +1427,9 @@ function ww_mqtt_themen()
         'ausfall/homeconnect'       => 'WW_MQTT.AUSFALL_HC',
         'ausfall/miele'             => 'WW_MQTT.AUSFALL_MIELE',
         'ausfall/smartthings'       => 'WW_MQTT.AUSFALL_ST',
+        // Bauliste C5: je Geraet, fluechtig, in jedem Lauf.
+        'geraetN/ok'                => 'WW_MQTT.GERAET_OK',
+        'geraetN/ts'                => 'WW_MQTT.GERAET_TS',
     );
 }
 
@@ -2038,8 +2151,401 @@ function ww_tts()
     $cfg = ww_config();
     $tts = isset($cfg['tts']) && is_array($cfg['tts']) ? $cfg['tts'] : array();
     $tts += array('mode' => 'musicserver', 'ip' => '', 'port' => 7091,
-                  'zones' => '1', 'volume' => 8, 'lang' => 'de', 'template' => '');
+                  'zones' => '1', 'volume' => 8, 'lang' => 'de', 'template' => '',
+                  'alexa_geraet' => '', 'alexa_token' => '', 'alexa_laut' => -1,
+                  'google_geraet' => '', 'google_token' => '', 'google_laut' => -1);
     return $tts;
+}
+
+/* ---------------- Ausgabearten Alexa-NG und Google-Lautsprecher ----------------
+ *
+ * Bauliste A1 (Ansage-2 und Ansage-3, 02.10.2026), ab Werk nicht gewaehlt.
+ * Alexa-NG (Ordner alexang) laesst Amazon-Echo-Geraete sprechen, Chromecast 4
+ * Lox NG (Ordner chromecast-4lox-ng, ab 1.3.15) Chromecast-/Nest-Lautsprecher.
+ * Beide nehmen dieselbe Anfrage an: POST an /plugins/<ordner>/index.php auf
+ * DIESEM LoxBerry, aktion=sprechen, token, text, geraet, laut
+ * (GOOGLE_SPRECHEN_SCHNITTSTELLE.md). Als gesendet gilt nur HTTP 200 mit
+ * SPRECHEN;OK=1 (bei Chromecast 4 Lox NG auch UNVERAENDERT und TEXT_NULL).
+ * Das Sprechtoken je Ausgabeart ist ein Geheimnis wie ein Kennwort: nur im
+ * POST-Koerper, nie in Seite, Sicherung, Einmalmeldung oder Protokoll; ins
+ * Protokoll kommt vom Text nur die Laenge. Faellt die Gegenstelle aus,
+ * entfaellt die Ansage - kein Wiederholen, kein Wechsel auf einen anderen
+ * Lautsprecher. Bauform: mo_ng_*() aus Robonect 1.1.16 (eigene Linie).
+ */
+
+/** Der Webport dieses LoxBerry aus der general.json (Webserver.Port oder
+ *  WEBSERVER.Port), sonst 80. */
+function ww_webport()
+{
+    $p = ww_paths();
+    if ($p['home'] === '') {
+        return 80;
+    }
+    $g = ww_json_lesen($p['home'] . '/config/system/general.json');
+    foreach (array('Webserver', 'WEBSERVER', 'webserver') as $ab) {
+        foreach (array('Port', 'port', 'PORT') as $k) {
+            if (isset($g[$ab][$k]) && is_scalar($g[$ab][$k]) && preg_match('/^[0-9]{1,5}$/', (string) $g[$ab][$k])) {
+                $port = (int) $g[$ab][$k];
+                if ($port > 0 && $port <= 65535) {
+                    return $port;
+                }
+            }
+        }
+    }
+    return 80;
+}
+
+/** Kennung, Schluesselvorsatz in tts und Adresse je Ausgabeart. */
+function ww_ng_art($art)
+{
+    if ($art === 'google') {
+        return array('GOOGLE', 'google_', 'http://127.0.0.1:' . ww_webport() . '/plugins/chromecast-4lox-ng/index.php');
+    }
+    return array('ALEXA', 'alexa_', 'http://127.0.0.1:' . ww_webport() . '/plugins/alexang/index.php');
+}
+
+/** Sprechtoken: 8 bis 128 Buchstaben, Ziffern, _ und - (wie Alexa-NG und
+ *  Chromecast 4 Lox NG es annehmen). */
+function ww_ng_token_ok($t)
+{
+    return is_string($t) && preg_match('/^[A-Za-z0-9_\-]{8,128}\z/', $t) === 1;
+}
+
+/** Geraet: leer (= Standardgeraet) oder 1 bis 200 Zeichen UTF-8, ohne
+ *  Steuerzeichen und ohne Leerraum am Rand (Name, Kommaliste, gruppe:<name>,
+ *  alle - das prueft die Gegenstelle selbst). */
+function ww_ng_geraet_ok($g)
+{
+    return is_string($g) && ($g === ''
+        || (preg_match('/^.{1,200}\z/us', $g) === 1 && preg_match('/[\x00-\x1F\x7F]/', $g) !== 1
+            && trim($g) === $g));
+}
+
+/** Lautstaerke: -1 (= Ansagelautstaerke) oder 0 bis 100, als Zahl oder Ziffernfolge. */
+function ww_ng_laut_ok($l)
+{
+    if (is_int($l)) {
+        return $l === -1 || ($l >= 0 && $l <= 100);
+    }
+    return is_string($l) && ($l === '-1' || (preg_match('/^[0-9]{1,3}$/', $l) === 1 && (int) $l <= 100));
+}
+
+/**
+ * POST an Alexa-NG oder Chromecast 4 Lox NG. Rueckgabe array('code' => HTTP-Code
+ * (0 = keine Antwort), 'zeile' => erste Antwortzeile ohne Token und
+ * Steuerzeichen, 'grund_id' => Kennung des Transportfehlers, 'tmo' => Wartezeit).
+ * Ohne Weiterleitung; ein Proxy der Umgebung gilt fuer 127.0.0.1 nicht.
+ */
+function ww_ng_rufen($url, array $felder, $tmo = 10)
+{
+    $koerper = http_build_query($felder, '', '&');
+    $kopf = array('User-Agent: LoxBerry Weissware', 'Content-Type: application/x-www-form-urlencoded');
+    $code = 0;
+    $rumpf = '';
+    $gid = '';
+    if (function_exists('curl_init')) {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, array(
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $koerper,
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_NOPROXY => '127.0.0.1',
+            CURLOPT_TIMEOUT => $tmo,
+            CURLOPT_CONNECTTIMEOUT => min(3, $tmo),
+            CURLOPT_HTTPHEADER => $kopf,
+        ));
+        $r = curl_exec($ch);
+        $errno = curl_errno($ch);
+        if ($r !== false) {
+            $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $rumpf = (string) $r;
+        }
+        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
+        if ($r === false) {
+            $gid = ($errno === 28) ? 'HTTP_ZEIT' : (($errno === 7) ? 'HTTP_ABGEWIESEN' : 'HTTP_FEHLER');
+        }
+    } else {
+        $alt = ini_get('default_socket_timeout');
+        @ini_set('default_socket_timeout', (string) min(3, $tmo));
+        $ctx = stream_context_create(array('http' => array(
+            'method' => 'POST',
+            'header' => implode("\r\n", $kopf),
+            'content' => $koerper,
+            'timeout' => $tmo,
+            'follow_location' => 0,
+            'ignore_errors' => true,
+        )));
+        // Monotone Uhr, wo es sie gibt: ein Sprung der Wanduhr hiesse sonst
+        // "Verbindungsfehler" statt "Zeitueberschreitung" (Robonect-Frage 4).
+        $t0 = function_exists('hrtime') ? hrtime(true) / 1e9 : microtime(true);
+        $fh = @fopen($url, 'rb', false, $ctx);
+        if ($fh !== false) {
+            $r = stream_get_contents($fh);
+            $meta = stream_get_meta_data($fh);
+            fclose($fh);
+            if (!empty($meta['timed_out'])) {
+                $gid = 'HTTP_ZEIT';
+            } else {
+                $rumpf = (string) $r;
+                if (isset($meta['wrapper_data']) && is_array($meta['wrapper_data'])) {
+                    foreach ($meta['wrapper_data'] as $z) {
+                        if (preg_match('#^HTTP/\S+\s+(\d{3})#', (string) $z, $m)) { $code = (int) $m[1]; }
+                    }
+                }
+                if ($code === 0) { $gid = 'HTTP_FEHLER'; }
+            }
+        } else {
+            $l = error_get_last();
+            $msg = is_array($l) ? (string) $l['message'] : '';
+            $t1 = function_exists('hrtime') ? hrtime(true) / 1e9 : microtime(true);
+            if (stripos($msg, 'timed out') !== false || $t1 - $t0 >= $tmo - 0.5) {
+                $gid = 'HTTP_ZEIT';
+            } elseif (stripos($msg, 'refused') !== false || stripos($msg, 'verweigert') !== false) {
+                $gid = 'HTTP_ABGEWIESEN';
+            } else {
+                $gid = 'HTTP_FEHLER';
+            }
+        }
+        @ini_set('default_socket_timeout', (string) $alt);
+    }
+    $zeilen = preg_split('/\r?\n/', trim($rumpf));
+    $erste = trim((string) $zeilen[0]);
+    if (isset($felder['token']) && is_string($felder['token']) && $felder['token'] !== '') {
+        $erste = str_replace($felder['token'], '***', $erste);
+    }
+    $erste = substr((string) preg_replace('/[\x00-\x1F\x7F]/', '', $erste), 0, 200);
+    return array('code' => $code, 'zeile' => $erste, 'grund_id' => $gid, 'tmo' => (int) $tmo);
+}
+
+/**
+ * Antwort bewerten. '' bei "<praefix>;OK=1" mit HTTP 200, sonst eine Kennung
+ * fuer ww_ng_grund_text() (nie mit dem Token). 404 ohne GRUND heisst: das
+ * Plugin fehlt (bei Chromecast 4 Lox NG auch: aelter als 1.3.15).
+ */
+function ww_ng_bewerten(array $a, $praefix, $art)
+{
+    list($k, , $adr) = ww_ng_art($art);
+    if ($a['code'] === 200 && strpos($a['zeile'], $praefix . ';OK=1') === 0) {
+        return '';
+    }
+    if ($a['code'] <= 0) {
+        return $k . '_KEINE_ANTWORT|' . $adr . '|' . (int) $a['tmo']
+             . '|' . ($a['grund_id'] !== '' ? $a['grund_id'] : 'HTTP_FEHLER');
+    }
+    if (preg_match('/(?:^|;)GRUND=([A-Za-z0-9_]{1,40})(?:;|$)/', $a['zeile'], $m)) {
+        return $k . '_ANTWORT|' . (int) $a['code'] . '|' . $m[1];
+    }
+    if ($a['code'] === 404) {
+        return $k . '_FEHLT|' . $adr;
+    }
+    $s = substr((string) preg_replace('/[^A-Za-z0-9;=_.:\-]/', '', $a['zeile']), 0, 60);
+    return $k . '_UNERWARTET|' . (int) $a['code'] . '|' . ($s !== '' ? $s : '-');
+}
+
+/** Klartext zu einer Kennung aus ww_ng_bewerten() - roh, ohne Auszeichnung.
+ *  Die Schluessel stehen ausgeschrieben da, damit der Spracherzeuger sie
+ *  als benutzt erkennt. */
+function ww_ng_grund_text($gid)
+{
+    $t = explode('|', (string) $gid);
+    $transport = array('HTTP_ZEIT' => 'ANSAGE.HTTP_ZEIT', 'HTTP_ABGEWIESEN' => 'ANSAGE.HTTP_ABGEWIESEN',
+                       'HTTP_FEHLER' => 'ANSAGE.HTTP_FEHLER');
+    $erklaerung = array(
+        'TOKEN' => 'ANSAGE.GOOGLE_G_TOKEN', 'NUR_LOKAL' => 'ANSAGE.GOOGLE_G_NUR_LOKAL',
+        'KEIN_TOKEN_EINGERICHTET' => 'ANSAGE.GOOGLE_G_KEIN_TOKEN_EINGERICHTET',
+        'SPRECHEN_AUS' => 'ANSAGE.GOOGLE_G_SPRECHEN_AUS', 'TTS_MODUS' => 'ANSAGE.GOOGLE_G_TTS_MODUS',
+        'STUNDENGRENZE' => 'ANSAGE.GOOGLE_G_STUNDENGRENZE',
+        'DIENST_LAEUFT_NICHT' => 'ANSAGE.GOOGLE_G_DIENST_LAEUFT_NICHT',
+        'DIENST_ANTWORTET_NICHT' => 'ANSAGE.GOOGLE_G_DIENST_ANTWORTET_NICHT',
+        'GERAETE_OFFLINE' => 'ANSAGE.GOOGLE_G_GERAETE_OFFLINE',
+        'GERAET_UNBEKANNT' => 'ANSAGE.GOOGLE_G_GERAET_UNBEKANNT', 'KEINE_GERAETE' => 'ANSAGE.GOOGLE_G_KEINE_GERAETE',
+    );
+    switch ($t[0]) {
+        case 'ALEXA_KEIN_TOKEN':
+            return ww_t('ANSAGE.ALEXA_KEIN_TOKEN');
+        case 'GOOGLE_KEIN_TOKEN':
+            return ww_t('ANSAGE.GOOGLE_KEIN_TOKEN');
+        case 'ALEXA_KEINE_ANTWORT':
+        case 'GOOGLE_KEINE_ANTWORT':
+            $tr = isset($t[3], $transport[$t[3]]) ? $transport[$t[3]] : 'ANSAGE.HTTP_FEHLER';
+            return sprintf(ww_t($t[0] === 'ALEXA_KEINE_ANTWORT' ? 'ANSAGE.ALEXA_KEINE_ANTWORT' : 'ANSAGE.GOOGLE_KEINE_ANTWORT'),
+                           isset($t[1]) ? $t[1] : '', isset($t[2]) ? (int) $t[2] : 0, ww_t($tr));
+        case 'ALEXA_ANTWORT':
+            return sprintf(ww_t('ANSAGE.ALEXA_ANTWORT'), isset($t[1]) ? (int) $t[1] : 0, isset($t[2]) ? $t[2] : '-');
+        case 'GOOGLE_ANTWORT':
+            $g = isset($t[2]) ? $t[2] : '-';
+            return sprintf(ww_t('ANSAGE.GOOGLE_ANTWORT'), isset($t[1]) ? (int) $t[1] : 0, $g)
+                 . (isset($erklaerung[$g]) ? ' ' . ww_t($erklaerung[$g]) : '');
+        case 'ALEXA_FEHLT':
+            return sprintf(ww_t('ANSAGE.ALEXA_FEHLT'), isset($t[1]) ? $t[1] : '');
+        case 'GOOGLE_FEHLT':
+            return sprintf(ww_t('ANSAGE.GOOGLE_FEHLT'), isset($t[1]) ? $t[1] : '');
+        case 'ALEXA_UNERWARTET':
+            return sprintf(ww_t('ANSAGE.ALEXA_UNERWARTET'), isset($t[1]) ? (int) $t[1] : 0, isset($t[2]) ? $t[2] : '-');
+        case 'GOOGLE_UNERWARTET':
+            return sprintf(ww_t('ANSAGE.GOOGLE_UNERWARTET'), isset($t[1]) ? (int) $t[1] : 0, isset($t[2]) ? $t[2] : '-');
+    }
+    return (string) $gid;
+}
+
+/**
+ * Eine Ansage ueber Alexa-NG ('alexa') oder Chromecast 4 Lox NG ('google').
+ * Rueckgabe: '' = angenommen, sonst die Kennung des Grundes. $antwort bekommt
+ * "HTTP <code>, <erste Antwortzeile>" (ohne Token). Das Ergebnis (Zeit, ok,
+ * Kennung - nie Token oder Text) liegt danach in <art>_letzte.json im
+ * Datenordner, fuer den Reiter Test.
+ */
+function ww_ng_sprechen($text, array $tts, $art, &$antwort = null)
+{
+    list($k, $v, $adr) = ww_ng_art($art);
+    $tok = isset($tts[$v . 'token']) ? $tts[$v . 'token'] : '';
+    $antwort = '';
+    if (!ww_ng_token_ok($tok)) {
+        $gid = $k . '_KEIN_TOKEN';
+    } else {
+        $f = array('aktion' => 'sprechen', 'token' => $tok);
+        $g = (isset($tts[$v . 'geraet']) && is_string($tts[$v . 'geraet'])) ? $tts[$v . 'geraet'] : '';
+        if ($g !== '') { $f['geraet'] = $g; }
+        $laut = isset($tts[$v . 'laut']) && is_scalar($tts[$v . 'laut']) ? (int) $tts[$v . 'laut'] : -1;
+        if ($laut >= 0 && $laut <= 100) { $f['laut'] = $laut; }
+        $f['text'] = (string) $text;
+        $a = ww_ng_rufen($adr, $f, 10);
+        $antwort = 'HTTP ' . (int) $a['code'] . ($a['zeile'] !== '' ? ', ' . $a['zeile'] : '');
+        $gid = ww_ng_bewerten($a, 'SPRECHEN', $art);
+    }
+    $json = json_encode(array('zeit' => time(), 'ok' => $gid === '' ? 1 : 0, 'grund_id' => $gid));
+    if ($json !== false) {
+        $d = ww_paths()['datadir'];
+        if (is_dir($d) || @mkdir($d, 0775, true)) {
+            @file_put_contents($d . '/' . $art . '_letzte.json', $json);
+        }
+    }
+    return $gid;
+}
+
+/** Das Ergebnis der letzten Ansage der Ausgabeart, oder null. */
+function ww_ng_letzte($art)
+{
+    $d = ww_json_lesen(ww_paths()['datadir'] . '/' . $art . '_letzte.json');
+    if (!isset($d['zeit'], $d['ok'])) { return null; }
+    return array('zeit' => (int) $d['zeit'], 'ok' => (int) $d['ok'],
+                 'grund_id' => (isset($d['grund_id']) && is_string($d['grund_id'])) ? $d['grund_id'] : '');
+}
+
+/**
+ * Zeile im Reiter Test fuer Alexa-NG ('alexa') oder Chromecast 4 Lox NG
+ * ('google'): array(Stand 1/0/-1, Text als HTML). Gefragt wird selftest=1
+ * (prueft nur das Token, spricht nicht) und nur, wenn der Reiter Test die
+ * geladene Seite ist - sonst kostete jeder Seitenaufbau bis zu 10 s, wenn
+ * die Gegenstelle haengt. Chromecast 4 Lox NG meldet im Selbsttest
+ * zusaetzlich SPRECHEN=0 und DIENST=0: das Token passt dann, gesprochen wird
+ * trotzdem nicht - Hinweis statt Haken.
+ */
+function ww_ng_pruef(array $tts, $offen, $art)
+{
+    list($k, $v, $adr) = ww_ng_art($art);
+    $tok = isset($tts[$v . 'token']) ? $tts[$v . 'token'] : '';
+    if (!ww_ng_token_ok($tok)) {
+        return array(0, ww_e(ww_ng_grund_text($k . '_KEIN_TOKEN')));
+    }
+    if (!$offen) {
+        return array(-1, ww_e(ww_t('TEST.A_NG_ZU')));
+    }
+    $a = ww_ng_rufen($adr, array('selftest' => '1', 'token' => $tok), 10);
+    $gid = ww_ng_bewerten($a, 'SELFTEST', $art);
+    $stand = 1;
+    $hinweis = '';
+    if ($gid === '' && $art === 'google') {
+        foreach (array('SPRECHEN' => 'TEST.A_GOOGLE_SPRECHEN_AUS', 'DIENST' => 'TEST.A_GOOGLE_DIENST_AUS') as $feld => $schl) {
+            if (preg_match('/(?:^|;)' . $feld . '=0(?:;|$)/', $a['zeile']) === 1) {
+                $hinweis .= ' ' . ww_e(ww_t($schl));
+                $stand = -1;
+            }
+        }
+    }
+    $letzte = '';
+    $l = ww_ng_letzte($art);
+    if ($l !== null) {
+        $s = max(0, time() - $l['zeit']);
+        $alter = $s < 90 ? $s . ' s' : ($s < 5400 ? (int) round($s / 60) . ' min'
+               : ($s < 172800 ? (int) round($s / 3600) . ' h' : (int) round($s / 86400) . ' d'));
+        if ($l['ok'] === 1) {
+            $letzte = ' ' . ww_e(sprintf(ww_t('TEST.A_NG_LETZTE_OK'), $alter));
+        } else {
+            $letzte = ' ' . ww_e(sprintf(ww_t('TEST.A_NG_LETZTE_FEHL'), $alter, ww_ng_grund_text($l['grund_id'])));
+            $stand = -1;
+        }
+    }
+    if ($gid !== '') {
+        return array(0, ww_e(sprintf(ww_t('TEST.A_NG_FEHL'), ww_ng_grund_text($gid))) . $letzte);
+    }
+    return array($stand, ww_e(sprintf(ww_t('TEST.A_NG_JA'), $adr)) . $hinweis . $letzte);
+}
+
+/**
+ * Die Muster der Sprachausgabe - EINE Liste fuer Formular und Sicherung
+ * (Bauliste O6, X-3, 02.10.2026). Bis 0.9.36 prueften beide verschieden: das
+ * Formular klemmte und ersetzte still, die Sicherung wies ab - die eigene
+ * Sicherung mit IPv6-Adresse, Umlaut in den Zonen oder einer Vorlage mit
+ * Zeilenumbruch liess sich nicht zurueckspielen (weissware_agenten/
+ * oberflaeche Befunde 3, 7, 9).
+ */
+function ww_tts_feld_ok($f, $w)
+{
+    if (is_array($w) || is_object($w) || is_bool($w) || $w === null) {
+        return false;
+    }
+    switch ($f) {
+        case 'mode':
+            return in_array($w, array('musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox'), true);
+        case 'ip':
+            return is_string($w) && preg_match('/^[A-Za-z0-9_.:\[\]\-]{0,80}\z/', $w) === 1;
+        case 'port':
+            return preg_match('/^[0-9]{1,5}\z/', (string) $w) === 1 && (int) $w >= 1 && (int) $w <= 65535;
+        case 'zones':
+            return is_string($w) && preg_match('/^[\p{L}\p{N} ,~._\-]{0,120}\z/u', $w) === 1;
+        case 'volume':
+            return preg_match('/^[0-9]{1,3}\z/', (string) $w) === 1 && (int) $w >= 1 && (int) $w <= 100;
+        case 'lang':
+            return is_string($w) && preg_match('/^[a-z]{2}\z/', $w) === 1;
+        case 'template':
+            return is_string($w) && strlen($w) <= 300 && preg_match('//u', $w) === 1
+                && preg_match('/[\x00-\x1F\x7F]/', $w) !== 1;
+        case 'alexa_geraet':
+        case 'google_geraet':
+            return ww_ng_geraet_ok($w);
+        case 'alexa_laut':
+        case 'google_laut':
+            return ww_ng_laut_ok($w);
+        case 'alexa_token':
+        case 'google_token':
+            return $w === '' || ww_ng_token_ok($w);
+    }
+    return false;
+}
+
+/** Die Form eines MQTT-Praefixes: Ebenen aus Buchstaben, Ziffern, _ und -,
+ *  getrennt durch je einen Schraegstrich, hoechstens 64 Zeichen (Bauliste O3). */
+function ww_praefix_ok($t)
+{
+    return is_string($t) && strlen($t) <= 64
+        && preg_match('#^[A-Za-z0-9_\-]+(/[A-Za-z0-9_\-]+)*\z#', $t) === 1;
+}
+
+/** Die vorgemerkten frueheren Praefixe aus der Konfiguration (Bauliste I6). */
+function ww_praefixe_alt($cfg = null)
+{
+    $cfg = is_array($cfg) ? $cfg : ww_config();
+    $aus = array();
+    if (isset($cfg['mqtt_topic_alt']) && is_array($cfg['mqtt_topic_alt'])) {
+        foreach ($cfg['mqtt_topic_alt'] as $x) {
+            if (ww_praefix_ok($x) && !in_array($x, $aus, true)) {
+                $aus[] = $x;
+            }
+        }
+    }
+    return $aus;
 }
 
 function ww_tts_url($text)
@@ -2100,18 +2606,48 @@ function ww_tts_url($text)
 
 function ww_say($text)
 {
+    $erg = ww_sagen($text);
+    return $erg[0];
+}
+
+/**
+ * Eine Ansage sprechen. Rueckgabe array(gesendet, Grund als Klartext oder '',
+ * Antwortzeile oder ''). Die Antwortzeile gibt es nur bei Alexa-NG und
+ * Chromecast 4 Lox NG (Bauliste A1); fuer die uebrigen Ausgabearten ist der
+ * Weg unveraendert (gemessen vorher = nachher).
+ */
+function ww_sagen($text)
+{
+    $tts = ww_tts();
+    if ($tts['mode'] === 'alexang' || $tts['mode'] === 'cc4lox') {
+        $art = ($tts['mode'] === 'cc4lox') ? 'google' : 'alexa';
+        $v = $art . '_';
+        $antwort = '';
+        $gid = ww_ng_sprechen($text, $tts, $art, $antwort);
+        $g = (is_string($tts[$v . 'geraet']) && $tts[$v . 'geraet'] !== '') ? $tts[$v . 'geraet'] : 'Standardgeraet';
+        $l = (is_scalar($tts[$v . 'laut']) && (int) $tts[$v . 'laut'] >= 0 && (int) $tts[$v . 'laut'] <= 100)
+            ? (string) (int) $tts[$v . 'laut'] : 'Ansagelautstaerke';
+        /* Ins Protokoll: Geraet, Lautstaerke, die LAENGE des Textes und die
+         * Antwort (HTTP-Code, GRUND) - nie das Token, nie der Text. */
+        ww_ansage_log('Ansage ueber ' . ($art === 'google' ? 'Google-Lautsprecher (Chromecast 4 Lox NG' : 'Alexa-NG (')
+            . ($art === 'google' ? ', ' : '') . 'Geraet ' . $g . ', Lautstaerke ' . $l . ', '
+            . strlen((string) $text) . ' Zeichen) -> '
+            . ($gid === '' ? 'gesendet: ' . $antwort : 'FEHLER: ' . ww_ng_grund_text($gid)
+                             . ($antwort !== '' ? ' (' . $antwort . ')' : '')));
+        return array($gid === '', $gid === '' ? '' : ww_ng_grund_text($gid), $antwort);
+    }
     $url = ww_tts_url($text);
     if ($url === null) {
         ww_ansage_log('Ansage: Modus "Original Loxone Audioserver" - Sprachausgabe erfolgt ueber Loxone Config (Textgenerator)');
-        return false;
+        return array(false, '', '');
     }
     if ($url === '') {
         ww_ansage_log('Ansage uebersprungen: keine TTS-IP konfiguriert');
-        return false;
+        return array(false, '', '');
     }
     $r = ww_http_get($url, 10);
     ww_ansage_log('Ansage gesendet: "' . $text . '" -> ' . ($r !== false ? 'OK' : 'FEHLER'));
-    return $r !== false;
+    return array($r !== false, '', '');
 }
 
 /**
@@ -2187,7 +2723,15 @@ function ww_ansage_check()
     );
 
     foreach (ww_geraete() as $nr => $g) {
-        $kennung = isset($g['anbieter'], $g['name']) ? $g['anbieter'] . '|' . $g['name'] : (string) $nr;
+        /* Bauliste C4 (02.10.2026): der Merkschluessel ist die dauerhafte
+         * Kennung anbieter|id, wie geraet_schluessel() im Dienst. Bis 0.9.36
+         * war es anbieter|name: zwei gleichnamige Geraete teilten sich einen
+         * Merker, und die Fertigmeldung kam jede Minute neu
+         * (weissware_agenten/code Befund 4). Der alte Schluessel gilt bei der
+         * Umstellung EINMAL als Vorzustand - die Umstellung spricht nicht. */
+        $kennung = (isset($g['anbieter'], $g['id']) && (string) $g['id'] !== '')
+            ? $g['anbieter'] . '|' . $g['id'] : (string) $nr;
+        $kennung_alt = isset($g['anbieter'], $g['name']) ? $g['anbieter'] . '|' . $g['name'] : null;
         foreach ($ereignisse as $ereignis => $wie) {
             list($haken, $feld, $ausloeser) = $wie;
             $wert = isset($g[$feld]) ? $g[$feld] : null;
@@ -2199,7 +2743,13 @@ function ww_ansage_check()
             if ($erstlauf || $ruhe || empty($cfg[$haken])) {
                 continue;
             }
-            $vorher = array_key_exists($schluessel, $alt) ? $alt[$schluessel] : null;
+            if (array_key_exists($schluessel, $alt)) {
+                $vorher = $alt[$schluessel];
+            } elseif ($kennung_alt !== null && array_key_exists($kennung_alt . '#' . $ereignis, $alt)) {
+                $vorher = $alt[$kennung_alt . '#' . $ereignis];
+            } else {
+                $vorher = null;
+            }
             // Nur der echte Uebergang spricht. Ein unbekannter Vorzustand
             // (Erstlauf, Neustart) loest bewusst nichts aus.
             if ($ist === 1 && $vorher === 0) {
@@ -2288,16 +2838,14 @@ function ww_wert_pruefen($schluessel, $w)
         case 'ansage_ruhe_bis':
             return preg_match('/^([01][0-9]|2[0-3]):[0-5][0-9]$/', (string) $w) === 1;
         case 'mqtt_topic':
-            return preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', (string) $w) === 1;
+            return ww_praefix_ok((string) $w);
         case 'sprache':
             return preg_match('/^[a-z]{2}-[A-Z]{2}$/', (string) $w) === 1;
         case 'aktionstoken':
-            /* Weit gefasst und ausdruecklich mit der Laenge 0: ein leeres
-             * Token in einer Sicherungsdatei heisst "kein Token gesichert" und
-             * ist kein unzulaessiger Wert. Ob eines FEHLT, entscheidet die
-             * Lesefunktion unten an der Lage, nicht diese Wertpruefung.
-             * Zugelassen wird, was ohne Kodierung in eine Adresse passt. */
-            return preg_match('/^[A-Za-z0-9_.\-]{0,64}$/', (string) $w) === 1;
+            /* Leer heisst "kein Token gesichert" - das entscheidet die
+             * Lesefunktion unten (das geltende bleibt). Sonst nur die Form,
+             * die ww_token_erzeugen() erzeugt (Bauliste C15/O7, 02.10.2026). */
+            return (string) $w === '' || ww_token_form_ok((string) $w);
     }
     return true;
 }
@@ -2310,26 +2858,28 @@ function ww_tts_pruefen($w, &$mangel)
         return false;
     }
     $ok = true;
-    $regeln = array(
-        'mode'     => '/^(musicserver|ms4h|audioserver|custom)$/',
-        'ip'       => '/^[A-Za-z0-9_.\-]{0,80}$/',
-        'port'     => '/^[0-9]{1,5}$/',
-        'zones'    => '/^[0-9 ,~]{0,120}$/',
-        'volume'   => '/^[0-9]{1,3}$/',
-        'lang'     => '/^[a-z]{1,8}$/',
-        'template' => '#^[^\x00-\x1F\x7F]{0,300}$#',
-    );
-    foreach ($regeln as $f => $muster) {
+    /* Dieselbe Musterliste wie das Formular (ww_tts_feld_ok(), Bauliste O6).
+     * Ein Sprechtoken in der Datei weist sie ab (Bauliste A1): Sicherungen
+     * tragen es nie; leer ("") ist erlaubt und laesst das geltende stehen. */
+    $regeln = array_flip(array('mode', 'ip', 'port', 'zones', 'volume', 'lang', 'template',
+                               'alexa_geraet', 'alexa_laut', 'google_geraet', 'google_laut'));
+    foreach (array('alexa_token', 'google_token') as $f) {
+        if (array_key_exists($f, $w) && $w[$f] !== '') {
+            $mangel[] = sprintf(ww_t('EINST.SICH_SPRECHTOKEN'), 'tts.' . $f);
+            $ok = false;
+        }
+    }
+    foreach (array_keys($regeln) as $f) {
         if (!array_key_exists($f, $w)) {
             continue;
         }
-        if (!ww_wert_taugt($w[$f]) || preg_match($muster, (string) $w[$f]) !== 1) {
+        if (!ww_tts_feld_ok($f, $w[$f])) {
             $mangel[] = sprintf(ww_t('EINST.SICH_WERT'), 'tts.' . $f);
             $ok = false;
         }
     }
     foreach (array_keys($w) as $f) {
-        if (!isset($regeln[$f])) {
+        if (!isset($regeln[$f]) && $f !== 'alexa_token' && $f !== 'google_token') {
             $mangel[] = sprintf(ww_t('EINST.SICH_FREMD'),
                                  htmlspecialchars('tts.' . (string) $f, ENT_QUOTES, 'UTF-8'));
             $ok = false;
@@ -2353,12 +2903,49 @@ function ww_tts_pruefen($w, &$mangel)
 function ww_sicherung_bauen()
 {
     $cfg = ww_config();
+    /* Die Sprechtoken von Alexa-NG und Chromecast 4 Lox NG gehoeren NICHT
+     * hinein (Bauliste A1): eine Datei mit Token wird beim Zurueckspielen
+     * abgewiesen, und nach dem Zurueckspielen bleiben die geltenden. */
+    $tts = ww_tts();
+    unset($tts['alexa_token'], $tts['google_token']);
+    $cfg['tts'] = $tts;
     $cfg['_hinweis'] = 'Sicherung des Plugins Weissware Cloud. Enthaelt das '
                      . 'Aktionstoken und die Zugangsdaten der Anbieter - wie ein '
-                     . 'Passwort behandeln.';
+                     . 'Passwort behandeln. Die Sprechtoken fuer Alexa-NG und '
+                     . 'Chromecast 4 Lox NG sind nicht enthalten; nach dem '
+                     . 'Zurueckspielen bleiben die geltenden.';
     $cfg['_stand']   = date('Y-m-d H:i:s');
     $cfg['zugang']   = ww_json_lesen(ww_paths()['zugang']);
+    /* X-3 (Bauliste O6): was beim Zurueckspielen abgewiesen wuerde, steht mit
+     * NAMEN (nie mit Wert) unter _warnung; die Datei bleibt vollstaendig. */
+    $namen = ww_sicherung_warnung($cfg);
+    if ($namen) {
+        $cfg['_warnung'] = 'Diese Werte wuerden beim Zurueckspielen abgewiesen und sollten '
+                         . 'vorher berichtigt werden: ' . implode(', ', $namen);
+    }
     return $cfg;
+}
+
+/**
+ * Welche Schluessel einer Sicherung wuerden beim Zurueckspielen abgewiesen?
+ * Nur die NAMEN (X-3, Bauliste O6). Ohne Argument: der gespeicherte Stand.
+ */
+function ww_sicherung_warnung($daten = null)
+{
+    if (!is_array($daten)) {
+        $daten = ww_config();
+        $tts = ww_tts();
+        unset($tts['alexa_token'], $tts['google_token']);
+        $daten['tts'] = $tts;
+        $daten['zugang'] = ww_json_lesen(ww_paths()['zugang']);
+    }
+    $namen = array();
+    $json = json_encode($daten, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($json === false) {
+        return array('(nicht als JSON darstellbar)');
+    }
+    ww_sicherung_lesen($json, $namen);
+    return $namen;
 }
 
 /**
@@ -2382,12 +2969,17 @@ function ww_sicherung_bauen()
  * Rueckgabe: array(Konfiguration|null, Zugangsdaten|null, Beanstandungen[],
  *                  uebernommene Werte).
  */
-function ww_sicherung_lesen($roh)
+function ww_sicherung_lesen($roh, &$namen = null)
 {
+    /* $namen sammelt die Schluessel mit unzulaessigem Wert (fuer X-3). Ein
+     * fuenftes Feld der Rueckgabe traegt Hinweise, die keine Beanstandung
+     * sind (leeres Aktionstoken: das geltende bleibt, Bauliste O7). */
+    $namen = array();
+    $hinweise = array();
     $mangel = array();
     $daten = json_decode((string) $roh, true);
     if (!is_array($daten)) {
-        return array(null, null, array(ww_t('EINST.SICH_KEIN_JSON')), 0);
+        return array(null, null, array(ww_t('EINST.SICH_KEIN_JSON')), 0, array());
     }
     $neu = ww_config();
     $bekannt = array_keys(ww_vorgaben());
@@ -2415,6 +3007,7 @@ function ww_sicherung_lesen($roh)
                 }
                 if (!ww_wert_taugt($zw) || strlen((string) $zw) > 512) {
                     $mangel[] = sprintf(ww_t('EINST.SICH_WERT'), 'zugang.' . $zk);
+                    $namen[] = 'zugang.' . $zk;
                     continue;
                 }
                 $zneu[$zk] = (string) $zw;
@@ -2429,19 +3022,54 @@ function ww_sicherung_lesen($roh)
             continue;
         }
         if ($k === 'tts') {
+            $vorher = count($mangel);
             if (ww_tts_pruefen($w, $mangel)) {
+                /* Die geltenden Sprechtoken bleiben (Bauliste A1). */
+                $akt = ww_tts();
                 $neu['tts'] = array_merge(ww_vorgaben()['tts'], $w);
+                $neu['tts']['alexa_token'] = $akt['alexa_token'];
+                $neu['tts']['google_token'] = $akt['google_token'];
                 $anzahl++;
+            } elseif (count($mangel) > $vorher) {
+                $namen[] = 'tts';
             }
+            continue;
+        }
+        if ($k === 'mqtt_topic_alt') {
+            /* Bauliste I6: eine Liste frueherer Praefixe, hoechstens 20. */
+            $liste_ok = is_array($w) && count($w) <= 20 && array_values($w) === $w;
+            if ($liste_ok) {
+                foreach ($w as $x) {
+                    if (!ww_praefix_ok($x)) { $liste_ok = false; }
+                }
+            }
+            if (!$liste_ok) {
+                $mangel[] = sprintf(ww_t('EINST.SICH_WERT'), 'mqtt_topic_alt');
+                $namen[] = 'mqtt_topic_alt';
+                continue;
+            }
+            $neu[$k] = $w;
+            $anzahl++;
             continue;
         }
         if (!ww_wert_taugt($w) || !ww_wert_pruefen($k, $w)) {
             $mangel[] = sprintf(ww_t('EINST.SICH_WERT'),
                                  htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            $namen[] = (string) $k;
             continue;
         }
         if ($k === 'aktionstoken') {
             $hatte_token = true;
+            if ((string) $w === '') {
+                /* Bauliste O7 (02.10.2026): ein leeres Token in der Datei
+                 * laesst das geltende stehen - mit Hinweis. Bis 0.9.36 wurde
+                 * es leer gespeichert, die Selbstheilung holte beim naechsten
+                 * Seitenaufbau die alte Konfiguration zurueck, die Zugangsdaten
+                 * aus der Datei blieben: ein Mischzustand ohne Hinweis
+                 * (weissware_agenten/oberflaeche Befund 8). */
+                $hinweise[] = ww_t('EINST.SICH_TOKEN_LEER');
+                continue;
+            }
         }
         $neu[$k] = $w;
         $anzahl++;
@@ -2455,7 +3083,46 @@ function ww_sicherung_lesen($roh)
     if ($anzahl > 0 && !$hatte_token) {
         $mangel[] = ww_t('EINST.SICH_OHNE_TOKEN');
     }
-    return array($mangel ? null : $neu, $mangel ? null : $zugang, $mangel, $anzahl);
+    return array($mangel ? null : $neu, $mangel ? null : $zugang, $mangel, $anzahl,
+                 $mangel ? array() : $hinweise);
+}
+
+/* ==================================================================
+ * EINMALMELDUNG (PRG, Bauliste O1, 02.10.2026)
+ *
+ * Bis 0.9.36 antwortete jeder POST mit 200 und der fertigen Seite: F5
+ * wuerfelte "Neues Token" erneut, startete den Dienst erneut, sprach die
+ * Testansage erneut und schickte die Schaltbefehle des Reiters Test erneut an
+ * das Hausgeraet (weissware_agenten/oberflaeche Befund 1). Jetzt endet jeder
+ * POST mit 303; das Ergebnis reist in data/plugins/<ordner>/einmalmeldung.json
+ * (0600, Rechte vor Inhalt, hoechstens 120 s alt, NUR beim GET gelesen und
+ * dabei geloescht - Regeln/04). Downloads liefern weiter unmittelbar ihre Datei.
+ * ================================================================== */
+function ww_einmal_schreiben(array $daten)
+{
+    $p = ww_paths();
+    if (!is_dir($p['datadir']) && !@mkdir($p['datadir'], 0775, true) && !is_dir($p['datadir'])) {
+        return false;
+    }
+    $daten['ts'] = time();
+    $json = json_encode($daten, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($json === false) {
+        return false;
+    }
+    return ww_datei_geheim_schreiben($p['datadir'] . '/einmalmeldung.json', $json);
+}
+
+/** Die Einmalmeldung lesen und loeschen - leer, wenn keine da oder zu alt. */
+function ww_einmal_lesen()
+{
+    $f = ww_paths()['datadir'] . '/einmalmeldung.json';
+    if (!is_file($f)) {
+        return array();
+    }
+    $d = ww_json_lesen($f);
+    @unlink($f);
+    $alter = isset($d['ts']) ? time() - (int) $d['ts'] : 9999;
+    return ($alter >= -5 && $alter <= 120) ? $d : array();
 }
 
 
@@ -2509,17 +3176,10 @@ function ww_merkwort()
     if (!is_dir($verz)) {
         @mkdir($verz, 0775, true);
     }
-    /* Rechte VOR dem Inhalt: zwischen Anlegen und chmod laege sonst ein
-     * Fenster, in dem das Merkwort fuer alle lesbar ist. */
-    $tmp = $datei . '.tmp';
-    if (@file_put_contents($tmp, $neu) !== false) {
-        @chmod($tmp, 0600);
-        if (@rename($tmp, $datei)) {
-            @chmod($datei, 0600);
-        } else {
-            @unlink($tmp);
-        }
-    }
+    /* Rechte VOR dem Inhalt (ww_datei_geheim_schreiben(), Bauliste C12):
+     * bis 0.9.36 stand der Kommentar hier, der Code schrieb aber erst den
+     * Inhalt und setzte die Rechte danach. */
+    ww_datei_geheim_schreiben($datei, $neu);
     $wort = $neu;
     return $wort;
 }
