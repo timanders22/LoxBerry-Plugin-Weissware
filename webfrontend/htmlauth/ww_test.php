@@ -542,15 +542,14 @@ function ww_pruefungen($offen = false)
     $zeilen[] = ww_pruefzeile(!empty($cfg['steuerung_ein']) ? 1 : -1, ww_t('TEST.F_STEUERUNG'),
         !empty($cfg['steuerung_ein']) ? ww_t('TEST.A_STEUERUNG_EIN') : ww_t('TEST.A_STEUERUNG_AUS'));
 
-    /* Ausgabearten Alexa-NG und Google-Lautsprecher (Bauliste A1): eine Zeile
-     * nur fuer die gewaehlte, Selbsttest ohne Ansage. */
+    /* Sprachausgabe (seit 0.9.39 die Zeile der gemeinsamen Sprachausgabe, ansage_pruefzeile()): Alexa-NG
+     * bzw. Chromecast 4 Lox NG mit selftest=1 nur bei offenem Reiter Test (spricht nicht), der Music Server
+     * nie; dazu das Ergebnis der letzten Ansage. Die Zeile steht, wenn die Ansage eingeschaltet oder
+     * Alexa-NG/Google gewaehlt ist - ohne Ansage gibt es nichts zu beurteilen. */
     $tts = ww_tts();
-    if ($tts['mode'] === 'alexang') {
-        list($st, $tx) = ww_ng_pruef($tts, $offen, 'alexa');
-        $zeilen[] = ww_pruefzeile($st, ww_t('TEST.F_ALEXANG'), $tx);
-    } elseif ($tts['mode'] === 'cc4lox') {
-        list($st, $tx) = ww_ng_pruef($tts, $offen, 'google');
-        $zeilen[] = ww_pruefzeile($st, ww_t('TEST.F_CC4LOX'), $tx);
+    if (!empty($cfg['ansage_ein']) || $tts['mode'] === 'alexang' || $tts['mode'] === 'cc4lox') {
+        list($st, $tx) = ww_ansage_pruefzeile($offen);
+        $zeilen[] = ww_pruefzeile($st, ww_t('TEST.F_ANSAGE'), $tx);
     }
 
     return $zeilen;

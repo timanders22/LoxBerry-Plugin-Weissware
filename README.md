@@ -10,12 +10,36 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.38 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.39 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.39
+
+Sprachausgabe in Hausform (Entscheidung 40, Stufe 2). Gemessen unter PHP 7.4 und 8.5 gegen Attrappen
+(Music Server, MusicServer4Home, eigene Vorlage, Alexa-NG, Chromecast 4 Lox NG), mit dem echten Minutenlauf
+`bin/ansage.php`; nicht am Gerät und nicht an einem echten Lautsprecher.
+
+* **Einstellungen der Sprachausgabe** kommen jetzt aus dem gemeinsamen Baustein der Plugins dieses Hauses.
+  Neu wählbar ist die Ausgabeart „aus“; ab Werk bleibt es beim Loxone Music Server, und die Ansage selbst ist ab
+  Werk aus. Die Haken „Ansage einschalten“, „Störung“, „Fernstart-Freigabe erloschen“ und die Ruhezeit bleiben,
+  wie sie sind.
+* **Adresse und Vorlage müssen im Heimnetz liegen** (private IPv4-Bereiche, Namen ohne Punkt oder mit
+  `.local`, `.lan`, `.home`, `.fritz.box`, `.intern` …). Eine Adresse im Internet wird beim Speichern
+  beanstandet, beim Zurückspielen abgewiesen und vor jedem Senden noch einmal geprüft.
+* Zonen als Zahlen mit Komma (je wahlweise `~Lautstärke` 1 bis 100), Lautstärken 1 bis 100 oder leer, Vorlage
+  höchstens 500 Zeichen. Bei einer Beanstandung wird nichts gespeichert, die Eingaben bleiben im Formular stehen.
+* Die Testansage im Reiter Test meldet Ergebnis, Zeichenzahl und HTTP-Code; die Zeile „Sprachausgabe“ der
+  Selbstprüfung nennt das Ergebnis der letzten Ansage. Ins Protokoll `ansage.log` kommt je Ansage eine Zeile mit
+  Art, Ergebnis, Zeichenzahl (jetzt Zeichen statt Bytes) und HTTP-Code – nie der Text, nie ein Sprechtoken.
+* Baustein-Liste: die Spalte „Eingänge verbinden mit“ in der Form `#N` bzw. `I1 = #N, I2 = #M` (für das
+  Leitungswerkzeug).
+* Sprachmodul 1.1.1.
+
+**In Loxone:** nichts zu tun.
 
 ## Neu in 0.9.38
 

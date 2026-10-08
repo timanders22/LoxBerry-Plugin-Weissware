@@ -2141,36 +2141,48 @@ function ww_ansage_log($msg)
         '[' . date('Y-m-d H:i:s') . '] ' . $msg . "\n", FILE_APPEND);
 }
 
-/** TTS-Einstellungen mit Vorgaben (wie AWM-Abfuhr). */
+/* ---------------- Sprachausgabe (seit 0.9.39 in Hausform, Nr. 36 b Stufe 2) ----------------
+ *
+ * Gesprochen wird ueber die gemeinsame Sprachausgabe (sprachausgabe.php, Abschrift neben dieser Datei):
+ * ansage_sprechen() fuer jede Ausgabeart - Loxone Music Server, MusicServer4Home, eigene Vorlage,
+ * Original-Audioserver (spricht nicht selbst), Alexa-NG (Ordner alexang) und Google-Lautsprecher ueber
+ * Chromecast 4 Lox NG (ab 1.3.15). Das Modul prueft vor jedem Senden, dass Adresse und Vorlage im Heimnetz
+ * liegen (Entscheidung Nr. 40, F1), folgt keiner Umleitung, nimmt keinen Proxy und haelt 10 s ein. Das
+ * Sprechtoken steht nur im POST-Koerper; vom Text kommt nur die Laenge ins Protokoll (ansage_kurz(), in
+ * Zeichen). Das Ergebnis jeder Ansage (Zeit, ok, Kennung - nie Text oder Token) legt das Modul als
+ * <art>_letzte.json im Datenordner ab; die Zeile im Reiter Test nennt es. Faellt die Gegenstelle aus,
+ * entfaellt die Ansage - kein Wiederholen, kein Wechsel auf einen anderen Lautsprecher.
+ *
+ * Bis 0.9.38 standen hier eigene Zweige fuer Alexa-NG und Chromecast (die ww_ng-Familie) und eine eigene
+ * Musterliste (ww_tts_feld_ok); sie prueften das Heimnetz nicht und sind entfallen.
+ */
+
+/** Ausgabearten dieser Linie: alle des Moduls ausser Sonos4Lox (bis 0.9.38 nicht angeboten). 'aus' ist
+ *  neu waehlbar; ab Werk bleibt es musicserver (ww_tts()). */
+function ww_ansage_modi()
+{
+    return array('aus', 'musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox');
+}
+
+/** Optionen fuer Formular-Baustein und Formular-Lesen. Die POST-Namen des Moduls (tts_<x>,
+ *  tts_<art>_token_loeschen) sind seit Ansage-2 auch die dieser Linie. */
+function ww_ansage_opt()
+{
+    return array('modi' => ww_ansage_modi());
+}
+
+/** Der Block tts, vervollstaendigt mit den Vorgaben des Moduls - ab Werk musicserver wie bis 0.9.38. */
 function ww_tts()
 {
     $cfg = ww_config();
-    $tts = isset($cfg['tts']) && is_array($cfg['tts']) ? $cfg['tts'] : array();
-    $tts += array('mode' => 'musicserver', 'ip' => '', 'port' => 7091,
-                  'zones' => '1', 'volume' => 8, 'lang' => 'de', 'template' => '',
-                  'alexa_geraet' => '', 'alexa_token' => '', 'alexa_laut' => -1,
-                  'google_geraet' => '', 'google_token' => '', 'google_laut' => -1);
-    return $tts;
+    list($t) = ansage_vervollstaendigen(isset($cfg['tts']) && is_array($cfg['tts']) ? $cfg['tts'] : array(),
+                                        'musicserver');
+    return $t;
 }
 
-/* ---------------- Ausgabearten Alexa-NG und Google-Lautsprecher ----------------
- *
- * Bauliste A1 (Ansage-2 und Ansage-3, 02.10.2026), ab Werk nicht gewaehlt.
- * Alexa-NG (Ordner alexang) laesst Amazon-Echo-Geraete sprechen, Chromecast 4
- * Lox NG (Ordner chromecast-4lox-ng, ab 1.3.15) Chromecast-/Nest-Lautsprecher.
- * Beide nehmen dieselbe Anfrage an: POST an /plugins/<ordner>/index.php auf
- * DIESEM LoxBerry, aktion=sprechen, token, text, geraet, laut
- * (GOOGLE_SPRECHEN_SCHNITTSTELLE.md). Als gesendet gilt nur HTTP 200 mit
- * SPRECHEN;OK=1 (bei Chromecast 4 Lox NG auch UNVERAENDERT und TEXT_NULL).
- * Das Sprechtoken je Ausgabeart ist ein Geheimnis wie ein Kennwort: nur im
- * POST-Koerper, nie in Seite, Sicherung, Einmalmeldung oder Protokoll; ins
- * Protokoll kommt vom Text nur die Laenge. Faellt die Gegenstelle aus,
- * entfaellt die Ansage - kein Wiederholen, kein Wechsel auf einen anderen
- * Lautsprecher. Bauform: mo_ng_*() aus Robonect 1.1.16 (eigene Linie).
- */
-
-/** Der Webport dieses LoxBerry aus der general.json (Webserver.Port oder
- *  WEBSERVER.Port), sonst 80. */
+/** Der Webport dieses LoxBerry aus der general.json (Webserver, WEBSERVER oder webserver, je mit Port, port
+ *  oder PORT), sonst 80. Bleibt linieneigen: ansage_webport() der Fassung 1.1.1 liest nur Webserver/WEBSERVER
+ *  mit Port (Modulwunsch Sprachmodul-2: ein wahlfreier zweiter Parameter fuer die weite Form). */
 function ww_webport()
 {
     $p = ww_paths();
@@ -2191,276 +2203,29 @@ function ww_webport()
     return 80;
 }
 
-/** Kontext fuer die gemeinsame Sprachausgabe (Nr. 36 b): Webport und Kopfzeile
- *  dieses Plugins. Keine Merkdatei des Moduls - <art>_letzte.json fuehrt die
- *  Linie in Stufe 1 weiter selbst. */
+/** Kontext der gemeinsamen Sprachausgabe: Webport, Kopfzeile, Datenordner fuer <art>_letzte.json (nur wenn
+ *  es ihn gibt) und die Texte aus der Sprachdatei. $ua wie bis 0.9.38: der Music Server und die Vorlagen
+ *  bekommen 'Mozilla/5.0 (LoxBerry Weissware)', Alexa-NG und Chromecast 'LoxBerry Weissware'. */
 function ww_ansage_k($ua = 'LoxBerry Weissware')
 {
-    return array('port' => ww_webport(), 'kopf' => array('User-Agent: ' . $ua), 'ordner' => '');
-}
-
-/** Kennung, Schluesselvorsatz in tts und Adresse je Ausgabeart. */
-function ww_ng_art($art)
-{
-    if ($art === 'google') {
-        return array('GOOGLE', 'google_', 'http://127.0.0.1:' . ww_webport() . '/plugins/chromecast-4lox-ng/index.php');
-    }
-    return array('ALEXA', 'alexa_', 'http://127.0.0.1:' . ww_webport() . '/plugins/alexang/index.php');
-}
-
-/** Sprechtoken: 8 bis 128 Buchstaben, Ziffern, _ und - (wie Alexa-NG und
- *  Chromecast 4 Lox NG es annehmen). */
-function ww_ng_token_ok($t)
-{
-    return ansage_token_ok($t);     // Nr. 36 b: dieselbe Form, eine Quelle
-}
-
-/** Geraet: leer (= Standardgeraet) oder 1 bis 200 Zeichen UTF-8, ohne
- *  Steuerzeichen und ohne Leerraum am Rand (Name, Kommaliste, gruppe:<name>,
- *  alle - das prueft die Gegenstelle selbst). */
-function ww_ng_geraet_ok($g)
-{
-    return is_string($g) && ($g === ''
-        || (preg_match('/^.{1,200}\z/us', $g) === 1 && preg_match('/[\x00-\x1F\x7F]/', $g) !== 1
-            && trim($g) === $g));
-}
-
-/** Lautstaerke: -1 (= Ansagelautstaerke) oder 0 bis 100, als Zahl oder Ziffernfolge. */
-function ww_ng_laut_ok($l)
-{
-    if (is_int($l)) {
-        return $l === -1 || ($l >= 0 && $l <= 100);
-    }
-    return is_string($l) && ($l === '-1' || (preg_match('/^[0-9]{1,3}$/', $l) === 1 && (int) $l <= 100));
+    $d = ww_paths()['datadir'];
+    return array('port' => ww_webport(), 'kopf' => array('User-Agent: ' . $ua),
+                 'ordner' => @is_dir($d) ? $d : '',
+                 't' => function ($s) { return ww_t($s); },
+                 /* Zwei Saetze des Moduls sagen "ab Werk aus" - in dieser Linie ist ab Werk der Music
+                  * Server gewaehlt (Entwurf F7); dafuer stehen eigene Saetze in der Sprachdatei. */
+                 'schluessel' => array('ART_HINWEIS' => 'WW_ANSAGE.ART_HINWEIS', 'O_AUS' => 'WW_ANSAGE.O_AUS'));
 }
 
 /**
- * POST an Alexa-NG oder Chromecast 4 Lox NG. Rueckgabe array('code' => HTTP-Code
- * (0 = keine Antwort), 'zeile' => erste Antwortzeile ohne Token und
- * Steuerzeichen, 'grund_id' => Kennung des Transportfehlers, 'tmo' => Wartezeit).
- * Ohne Weiterleitung; ein Proxy der Umgebung gilt fuer 127.0.0.1 nicht.
+ * Die Zeile "Sprachausgabe" im Reiter Test: array(Stand 1/0/-1, HTML). Alexa-NG bzw. Chromecast 4 Lox NG
+ * werden nur gefragt, wenn der Reiter Test die geladene Seite ist (selftest=1, spricht nicht), der Music
+ * Server nie (eine Probe dort spraeche). -2 (aus, nicht gefragt) wird ein Hinweis.
  */
-function ww_ng_rufen($url, array $felder, $tmo = 10)
+function ww_ansage_pruefzeile($offen)
 {
-    /* Nr. 36 b, Stufe 1: gerufen ueber die gemeinsame Sprachausgabe (curl, sonst
-     * Datenstrom; ohne Weiterleitung, ohne Proxy; Verbindungsaufbau hoechstens
-     * 3 s, gesamt $tmo wie bisher). Rueckgabe wie bisher; von den
-     * Transportkennungen des Moduls bleiben die drei der Linie (HTTP_ZEIT,
-     * HTTP_ABGEWIESEN, sonst HTTP_FEHLER), damit Texte und Merkdateien gleich
-     * bleiben. */
-    $a = ansage_ng_rufen((string) $url, $felder, $tmo, ww_ansage_k());
-    $gid = $a['grund_id'];
-    if ($gid !== '' && $gid !== 'HTTP_ZEIT' && $gid !== 'HTTP_ABGEWIESEN') {
-        $gid = 'HTTP_FEHLER';
-    }
-    return array('code' => $a['code'], 'zeile' => $a['zeile'], 'grund_id' => $gid, 'tmo' => (int) $tmo);
-}
-
-/**
- * Antwort bewerten. '' bei "<praefix>;OK=1" mit HTTP 200, sonst eine Kennung
- * fuer ww_ng_grund_text() (nie mit dem Token). 404 ohne GRUND heisst: das
- * Plugin fehlt (bei Chromecast 4 Lox NG auch: aelter als 1.3.15).
- */
-function ww_ng_bewerten(array $a, $praefix, $art)
-{
-    list($k, , $adr) = ww_ng_art($art);
-    if ($a['code'] === 200 && strpos($a['zeile'], $praefix . ';OK=1') === 0) {
-        return '';
-    }
-    if ($a['code'] <= 0) {
-        return $k . '_KEINE_ANTWORT|' . $adr . '|' . (int) $a['tmo']
-             . '|' . ($a['grund_id'] !== '' ? $a['grund_id'] : 'HTTP_FEHLER');
-    }
-    if (preg_match('/(?:^|;)GRUND=([A-Za-z0-9_]{1,40})(?:;|$)/', $a['zeile'], $m)) {
-        return $k . '_ANTWORT|' . (int) $a['code'] . '|' . $m[1];
-    }
-    if ($a['code'] === 404) {
-        return $k . '_FEHLT|' . $adr;
-    }
-    $s = substr((string) preg_replace('/[^A-Za-z0-9;=_.:\-]/', '', $a['zeile']), 0, 60);
-    return $k . '_UNERWARTET|' . (int) $a['code'] . '|' . ($s !== '' ? $s : '-');
-}
-
-/** Klartext zu einer Kennung aus ww_ng_bewerten() - roh, ohne Auszeichnung.
- *  Die Schluessel stehen ausgeschrieben da, damit der Spracherzeuger sie
- *  als benutzt erkennt. */
-function ww_ng_grund_text($gid)
-{
-    $t = explode('|', (string) $gid);
-    $transport = array('HTTP_ZEIT' => 'ANSAGE.HTTP_ZEIT', 'HTTP_ABGEWIESEN' => 'ANSAGE.HTTP_ABGEWIESEN',
-                       'HTTP_FEHLER' => 'ANSAGE.HTTP_FEHLER');
-    $erklaerung = array(
-        'TOKEN' => 'ANSAGE.GOOGLE_G_TOKEN', 'NUR_LOKAL' => 'ANSAGE.GOOGLE_G_NUR_LOKAL',
-        'KEIN_TOKEN_EINGERICHTET' => 'ANSAGE.GOOGLE_G_KEIN_TOKEN_EINGERICHTET',
-        'SPRECHEN_AUS' => 'ANSAGE.GOOGLE_G_SPRECHEN_AUS', 'TTS_MODUS' => 'ANSAGE.GOOGLE_G_TTS_MODUS',
-        'STUNDENGRENZE' => 'ANSAGE.GOOGLE_G_STUNDENGRENZE',
-        'DIENST_LAEUFT_NICHT' => 'ANSAGE.GOOGLE_G_DIENST_LAEUFT_NICHT',
-        'DIENST_ANTWORTET_NICHT' => 'ANSAGE.GOOGLE_G_DIENST_ANTWORTET_NICHT',
-        'GERAETE_OFFLINE' => 'ANSAGE.GOOGLE_G_GERAETE_OFFLINE',
-        'GERAET_UNBEKANNT' => 'ANSAGE.GOOGLE_G_GERAET_UNBEKANNT', 'KEINE_GERAETE' => 'ANSAGE.GOOGLE_G_KEINE_GERAETE',
-    );
-    switch ($t[0]) {
-        case 'ALEXA_KEIN_TOKEN':
-            return ww_t('ANSAGE.ALEXA_KEIN_TOKEN');
-        case 'GOOGLE_KEIN_TOKEN':
-            return ww_t('ANSAGE.GOOGLE_KEIN_TOKEN');
-        case 'ALEXA_KEINE_ANTWORT':
-        case 'GOOGLE_KEINE_ANTWORT':
-            $tr = isset($t[3], $transport[$t[3]]) ? $transport[$t[3]] : 'ANSAGE.HTTP_FEHLER';
-            return sprintf(ww_t($t[0] === 'ALEXA_KEINE_ANTWORT' ? 'ANSAGE.ALEXA_KEINE_ANTWORT' : 'ANSAGE.GOOGLE_KEINE_ANTWORT'),
-                           isset($t[1]) ? $t[1] : '', isset($t[2]) ? (int) $t[2] : 0, ww_t($tr));
-        case 'ALEXA_ANTWORT':
-            return sprintf(ww_t('ANSAGE.ALEXA_ANTWORT'), isset($t[1]) ? (int) $t[1] : 0, isset($t[2]) ? $t[2] : '-');
-        case 'GOOGLE_ANTWORT':
-            $g = isset($t[2]) ? $t[2] : '-';
-            return sprintf(ww_t('ANSAGE.GOOGLE_ANTWORT'), isset($t[1]) ? (int) $t[1] : 0, $g)
-                 . (isset($erklaerung[$g]) ? ' ' . ww_t($erklaerung[$g]) : '');
-        case 'ALEXA_FEHLT':
-            return sprintf(ww_t('ANSAGE.ALEXA_FEHLT'), isset($t[1]) ? $t[1] : '');
-        case 'GOOGLE_FEHLT':
-            return sprintf(ww_t('ANSAGE.GOOGLE_FEHLT'), isset($t[1]) ? $t[1] : '');
-        case 'ALEXA_UNERWARTET':
-            return sprintf(ww_t('ANSAGE.ALEXA_UNERWARTET'), isset($t[1]) ? (int) $t[1] : 0, isset($t[2]) ? $t[2] : '-');
-        case 'GOOGLE_UNERWARTET':
-            return sprintf(ww_t('ANSAGE.GOOGLE_UNERWARTET'), isset($t[1]) ? (int) $t[1] : 0, isset($t[2]) ? $t[2] : '-');
-    }
-    return (string) $gid;
-}
-
-/**
- * Eine Ansage ueber Alexa-NG ('alexa') oder Chromecast 4 Lox NG ('google').
- * Rueckgabe: '' = angenommen, sonst die Kennung des Grundes. $antwort bekommt
- * "HTTP <code>, <erste Antwortzeile>" (ohne Token). Das Ergebnis (Zeit, ok,
- * Kennung - nie Token oder Text) liegt danach in <art>_letzte.json im
- * Datenordner, fuer den Reiter Test.
- */
-function ww_ng_sprechen($text, array $tts, $art, &$antwort = null)
-{
-    list($k, $v, $adr) = ww_ng_art($art);
-    $tok = isset($tts[$v . 'token']) ? $tts[$v . 'token'] : '';
-    $antwort = '';
-    if (!ww_ng_token_ok($tok)) {
-        $gid = $k . '_KEIN_TOKEN';
-    } else {
-        $f = array('aktion' => 'sprechen', 'token' => $tok);
-        $g = (isset($tts[$v . 'geraet']) && is_string($tts[$v . 'geraet'])) ? $tts[$v . 'geraet'] : '';
-        if ($g !== '') { $f['geraet'] = $g; }
-        $laut = isset($tts[$v . 'laut']) && is_scalar($tts[$v . 'laut']) ? (int) $tts[$v . 'laut'] : -1;
-        if ($laut >= 0 && $laut <= 100) { $f['laut'] = $laut; }
-        $f['text'] = (string) $text;
-        $a = ww_ng_rufen($adr, $f, 10);
-        $antwort = 'HTTP ' . (int) $a['code'] . ($a['zeile'] !== '' ? ', ' . $a['zeile'] : '');
-        $gid = ww_ng_bewerten($a, 'SPRECHEN', $art);
-    }
-    $json = json_encode(array('zeit' => time(), 'ok' => $gid === '' ? 1 : 0, 'grund_id' => $gid));
-    if ($json !== false) {
-        $d = ww_paths()['datadir'];
-        if (is_dir($d) || @mkdir($d, 0775, true)) {
-            @file_put_contents($d . '/' . $art . '_letzte.json', $json);
-        }
-    }
-    return $gid;
-}
-
-/** Das Ergebnis der letzten Ansage der Ausgabeart, oder null. */
-function ww_ng_letzte($art)
-{
-    $d = ww_json_lesen(ww_paths()['datadir'] . '/' . $art . '_letzte.json');
-    if (!isset($d['zeit'], $d['ok'])) { return null; }
-    return array('zeit' => (int) $d['zeit'], 'ok' => (int) $d['ok'],
-                 'grund_id' => (isset($d['grund_id']) && is_string($d['grund_id'])) ? $d['grund_id'] : '');
-}
-
-/**
- * Zeile im Reiter Test fuer Alexa-NG ('alexa') oder Chromecast 4 Lox NG
- * ('google'): array(Stand 1/0/-1, Text als HTML). Gefragt wird selftest=1
- * (prueft nur das Token, spricht nicht) und nur, wenn der Reiter Test die
- * geladene Seite ist - sonst kostete jeder Seitenaufbau bis zu 10 s, wenn
- * die Gegenstelle haengt. Chromecast 4 Lox NG meldet im Selbsttest
- * zusaetzlich SPRECHEN=0 und DIENST=0: das Token passt dann, gesprochen wird
- * trotzdem nicht - Hinweis statt Haken.
- */
-function ww_ng_pruef(array $tts, $offen, $art)
-{
-    list($k, $v, $adr) = ww_ng_art($art);
-    $tok = isset($tts[$v . 'token']) ? $tts[$v . 'token'] : '';
-    if (!ww_ng_token_ok($tok)) {
-        return array(0, ww_e(ww_ng_grund_text($k . '_KEIN_TOKEN')));
-    }
-    if (!$offen) {
-        return array(-1, ww_e(ww_t('TEST.A_NG_ZU')));
-    }
-    $a = ww_ng_rufen($adr, array('selftest' => '1', 'token' => $tok), 10);
-    $gid = ww_ng_bewerten($a, 'SELFTEST', $art);
-    $stand = 1;
-    $hinweis = '';
-    if ($gid === '' && $art === 'google') {
-        foreach (array('SPRECHEN' => 'TEST.A_GOOGLE_SPRECHEN_AUS', 'DIENST' => 'TEST.A_GOOGLE_DIENST_AUS') as $feld => $schl) {
-            if (preg_match('/(?:^|;)' . $feld . '=0(?:;|$)/', $a['zeile']) === 1) {
-                $hinweis .= ' ' . ww_e(ww_t($schl));
-                $stand = -1;
-            }
-        }
-    }
-    $letzte = '';
-    $l = ww_ng_letzte($art);
-    if ($l !== null) {
-        $s = max(0, time() - $l['zeit']);
-        $alter = $s < 90 ? $s . ' s' : ($s < 5400 ? (int) round($s / 60) . ' min'
-               : ($s < 172800 ? (int) round($s / 3600) . ' h' : (int) round($s / 86400) . ' d'));
-        if ($l['ok'] === 1) {
-            $letzte = ' ' . ww_e(sprintf(ww_t('TEST.A_NG_LETZTE_OK'), $alter));
-        } else {
-            $letzte = ' ' . ww_e(sprintf(ww_t('TEST.A_NG_LETZTE_FEHL'), $alter, ww_ng_grund_text($l['grund_id'])));
-            $stand = -1;
-        }
-    }
-    if ($gid !== '') {
-        return array(0, ww_e(sprintf(ww_t('TEST.A_NG_FEHL'), ww_ng_grund_text($gid))) . $letzte);
-    }
-    return array($stand, ww_e(sprintf(ww_t('TEST.A_NG_JA'), $adr)) . $hinweis . $letzte);
-}
-
-/**
- * Die Muster der Sprachausgabe - EINE Liste fuer Formular und Sicherung
- * (Bauliste O6, X-3, 02.10.2026). Bis 0.9.36 prueften beide verschieden: das
- * Formular klemmte und ersetzte still, die Sicherung wies ab - die eigene
- * Sicherung mit IPv6-Adresse, Umlaut in den Zonen oder einer Vorlage mit
- * Zeilenumbruch liess sich nicht zurueckspielen (weissware_agenten/
- * oberflaeche Befunde 3, 7, 9).
- */
-function ww_tts_feld_ok($f, $w)
-{
-    if (is_array($w) || is_object($w) || is_bool($w) || $w === null) {
-        return false;
-    }
-    switch ($f) {
-        case 'mode':
-            return in_array($w, array('musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox'), true);
-        case 'ip':
-            return is_string($w) && preg_match('/^[A-Za-z0-9_.:\[\]\-]{0,80}\z/', $w) === 1;
-        case 'port':
-            return preg_match('/^[0-9]{1,5}\z/', (string) $w) === 1 && (int) $w >= 1 && (int) $w <= 65535;
-        case 'zones':
-            return is_string($w) && preg_match('/^[\p{L}\p{N} ,~._\-]{0,120}\z/u', $w) === 1;
-        case 'volume':
-            return preg_match('/^[0-9]{1,3}\z/', (string) $w) === 1 && (int) $w >= 1 && (int) $w <= 100;
-        case 'lang':
-            return is_string($w) && preg_match('/^[a-z]{2}\z/', $w) === 1;
-        case 'template':
-            return is_string($w) && strlen($w) <= 300 && preg_match('//u', $w) === 1
-                && preg_match('/[\x00-\x1F\x7F]/', $w) !== 1;
-        case 'alexa_geraet':
-        case 'google_geraet':
-            return ww_ng_geraet_ok($w);
-        case 'alexa_laut':
-        case 'google_laut':
-            return ww_ng_laut_ok($w);
-        case 'alexa_token':
-        case 'google_token':
-            return $w === '' || ww_ng_token_ok($w);
-    }
-    return false;
+    list($st, $html) = ansage_pruefzeile(ww_tts(), (bool) $offen, ww_ansage_k());
+    return array($st === -2 ? -1 : $st, $html);
 }
 
 /** Die Form eines MQTT-Praefixes: Ebenen aus Buchstaben, Ziffern, _ und -,
@@ -2486,78 +2251,24 @@ function ww_praefixe_alt($cfg = null)
     return $aus;
 }
 
-function ww_tts_url($text)
+/**
+ * Eine Ansage ueber die eingestellte Ausgabeart. Rueckgabe: das Ergebnis von ansage_sprechen() - stand
+ * (1 gesendet, 0 gescheitert, -1 nichts gesendet ohne Fehler: aus, Original-Audioserver, leerer Text),
+ * kennung, art, http, zeile, zeichen; nie Text oder Token. Ins Protokoll (ansage.log) kommt genau eine Zeile.
+ */
+function ww_say_ergebnis($text)
 {
-    /* Nr. 36 b, Stufe 1: die Adresse baut die gemeinsame Sprachausgabe
-     * (ansage_tts_url()) - dieselbe Zonenliste (einmal fuer alle Modi
-     * normalisiert), dieselbe Lautstaerke je Zone, dieselbe Vorgabe-Vorlage
-     * fuer MS4H, die IP nur, wenn die Vorlage sie benutzt. Wie bisher laeuft
-     * jeder Wert von mode ausser musicserver und audioserver ueber die
-     * Vorlage; Zahlen in den Textfeldern gelten wie bisher als Text. */
     $tts = ww_tts();
-    if ($tts['mode'] === 'audioserver') {
-        return null; // Original Loxone Audioserver: TTS nur ueber Loxone Config (Textgenerator -> TTS-Eingang)
-    }
-    if ($tts['mode'] !== 'musicserver') {
-        $tts['mode'] = 'custom';
-    }
-    foreach (array('ip', 'zones', 'lang', 'template') as $s) {
-        if (is_scalar($tts[$s])) { $tts[$s] = (string) $tts[$s]; }
-    }
-    return ansage_tts_url((string) $text, $tts);
+    $ng = ($tts['mode'] === 'alexang' || $tts['mode'] === 'cc4lox');
+    $r = ansage_sprechen((string) $text, $tts, ww_ansage_k($ng ? 'LoxBerry Weissware' : 'Mozilla/5.0 (LoxBerry Weissware)'));
+    ww_ansage_log('Ansage: ' . ansage_kurz($r));
+    return $r;
 }
 
 function ww_say($text)
 {
-    $erg = ww_sagen($text);
-    return $erg[0];
-}
-
-/**
- * Eine Ansage sprechen. Rueckgabe array(gesendet, Grund als Klartext oder '',
- * Antwortzeile oder ''). Die Antwortzeile gibt es nur bei Alexa-NG und
- * Chromecast 4 Lox NG (Bauliste A1); fuer die uebrigen Ausgabearten ist der
- * Weg unveraendert (gemessen vorher = nachher).
- */
-function ww_sagen($text)
-{
-    $tts = ww_tts();
-    if ($tts['mode'] === 'alexang' || $tts['mode'] === 'cc4lox') {
-        $art = ($tts['mode'] === 'cc4lox') ? 'google' : 'alexa';
-        $v = $art . '_';
-        $antwort = '';
-        $gid = ww_ng_sprechen($text, $tts, $art, $antwort);
-        $g = (is_string($tts[$v . 'geraet']) && $tts[$v . 'geraet'] !== '') ? $tts[$v . 'geraet'] : 'Standardgeraet';
-        $l = (is_scalar($tts[$v . 'laut']) && (int) $tts[$v . 'laut'] >= 0 && (int) $tts[$v . 'laut'] <= 100)
-            ? (string) (int) $tts[$v . 'laut'] : 'Ansagelautstaerke';
-        /* Ins Protokoll: Geraet, Lautstaerke, die LAENGE des Textes und die
-         * Antwort (HTTP-Code, GRUND) - nie das Token, nie der Text. */
-        ww_ansage_log('Ansage ueber ' . ($art === 'google' ? 'Google-Lautsprecher (Chromecast 4 Lox NG' : 'Alexa-NG (')
-            . ($art === 'google' ? ', ' : '') . 'Geraet ' . $g . ', Lautstaerke ' . $l . ', '
-            . strlen((string) $text) . ' Zeichen) -> '
-            . ($gid === '' ? 'gesendet: ' . $antwort : 'FEHLER: ' . ww_ng_grund_text($gid)
-                             . ($antwort !== '' ? ' (' . $antwort . ')' : '')));
-        return array($gid === '', $gid === '' ? '' : ww_ng_grund_text($gid), $antwort);
-    }
-    $url = ww_tts_url($text);
-    if ($url === null) {
-        ww_ansage_log('Ansage: Modus "Original Loxone Audioserver" - Sprachausgabe erfolgt ueber Loxone Config (Textgenerator)');
-        return array(false, '', '');
-    }
-    if ($url === '') {
-        ww_ansage_log('Ansage uebersprungen: keine TTS-IP konfiguriert');
-        return array(false, '', '');
-    }
-    /* Nr. 36 b, Stufe 1: abgerufen ueber die gemeinsame Sprachausgabe - ohne
-     * Weiterleitung, ohne Proxy; gesendet heisst HTTP 2xx. Die Zeitgrenze bleibt
-     * 10 s (mit curl hoechstens 3 s fuer den Verbindungsaufbau). Ins Protokoll
-     * kommt vom Ansagetext nur seine Laenge (Entscheidung Nr. 40), gezaehlt wie
-     * in den Zeilen fuer Alexa-NG und Google darueber. */
-    $k36 = ww_ansage_k('Mozilla/5.0 (LoxBerry Weissware)');
-    $a36 = ansage_ausfuehren(ansage_anfrage('GET', $url, null, 10, $k36), $k36);
-    $ok = ($a36['code'] >= 200 && $a36['code'] < 300);
-    ww_ansage_log('Ansage gesendet (' . strlen((string) $text) . ' Zeichen) -> ' . ($ok ? 'OK' : 'FEHLER'));
-    return array($ok, '', '');
+    $r = ww_say_ergebnis($text);
+    return $r['stand'] === 1;
 }
 
 /**
@@ -2596,15 +2307,15 @@ function ww_ansage_ruhe($cfg = null, $jetzt = null)
 function ww_ansage_text_zu($ereignis, $name)
 {
     $name = trim((string) $name);
-    $name = $name === '' ? ww_t('ANSAGE.EIN_GERAET')
+    $name = $name === '' ? ww_t('WW_ANSAGE.EIN_GERAET')
                          : preg_replace('/[^\p{L}\p{N} .,:!?\-]/u', ' ', $name);
     if ($ereignis === 'stoerung') {
-        return sprintf(ww_t('ANSAGE.T_STOERUNG'), $name);
+        return sprintf(ww_t('WW_ANSAGE.T_STOERUNG'), $name);
     }
     if ($ereignis === 'fernstart') {
-        return sprintf(ww_t('ANSAGE.T_FERNSTART'), $name);
+        return sprintf(ww_t('WW_ANSAGE.T_FERNSTART'), $name);
     }
-    return sprintf(ww_t('ANSAGE.T_FERTIG'), $name);
+    return sprintf(ww_t('WW_ANSAGE.T_FERTIG'), $name);
 }
 
 function ww_ansage_check()
@@ -2760,7 +2471,10 @@ function ww_wert_pruefen($schluessel, $w)
     return true;
 }
 
-/** Die Sprachausgabe ist der einzige Schluessel mit einem Unterbau. */
+/** Die Sprachausgabe ist der einzige Schluessel mit einem Unterbau. Seit 0.9.39 prueft die gemeinsame
+ *  Sprachausgabe jeden Wert - dieselbe Pruefung wie das Formular (Heimnetz fuer Adresse und Vorlage,
+ *  Entscheidung Nr. 40). Ein Sprechtoken in der Datei weist sie ab (Bauliste A1): Sicherungen tragen es nie;
+ *  leer ("") ist erlaubt und laesst das geltende stehen. Ein Eintrag, den das Modul nicht kennt, ist fremd. */
 function ww_tts_pruefen($w, &$mangel)
 {
     if (!is_array($w)) {
@@ -2768,30 +2482,25 @@ function ww_tts_pruefen($w, &$mangel)
         return false;
     }
     $ok = true;
-    /* Dieselbe Musterliste wie das Formular (ww_tts_feld_ok(), Bauliste O6).
-     * Ein Sprechtoken in der Datei weist sie ab (Bauliste A1): Sicherungen
-     * tragen es nie; leer ("") ist erlaubt und laesst das geltende stehen. */
-    $regeln = array_flip(array('mode', 'ip', 'port', 'zones', 'volume', 'lang', 'template',
-                               'alexa_geraet', 'alexa_laut', 'google_geraet', 'google_laut'));
     foreach (array('alexa_token', 'google_token') as $f) {
         if (array_key_exists($f, $w) && $w[$f] !== '') {
             $mangel[] = sprintf(ww_t('EINST.SICH_SPRECHTOKEN'), 'tts.' . $f);
             $ok = false;
         }
     }
-    foreach (array_keys($regeln) as $f) {
-        if (!array_key_exists($f, $w)) {
+    foreach ($w as $f => $wert) {
+        $f = (string) $f;
+        if ($f === 'alexa_token' || $f === 'google_token') {
             continue;
         }
-        if (!ww_tts_feld_ok($f, $w[$f])) {
-            $mangel[] = sprintf(ww_t('EINST.SICH_WERT'), 'tts.' . $f);
+        if (!array_key_exists($f, ansage_vorgaben())) {
+            $mangel[] = sprintf(ww_t('EINST.SICH_FREMD'), htmlspecialchars('tts.' . $f, ENT_QUOTES, 'UTF-8'));
             $ok = false;
+            continue;
         }
-    }
-    foreach (array_keys($w) as $f) {
-        if (!isset($regeln[$f]) && $f !== 'alexa_token' && $f !== 'google_token') {
-            $mangel[] = sprintf(ww_t('EINST.SICH_FREMD'),
-                                 htmlspecialchars('tts.' . (string) $f, ENT_QUOTES, 'UTF-8'));
+        $g = '';
+        if (ansage_wert_pruefen(array($f => $wert), $g, ww_ansage_modi()) === null) {
+            $mangel[] = sprintf(ww_t('EINST.SICH_WERT'), 'tts.' . $f);
             $ok = false;
         }
     }

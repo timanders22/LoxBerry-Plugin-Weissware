@@ -298,85 +298,32 @@ if ($ww_post && isset($_POST['speichern'])) {
     /* Ruhezeit der Ansage. Was nicht ins Muster passt, wird gemeldet - eine
      * stillschweigend auf 00:00 zurechtgebogene Zeit hiesse: es spricht doch
      * nachts. Der Sprachschluessel steht AUSGESCHRIEBEN neben dem Feld. */
-    foreach (array('ansage_ruhe_von' => 'ANSAGE.L_RUHE_VON',
-                   'ansage_ruhe_bis' => 'ANSAGE.L_RUHE_BIS') as $ww_zf => $ww_zk) {
+    foreach (array('ansage_ruhe_von' => 'WW_ANSAGE.L_RUHE_VON',
+                   'ansage_ruhe_bis' => 'WW_ANSAGE.L_RUHE_BIS') as $ww_zf => $ww_zk) {
         $ww_zw = (string) ww_post_text($ww_zf);
         if (!preg_match('/^([01][0-9]|2[0-3]):[0-5][0-9]$/', $ww_zw)) {
-            $ww_fehler[] = sprintf(ww_t('ANSAGE.FEHLER_ZEIT'), ww_t($ww_zk));
+            $ww_fehler[] = sprintf(ww_t('WW_ANSAGE.FEHLER_ZEIT'), ww_t($ww_zk));
             $ww_falsch[] = $ww_zf;
         } else {
             $ww_cfg[$ww_zf] = $ww_zw;
         }
     }
 
-    /* Sprachausgabe - EINE Musterliste mit der Sicherung (ww_tts_feld_ok(),
-     * Bauliste O6). Fehlt ein Feld ganz (eine aeltere Seite, ein anderes
-     * Werkzeug), bleibt der gespeicherte Wert; ein Fehler ist das nicht. */
-    $ww_tts = ww_tts();
-    $ww_tts_texte = array(
-        'mode' => 'ANSAGE.FEHLER_MODUS', 'ip' => 'ANSAGE.FEHLER_IP', 'port' => 'ANSAGE.FEHLER_PORT',
-        'zones' => 'ANSAGE.FEHLER_ZONEN', 'volume' => 'ANSAGE.FEHLER_LAUTSTAERKE',
-        'lang' => 'ANSAGE.FEHLER_SPRACHE', 'template' => 'ANSAGE.FEHLER_VORLAGE',
-        'alexa_geraet' => 'ANSAGE.FEHLER_ALEXA_GERAET', 'alexa_laut' => 'ANSAGE.FEHLER_ALEXA_LAUT',
-        'google_geraet' => 'ANSAGE.FEHLER_GOOGLE_GERAET', 'google_laut' => 'ANSAGE.FEHLER_GOOGLE_LAUT',
-    );
-    foreach ($ww_tts_texte as $ww_tf => $ww_tk) {
-        $ww_tw = ww_post_text('tts_' . $ww_tf);
-        if ($ww_tw === null) {
-            if (isset($_POST['tts_' . $ww_tf])) {     // eine Liste statt eines Werts
-                $ww_fehler[] = ww_t($ww_tk);
-                $ww_falsch[] = 'tts_' . $ww_tf;
-            }
-            continue;
-        }
-        if ($ww_tf === 'lang') {
-            $ww_tw = strtolower($ww_tw);
-        }
-        if (($ww_tf === 'alexa_laut' || $ww_tf === 'google_laut') && $ww_tw === '') {
-            $ww_tw = '-1';
-        }
-        if (!ww_tts_feld_ok($ww_tf, $ww_tw)) {
-            $ww_fehler[] = ww_t($ww_tk);
-            $ww_falsch[] = 'tts_' . $ww_tf;
-            continue;
-        }
-        $ww_tts[$ww_tf] = in_array($ww_tf, array('port', 'volume', 'alexa_laut', 'google_laut'), true)
-            ? (int) $ww_tw : $ww_tw;
+    /* Sprachausgabe (seit 0.9.39, Nr. 36 b Stufe 2): der Formular-Baustein der gemeinsamen Sprachausgabe
+     * liest und prueft den ganzen Block - Adresse und Vorlage nur im Heimnetz (Entscheidung Nr. 40),
+     * Sprechtoken wie ein Kennwort (leer = unveraendert, der Haken loescht, beides zugleich ist ein
+     * Widerspruch), Alexa-NG/Google ohne Token ist beanstandet. Jede Beanstandung kommt in dieselbe Liste
+     * wie die uebrigen (nichts gespeichert, Nr. 16; Eingaben zurueck, X-2, ohne Token). Still bleibt wie
+     * bisher: die Sprache in Kleinbuchstaben, Leerraum am Rand. */
+    $ww_tpost = $_POST;
+    if (isset($ww_tpost['tts_lang']) && is_string($ww_tpost['tts_lang'])) {
+        $ww_tpost['tts_lang'] = strtolower($ww_tpost['tts_lang']);
     }
-    /* Die Sprechtoken (Bauliste A1): Kennwortfeld, leer lassen behaelt das
-     * Token, der Haken loescht es; ein neues Token UND der Haken zugleich sind
-     * ein Widerspruch. Das Token reist nie zurueck (X-2). */
-    foreach (array('alexa' => 'ANSAGE.L_ALEXA_TOKEN', 'google' => 'ANSAGE.L_GOOGLE_TOKEN') as $ww_art => $ww_lk) {
-        $ww_tok = ww_post_text('tts_' . $ww_art . '_token');
-        $ww_weg = isset($_POST['tts_' . $ww_art . '_token_loeschen']);
-        if ($ww_tok === null && isset($_POST['tts_' . $ww_art . '_token'])) {
-            $ww_fehler[] = sprintf(ww_t('ANSAGE.FEHLER_TOKEN'), ww_t($ww_lk));
-            $ww_falsch[] = 'tts_' . $ww_art . '_token';
-            continue;
-        }
-        if ($ww_tok !== null && $ww_tok !== '') {
-            if ($ww_weg) {
-                $ww_fehler[] = sprintf(ww_t('ANSAGE.FEHLER_TOKEN_HAKEN'), ww_t($ww_lk));
-                $ww_falsch[] = 'tts_' . $ww_art . '_token';
-            } elseif (!ww_ng_token_ok($ww_tok)) {
-                $ww_fehler[] = sprintf(ww_t('ANSAGE.FEHLER_TOKEN'), ww_t($ww_lk));
-                $ww_falsch[] = 'tts_' . $ww_art . '_token';
-            } else {
-                $ww_tts[$ww_art . '_token'] = $ww_tok;
-            }
-        } elseif ($ww_weg) {
-            $ww_tts[$ww_art . '_token'] = '';
-        }
-    }
-    if ($ww_tts['mode'] === 'alexang' && !ww_ng_token_ok($ww_tts['alexa_token'])) {
-        $ww_fehler[] = ww_t('ANSAGE.FEHLER_ALEXA_OHNE_TOKEN');
-        $ww_falsch[] = 'tts_alexa_token';
-    }
-    if ($ww_tts['mode'] === 'cc4lox' && !ww_ng_token_ok($ww_tts['google_token'])) {
-        $ww_fehler[] = ww_t('ANSAGE.FEHLER_GOOGLE_OHNE_TOKEN');
-        $ww_falsch[] = 'tts_google_token';
-    }
-    $ww_cfg['tts'] = $ww_tts;
+    $ww_tmangel = array();
+    $ww_tbean = array();
+    $ww_cfg['tts'] = ansage_formular_lesen($ww_tpost, ww_tts(), $ww_tmangel, $ww_tbean, ww_ansage_opt(), ww_ansage_k());
+    foreach ($ww_tmangel as $ww_tm) { $ww_fehler[] = ww_e($ww_tm['text']); }
+    foreach ($ww_tbean as $ww_tb) { $ww_falsch[] = $ww_tb; }
 
     $ww_spr = (string) ww_post_text('sprache');
     if (!preg_match('/^[a-z]{2}-[A-Z]{2}$/', $ww_spr)) {
@@ -442,12 +389,15 @@ if ($ww_post && isset($_POST['speichern'])) {
             $ww_fehler[] = sprintf(ww_t('EINST.FEHLER_SPEICHERN'), ww_e($ww_p['config']));
         }
     } else {
+        $ww_ax2 = array();
+        $ww_ahk = array();
+        foreach (ansage_x2_felder(ww_ansage_opt()) as $ww_an) {
+            if (substr($ww_an, -9) === '_loeschen') { $ww_ahk[] = $ww_an; } else { $ww_ax2[] = $ww_an; }
+        }
         $ww_eingaben = ww_eingaben_sammeln('settings',
-            array('takt_ruhe', 'takt_betrieb', 'wartezeit', 'sprache', 'ansage_ruhe_von', 'ansage_ruhe_bis',
-                  'tts_mode', 'tts_ip', 'tts_port', 'tts_zones', 'tts_volume', 'tts_lang', 'tts_template',
-                  'tts_alexa_geraet', 'tts_alexa_laut', 'tts_google_geraet', 'tts_google_laut',
-                  'hc_client_id', 'miele_client_id'),
-            $ww_haken_liste, $ww_falsch);
+            array_merge(array('takt_ruhe', 'takt_betrieb', 'wartezeit', 'sprache', 'ansage_ruhe_von', 'ansage_ruhe_bis',
+                              'hc_client_id', 'miele_client_id'), $ww_ax2),
+            array_merge($ww_haken_liste, $ww_ahk), $ww_falsch);
     }
     $ww_tab = 'tab-settings';
 
@@ -689,24 +639,18 @@ if ($ww_post && isset($_POST['selbsttest'])) {
     $ww_testausgabe = ww_selbsttest();
     $ww_tab = 'tab-test';
 }
-/* Testansage: spricht sofort ueber die eingestellte Ausgabeart. Bei Alexa-NG
- * und Chromecast 4 Lox NG steht die Antwortzeile der Gegenstelle mit in der
- * Meldung (Bauliste A1); fuer die uebrigen Ausgabearten bleibt die Meldung,
- * wie sie war. */
+/* Testansage: spricht sofort ueber die eingestellte Ausgabeart (seit 0.9.39 ueber die gemeinsame
+ * Sprachausgabe). Die Meldung nennt Ergebnis, Zeichenzahl und HTTP-Code - bei Alexa-NG und Chromecast 4
+ * Lox NG mit deren Antwortzeile (ohne Token), nie den Text. POST, Einmalmeldung, 303 wie jeder Knopf. */
 if ($ww_post && isset($_POST['ansage_test'])) {
-    list($ww_aok, $ww_agrund, $ww_aantw) = ww_sagen(ww_t('ANSAGE.TESTTEXT'));
-    $ww_amode = ww_tts()['mode'];
-    if ($ww_amode === 'alexang' || $ww_amode === 'cc4lox') {
-        if ($ww_aok) {
-            $ww_meldungen[] = ww_e(sprintf(ww_t('ANSAGE.TEST_NG_OK'), $ww_aantw));
-        } else {
-            $ww_misslungen[] = ww_e(sprintf(ww_t('ANSAGE.TEST_NG_FEHLER'), $ww_agrund))
-                . ($ww_aantw !== '' ? ' ' . ww_e(sprintf(ww_t('ANSAGE.NG_ANTWORT'), $ww_aantw)) : '');
-        }
-    } elseif ($ww_aok) {
-        $ww_meldungen[] = ww_t('ANSAGE.TEST_OK');
+    $ww_ar = ww_say_ergebnis(ww_t('WW_ANSAGE.TESTTEXT'));
+    if ($ww_ar['stand'] === 1) {
+        $ww_meldungen[] = ww_e(sprintf(ww_t('WW_ANSAGE.TEST_GESENDET'), sprintf(ww_t('WW_ANSAGE.TEST_WAS'),
+            (int) $ww_ar['zeichen'], (int) $ww_ar['http']) . ($ww_ar['zeile'] !== '' ? ' ' . $ww_ar['zeile'] : '')));
+    } elseif ($ww_ar['stand'] === -1) {
+        $ww_hinweise[] = ww_e(sprintf(ww_t('WW_ANSAGE.TEST_NICHTS'), ansage_kennung_text($ww_ar['kennung'], ww_ansage_k())));
     } else {
-        $ww_misslungen[] = ww_t('ANSAGE.TEST_FEHLER');
+        $ww_misslungen[] = ww_e(sprintf(ww_t('WW_ANSAGE.TEST_NICHT'), ansage_kennung_text($ww_ar['kennung'], ww_ansage_k())));
     }
     $ww_tab = 'tab-test';
 }
@@ -921,10 +865,12 @@ if ($ww_rahmen) {
 .sm-row > div > label { display: block; font-weight: 600; font-size: 0.9em; color: #555; margin: 0 0 4px; }
 .sm-row > div input[type=text], .sm-row > div input[type=number],
 .sm-row > div select, .sm-row > div textarea,
-#tts_template_row textarea {
+.sm-feld input[type=text], .sm-feld input[type=number], .sm-feld input[type=password],
+.sm-feld select, .sm-feld textarea {
   width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px;
   font-size: 0.95em; box-sizing: border-box; }
-#tts_template_row > label { display: block; font-weight: 600; font-size: 0.9em; color: #555; margin: 10px 0 4px; }
+.sm-feld input[type=text], .sm-feld input[type=number], .sm-feld input[type=password],
+.sm-feld select, .sm-feld textarea { max-width: 520px; }
 /* Ein Auswahlfeld muss man als Auswahlfeld erkennen. Nachgezogen am
    05.09.2026 nach Regeln/04; Wortlaut aus VORLAGE_hausstandard.css.html.
 
@@ -1212,126 +1158,52 @@ if (!empty($ww_zustand['fehler'])) { ?>
   <div class="sm-hilfe"><?= ww_t('EINST.H_WARTEZEIT') ?></div>
 </div>
 
-<h2><?= ww_e(ww_t('ANSAGE.H')) ?></h2>
-<?php $ww_tts = ww_tts();
-/* X-2: nach einer Beanstandung stehen die eingetippten Werte in den Feldern
- * (ohne Sprechtoken - die reisen nie zurueck). */
-foreach (array('mode', 'ip', 'port', 'zones', 'volume', 'lang', 'template',
-               'alexa_geraet', 'alexa_laut', 'google_geraet', 'google_laut') as $ww_tf) {
-    $ww_tts[$ww_tf] = ww_fw('settings', 'tts_' . $ww_tf, $ww_tts[$ww_tf]);
-} ?>
+<h2><?= ww_e(ww_t('WW_ANSAGE.H')) ?></h2>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
     <input data-role="none" type="checkbox" name="ansage_ein" value="1" <?= ww_fh('settings', 'ansage_ein', $ww_cfg['ansage_ein']) ? 'checked' : '' ?>>
-    <?= ww_e(ww_t('ANSAGE.L_EIN')) ?>
+    <?= ww_e(ww_t('WW_ANSAGE.L_EIN')) ?>
   </label>
-  <div class="sm-hilfe"><?= ww_t('ANSAGE.H_EIN') ?></div>
+  <div class="sm-hilfe"><?= ww_t('WW_ANSAGE.H_EIN') ?></div>
 </div>
 <?php /* Je Ereignis ein eigener Haken, alle ab Werk aus. */ ?>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
     <input data-role="none" type="checkbox" name="ansage_stoerung" value="1" <?= ww_fh('settings', 'ansage_stoerung', $ww_cfg['ansage_stoerung']) ? 'checked' : '' ?>>
-    <?= ww_e(ww_t('ANSAGE.L_STOERUNG')) ?>
+    <?= ww_e(ww_t('WW_ANSAGE.L_STOERUNG')) ?>
   </label>
 </div>
 <div class="sm-feld">
   <label style="display:inline-flex;align-items:center;gap:8px;">
     <input data-role="none" type="checkbox" name="ansage_fernstart" value="1" <?= ww_fh('settings', 'ansage_fernstart', $ww_cfg['ansage_fernstart']) ? 'checked' : '' ?>>
-    <?= ww_e(ww_t('ANSAGE.L_FERNSTART')) ?>
+    <?= ww_e(ww_t('WW_ANSAGE.L_FERNSTART')) ?>
   </label>
-  <div class="sm-hilfe"><?= ww_t('ANSAGE.H_FERNSTART') ?></div>
+  <div class="sm-hilfe"><?= ww_t('WW_ANSAGE.H_FERNSTART') ?></div>
 </div>
 <div class="sm-row">
     <div>
-        <label><?= ww_e(ww_t('ANSAGE.L_RUHE_VON')) ?></label>
+        <label><?= ww_e(ww_t('WW_ANSAGE.L_RUHE_VON')) ?></label>
         <input data-role="none" type="text" name="ansage_ruhe_von" value="<?= ww_e(ww_fw('settings', 'ansage_ruhe_von', $ww_cfg['ansage_ruhe_von'])) ?>" placeholder="22:00"<?= ww_fm('ansage_ruhe_von') ?>>
     </div>
     <div>
-        <label><?= ww_e(ww_t('ANSAGE.L_RUHE_BIS')) ?></label>
+        <label><?= ww_e(ww_t('WW_ANSAGE.L_RUHE_BIS')) ?></label>
         <input data-role="none" type="text" name="ansage_ruhe_bis" value="<?= ww_e(ww_fw('settings', 'ansage_ruhe_bis', $ww_cfg['ansage_ruhe_bis'])) ?>" placeholder="07:00"<?= ww_fm('ansage_ruhe_bis') ?>>
     </div>
     <div>
         <label>&nbsp;</label>
-        <div class="sm-hilfe"><?= ww_t('ANSAGE.H_RUHE') ?></div>
+        <div class="sm-hilfe"><?= ww_t('WW_ANSAGE.H_RUHE') ?></div>
     </div>
 </div>
-<div class="sm-row">
-    <div>
-        <label><?= ww_e(ww_t('ANSAGE.L_AUSGABE')) ?></label>
-        <select data-role="none" name="tts_mode" id="tts_mode" onchange="wwTtsMode()"<?= ww_fm('tts_mode') ?>>
-            <option value="musicserver"<?= $ww_tts['mode'] === 'musicserver' ? ' selected' : '' ?>><?= ww_e(ww_t('ANSAGE.O_MUSICSERVER')) ?></option>
-            <option value="ms4h"<?= $ww_tts['mode'] === 'ms4h' ? ' selected' : '' ?>><?= ww_e(ww_t('ANSAGE.O_MS4H')) ?></option>
-            <option value="audioserver"<?= $ww_tts['mode'] === 'audioserver' ? ' selected' : '' ?>><?= ww_e(ww_t('ANSAGE.O_AUDIOSERVER')) ?></option>
-            <option value="custom"<?= $ww_tts['mode'] === 'custom' ? ' selected' : '' ?>><?= ww_e(ww_t('ANSAGE.O_CUSTOM')) ?></option>
-            <option value="alexang"<?= $ww_tts['mode'] === 'alexang' ? ' selected' : '' ?>><?= ww_e(ww_t('ANSAGE.O_ALEXANG')) ?></option>
-            <option value="cc4lox"<?= $ww_tts['mode'] === 'cc4lox' ? ' selected' : '' ?>><?= ww_e(ww_t('ANSAGE.O_CC4LOX')) ?></option>
-        </select>
-    </div>
-    <div>
-        <label><?= ww_e(ww_t('ANSAGE.L_IP')) ?></label>
-        <input data-role="none" type="text" name="tts_ip" value="<?= ww_e($ww_tts['ip']) ?>" placeholder="z. B. 192.168.1.50"<?= ww_fm('tts_ip') ?>>
-    </div>
-    <div>
-        <label><?= ww_e(ww_t('ANSAGE.L_PORT')) ?></label>
-        <input data-role="none" type="<?= ww_ftyp('tts_port') ?>" name="tts_port" value="<?= ww_e($ww_tts['port']) ?>" min="1" max="65535"<?= ww_fm('tts_port') ?>>
-    </div>
-</div>
-<div class="sm-row">
-    <div>
-        <label><?= ww_e(ww_t('ANSAGE.L_ZONEN')) ?></label>
-        <input data-role="none" type="text" name="tts_zones" value="<?= ww_e($ww_tts['zones']) ?>" placeholder="z. B. 2,4,6"<?= ww_fm('tts_zones') ?>>
-        <div class="sm-hilfe"><?= ww_t('ANSAGE.H_ZONEN') ?></div>
-    </div>
-    <div>
-        <label><?= ww_e(ww_t('ANSAGE.L_LAUTSTAERKE')) ?></label>
-        <input data-role="none" type="<?= ww_ftyp('tts_volume') ?>" name="tts_volume" value="<?= ww_e($ww_tts['volume']) ?>" min="1" max="100"<?= ww_fm('tts_volume') ?>>
-    </div>
-    <div>
-        <label><?= ww_e(ww_t('ANSAGE.L_SPRACHE')) ?></label>
-        <input data-role="none" type="text" name="tts_lang" value="<?= ww_e($ww_tts['lang']) ?>" maxlength="2"<?= ww_fm('tts_lang') ?>>
-    </div>
-</div>
-<div id="tts_template_row">
-    <label><?= ww_e(ww_t('ANSAGE.L_VORLAGE')) ?></label>
-    <textarea data-role="none" name="tts_template" id="tts_template" rows="2"<?= ww_fm('tts_template') ?> placeholder="http://{ip}:{port}/tts?text={text}&amp;zone={zones}&amp;vol={vol}"><?= ww_e($ww_tts['template']) ?></textarea>
-    <div class="sm-hilfe"><?= ww_t('ANSAGE.H_VORLAGE') ?></div>
-</div>
-<div id="tts_audioserver_hint" class="sm-warnung" style="display:none;">
-    <?= ww_t('ANSAGE.H_AUDIOSERVER') ?>
-</div>
-<?php
-/* Ausgabearten Alexa-NG und Google-Lautsprecher (Bauliste A1), ab Werk nicht
- * gewaehlt. Das Sprechtoken ist ein Kennwortfeld mit value="" - der Platzhalter
- * nennt nur die Laenge; leer lassen behaelt es, der Haken loescht es. */
-$ww_ng_reihen = array(
-    'alexa'  => array('tts_alexa_row', 'ANSAGE.H_ALEXA', 'ANSAGE.L_ALEXA_TOKEN'),
-    'google' => array('tts_google_row', 'ANSAGE.H_GOOGLE', 'ANSAGE.L_GOOGLE_TOKEN'),
-);
-foreach ($ww_ng_reihen as $ww_na => $ww_nr_) {
-    $ww_ntok = ww_tts()[$ww_na . '_token'];
-    $ww_nlaut = (string) $ww_tts[$ww_na . '_laut'] === '-1' ? '' : (string) $ww_tts[$ww_na . '_laut'];
-?>
-<div id="<?= $ww_nr_[0] ?>" style="display:none;">
-<div class="sm-hinweis"><?= ww_t($ww_nr_[1]) ?></div>
-<div class="sm-row">
-    <div>
-        <label><?= ww_e(ww_t('ANSAGE.L_NG_GERAET')) ?></label>
-        <input data-role="none" type="text" name="tts_<?= $ww_na ?>_geraet" value="<?= ww_e($ww_tts[$ww_na . '_geraet']) ?>" maxlength="200"<?= ww_fm('tts_' . $ww_na . '_geraet') ?>>
-    </div>
-    <div>
-        <label><?= ww_e(ww_t('ANSAGE.L_NG_LAUT')) ?></label>
-        <input data-role="none" type="text" name="tts_<?= $ww_na ?>_laut" value="<?= ww_e($ww_nlaut) ?>" maxlength="3"<?= ww_fm('tts_' . $ww_na . '_laut') ?>>
-    </div>
-    <div>
-        <label><?= ww_e(ww_t($ww_nr_[2])) ?></label>
-        <input data-role="none" type="password" name="tts_<?= $ww_na ?>_token" value="" autocomplete="new-password"<?= ww_fm('tts_' . $ww_na . '_token') ?> placeholder="<?= is_string($ww_ntok) && $ww_ntok !== '' ? ww_e(sprintf(ww_t('EINST.GESETZT'), strlen($ww_ntok))) : ww_e(ww_t('EINST.LEER')) ?>">
-        <label style="display:inline-flex;align-items:center;gap:6px;font-weight:normal;">
-            <input data-role="none" type="checkbox" name="tts_<?= $ww_na ?>_token_loeschen" value="1"> <?= ww_e(ww_t('ANSAGE.L_NG_TOKEN_LOESCHEN')) ?>
-        </label>
-    </div>
-</div>
-</div>
-<?php } ?>
+<div class="sm-hinweis"><?= ww_e(ww_t('WW_ANSAGE.HAUSFORM')) ?></div>
+<?php /* Seit 0.9.39 der Formular-Baustein der gemeinsamen Sprachausgabe (ansage_formular_html()): Klassen
+         sm-feld, sm-hilfe, sm-hinweis aus der Vorlage; X-2 ueber ww_fw/ww_fm/ww_fh wie die uebrigen Felder
+         (die Sprechtoken reisen nie zurueck); das Umschalt-Skript des Bausteins blendet ein Feld mit
+         .sm-beanstandet nie aus. */ ?>
+<?= ansage_formular_html(ww_tts(), array(
+    'w' => function ($n, $g) { return ww_fw('settings', $n, $g); },
+    'm' => function ($n) { return ww_fm($n); },
+    'c' => function ($n, $g) { return ww_fh('settings', $n, $g); },
+    'modi' => ww_ansage_modi()), ww_ansage_k()) ?>
 
 <?php /* MQTT stand hier bis zu dieser Fassung. Es wohnt jetzt
          vollstaendig im Reiter MQTT - eine Sache, eine Stelle. */ ?>
@@ -1769,28 +1641,28 @@ function ww_bausteine()
          * Die Namen sind unveraendert die 22 aus den Sprachdateien - keiner
          * ist hinzugekommen, keiner entfallen; sie stehen nur in Baureihenfolge.
          */
-        array(13, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N13', 'BAUSTEIN.P13', 'I &larr; ' . ww_t('BAUSTEIN.PVUEBERSCHUSS')),
-        array(14, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N14', 'BAUSTEIN.P14', 'I &larr; ' . ww_t('BAUSTEIN.HAUSAKKU')),
-        array(15, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N15', 'BAUSTEIN.P15', 'I &larr; ' . ww_t('BAUSTEIN.SPOTPREIS')),
-        array(16, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N16', '',             'I1 &larr; #14, I2 &larr; #15'),
-        array(17, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N17', '',             'I1 &larr; #13, I2 &larr; #16'),
-        array(18, 'BAUSTEIN.T_EVZ',     'BAUSTEIN.N18', 'BAUSTEIN.P18', 'I &larr; #17'),
+        array(13, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N13', 'BAUSTEIN.P13', 'I1 = ' . ww_t('BAUSTEIN.PVUEBERSCHUSS')),
+        array(14, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N14', 'BAUSTEIN.P14', 'I1 = ' . ww_t('BAUSTEIN.HAUSAKKU')),
+        array(15, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N15', 'BAUSTEIN.P15', 'I1 = ' . ww_t('BAUSTEIN.SPOTPREIS')),
+        array(16, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N16', '',             'I1 = #14, I2 = #15'),
+        array(17, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N17', '',             'I1 = #13, I2 = #16'),
+        array(18, 'BAUSTEIN.T_EVZ',     'BAUSTEIN.N18', 'BAUSTEIN.P18', '#17'),
         array(19, 'BAUSTEIN.T_WOCHE',   'BAUSTEIN.N19', 'BAUSTEIN.P19', '&mdash;'),
-        array(20, 'BAUSTEIN.T_UND',     'BAUSTEIN.N20', 'BAUSTEIN.P20', 'I1 &larr; #18, I2 &larr; #19'),
+        array(20, 'BAUSTEIN.T_UND',     'BAUSTEIN.N20', 'BAUSTEIN.P20', 'I1 = #18, I2 = #19'),
         array(21, 'BAUSTEIN.T_TASTER',  'BAUSTEIN.N21', 'BAUSTEIN.P21', '&mdash;'),
-        array(22, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N22', '',             'I1 &larr; #20, I2 &larr; #21'),
-        array(23, 'BAUSTEIN.T_UND',     'BAUSTEIN.N23', 'BAUSTEIN.P23', 'I1 &larr; #22, I2 &larr; #6'),
-        array(24, 'BAUSTEIN.T_IMPULS',  'BAUSTEIN.N24', 'BAUSTEIN.P24', 'I &larr; #23'),
-        array(25, 'BAUSTEIN.T_VA',      'BAUSTEIN.N25', 'BAUSTEIN.P25', 'I &larr; #24'),
+        array(22, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N22', '',             'I1 = #20, I2 = #21'),
+        array(23, 'BAUSTEIN.T_UND',     'BAUSTEIN.N23', 'BAUSTEIN.P23', 'I1 = #22, I2 = #6'),
+        array(24, 'BAUSTEIN.T_IMPULS',  'BAUSTEIN.N24', 'BAUSTEIN.P24', '#23'),
+        array(25, 'BAUSTEIN.T_VA',      'BAUSTEIN.N25', 'BAUSTEIN.P25', '#24'),
         array(26, 'BAUSTEIN.T_VA',      'BAUSTEIN.N26', 'BAUSTEIN.P26', ww_t('BAUSTEIN.MANUELL')),
-        array(27, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N27', 'BAUSTEIN.P27', 'I &larr; #5'),
-        array(28, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N28', 'BAUSTEIN.P28', 'I &larr; #27'),
-        array(29, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N29', 'BAUSTEIN.P29', 'I &larr; #7'),
-        array(30, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N30', 'BAUSTEIN.P30', 'I &larr; #29'),
-        array(31, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N31', 'BAUSTEIN.P31', 'I &larr; #11'),
-        array(32, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N32', 'BAUSTEIN.P32', 'I &larr; #31'),
-        array(33, 'BAUSTEIN.T_STATUS',  'BAUSTEIN.N33', 'BAUSTEIN.P33', 'I1 &larr; #1, I2 &larr; #3, I3 &larr; #5'),
-        array(34, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N34', 'BAUSTEIN.P34', 'I &larr; #24'),
+        array(27, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N27', 'BAUSTEIN.P27', '#5'),
+        array(28, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N28', 'BAUSTEIN.P28', '#27'),
+        array(29, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N29', 'BAUSTEIN.P29', '#7'),
+        array(30, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N30', 'BAUSTEIN.P30', '#29'),
+        array(31, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N31', 'BAUSTEIN.P31', '#11'),
+        array(32, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N32', 'BAUSTEIN.P32', '#31'),
+        array(33, 'BAUSTEIN.T_STATUS',  'BAUSTEIN.N33', 'BAUSTEIN.P33', 'I1 = #1, I2 = #3, I3 = #5'),
+        array(34, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N34', 'BAUSTEIN.P34', '#24'),
     );
 }
 ?>
@@ -1880,15 +1752,15 @@ function ww_bausteine()
 <div class="sm-log"><?= ww_e(implode("\n", $ww_mz)) ?></div>
 <?php } ?>
 
-<h3><?= ww_e(ww_t('ANSAGE.H_TEST')) ?></h3>
+<h3><?= ww_e(ww_t('WW_ANSAGE.H_TEST')) ?></h3>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <?php echo ww_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
-    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_test" value="1"><?= ww_e(ww_t('ANSAGE.K_TEST')) ?></button>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_test" value="1"><?= ww_e(ww_t('WW_ANSAGE.K_TEST')) ?></button>
   </form>
 </div>
-<div class="sm-hilfe"><?= ww_t('ANSAGE.H_TEST_TEXT') ?></div>
+<div class="sm-hilfe"><?= ww_t('WW_ANSAGE.H_TEST_TEXT') ?></div>
 <?php if ($ww_testausgabe !== '') { ?>
 <div class="sm-pre"><?= ww_e($ww_testausgabe) ?></div>
 <?php } ?>
@@ -1999,14 +1871,6 @@ if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) {
 	});
 	zeige(<?= json_encode($ww_tab) ?>);
 })();
-function wwTtsMode() {
-	var m = document.getElementById('tts_mode').value;
-	document.getElementById('tts_audioserver_hint').style.display = (m === 'audioserver') ? 'block' : 'none';
-	document.getElementById('tts_template_row').style.display = (m === 'ms4h' || m === 'custom') ? 'block' : 'none';
-	document.getElementById('tts_alexa_row').style.display = (m === 'alexang') ? 'block' : 'none';
-	document.getElementById('tts_google_row').style.display = (m === 'cc4lox') ? 'block' : 'none';
-}
-wwTtsMode();
 </script>
 <?php
 if ($ww_rahmen) {
