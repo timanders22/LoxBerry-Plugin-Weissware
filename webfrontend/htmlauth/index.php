@@ -1019,6 +1019,7 @@ if (!empty($ww_zustand['fehler'])) { ?>
 
 <!-- ================= Reiter: Einstellungen ================= -->
 <div class="sm-seite<?= $ww_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
+<div class="sm-hinweis"><?= ww_t('EINST.WAS_IST_DAS') ?></div>
 
 <?php if ($ww_pyv !== '' && version_compare($ww_pyv, '3.9.0', '<')) { ?>
 <div class="sm-fehler"><?= ww_t('EINST.PYTHON_ZU_ALT') ?></div>
