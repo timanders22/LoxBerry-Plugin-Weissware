@@ -10,12 +10,30 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.40 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.41 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.41
+
+Baustein-Liste in der Schreibweise des Leitungswerkzeugs, gemeinsame Sprachausgabe 1.1.2.
+
+* **Baustein-Liste (Reiter Einbindung in Loxone):** Am Statusbaustein #33 heißen die Eingänge jetzt
+  `V1`, `V2`, `V3` wie in Loxone Config. Alle anderen Zeilen waren schon in dieser Form. Gleiche
+  Bausteine, gleiche Verbindungen.
+* **Sprachausgabe: Werksart vom Modul.** Ab Werk spricht das Plugin über den Loxone Music Server. Das
+  sagt jetzt das Modul selbst: „Loxone Music Server (ab Werk)“ in der Auswahl und der Hinweis, dass erst
+  gesprochen wird, wenn die Angaben eingetragen sind. Die beiden eigenen Sätze sind gestrichen.
+* **Webport über das Modul:** Den Port des LoxBerry-Webservers fragt das Plugin jetzt über die
+  gemeinsame Sprachausgabe ab. Zuerst kommt die Auskunft von LoxBerry selbst, dann die `general.json` in
+  denselben drei Schreibweisen wie bisher. Ein Leerzeichen um die Zahl schadet nicht mehr.
+* **Sprachausgabe 1.1.2:** gemeinsames Modul und Abschnitt [ANSAGE] mit 157 Sätzen. Dazu aus dem Modul:
+  Zeichenzahl bei kaputtem UTF-8 in Zeichen, die Meldung „Port abgewiesen“ nennt das Feld nicht mehr
+  doppelt, ein Satz statt der rohen Kennung bei einem unbekannten Eintrag im Block der Sprachausgabe.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 0.9.40
 

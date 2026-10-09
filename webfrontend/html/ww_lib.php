@@ -2180,27 +2180,17 @@ function ww_tts()
     return $t;
 }
 
-/** Der Webport dieses LoxBerry aus der general.json (Webserver, WEBSERVER oder webserver, je mit Port, port
- *  oder PORT), sonst 80. Bleibt linieneigen: ansage_webport() der Fassung 1.1.1 liest nur Webserver/WEBSERVER
- *  mit Port (Modulwunsch Sprachmodul-2: ein wahlfreier zweiter Parameter fuer die weite Form). */
+/** Der Webport dieses LoxBerry: lbwebserverport() des SDK, sonst die general.json (Webserver, WEBSERVER
+ *  oder webserver, je mit Port, port oder PORT), sonst 80. Seit 0.9.41 ueber das Modul (1.1.2,
+ *  ansage_webport() mit der weiten Form $weit = true, Sprachmodul-2); bis 0.9.40 las die Linie die
+ *  general.json selbst, in derselben Reihenfolge. */
 function ww_webport()
 {
     $p = ww_paths();
     if ($p['home'] === '') {
         return 80;
     }
-    $g = ww_json_lesen($p['home'] . '/config/system/general.json');
-    foreach (array('Webserver', 'WEBSERVER', 'webserver') as $ab) {
-        foreach (array('Port', 'port', 'PORT') as $k) {
-            if (isset($g[$ab][$k]) && is_scalar($g[$ab][$k]) && preg_match('/^[0-9]{1,5}$/', (string) $g[$ab][$k])) {
-                $port = (int) $g[$ab][$k];
-                if ($port > 0 && $port <= 65535) {
-                    return $port;
-                }
-            }
-        }
-    }
-    return 80;
+    return ansage_webport($p['home'] . '/config/system/general.json', true);
 }
 
 /** Kontext der gemeinsamen Sprachausgabe: Webport, Kopfzeile, Datenordner fuer <art>_letzte.json (nur wenn
@@ -2212,9 +2202,10 @@ function ww_ansage_k($ua = 'LoxBerry Weissware')
     return array('port' => ww_webport(), 'kopf' => array('User-Agent: ' . $ua),
                  'ordner' => @is_dir($d) ? $d : '',
                  't' => function ($s) { return ww_t($s); },
-                 /* Zwei Saetze des Moduls sagen "ab Werk aus" - in dieser Linie ist ab Werk der Music
-                  * Server gewaehlt (Entwurf F7); dafuer stehen eigene Saetze in der Sprachdatei. */
-                 'schluessel' => array('ART_HINWEIS' => 'WW_ANSAGE.ART_HINWEIS', 'O_AUS' => 'WW_ANSAGE.O_AUS'));
+                 /* Ab Werk ist in dieser Linie der Music Server gewaehlt (ww_tts()). Seit Modul 1.1.2
+                  * sagt das Modul es selbst ('werk'); die eigenen Saetze WW_ANSAGE.ART_HINWEIS und
+                  * WW_ANSAGE.O_AUS (Entwurf F7) sind seit 0.9.41 gestrichen. */
+                 'werk' => 'musicserver');
 }
 
 /**
