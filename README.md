@@ -10,12 +10,46 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.41 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.42 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.42
+
+Einbindung in Loxone in Vollausstattung: drei Seiten aus dem gemeinsamen Musterprojekt mit drei Bildern und
+Schritt-für-Schritt-Anleitung, zwei Impulsbefehle in der Befehlsvorlage und eine neue Vorlage „Weissware Dienst“.
+
+* **Reiter „Einbindung in Loxone“, Schritt 8:** Statt der bisherigen Liste mit 34 Zeilen stehen dort die drei Seiten
+  des [LoxBerry-Plugins Musterprojekts](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt), je mit
+  Kasten „So übernehmen Sie diese Seite“, Tabelle, Hinweisen und Bild: „Weissware“ (30 Zeilen: alle 15 Statuswerte,
+  Ausfall über `OK` und eine Analogwertvalidierung auf `ALTER`, Meldungen Störung, Gerätestörung, fertig und „seit
+  einer Stunde nicht ausgeräumt“), „Weissware PV-Start“ (32 Zeilen: waschen bei PV-Überschuss, vollem Hausakku oder
+  günstigem Strom über `SPOT_RANK`, nur im Startfenster 8–20 Uhr, mit Fernstart-Freigabe und genau einem
+  Startimpuls) und „Weissware Steuerung und Verbrauch“ (20 Zeilen: Abbrechen, Anhalten, Ein/Aus, Sofortabruf,
+  Verbrauchswerte, Sammelwerte des Dienstes).
+* **Wer die alte Liste gebaut hat:** Der Impulsgeber vor „Weißware Start“ hatte keinen Auslöser, und der Befehl
+  „WW 1 Programm (Befehl)“ sendet beim Abfallen `stop` – ein automatischer Start wäre gleich wieder abgebrochen
+  worden. Für Automatik und App-Tasten die neuen Impulsbefehle nehmen (Seite „Weissware PV-Start“). Die
+  Schwellwertschalter hinter `FERTIG`, `TUER` und `ALTER` gaben bei jeder Abfrage einen Impuls, die Meldung kam dann
+  jede Minute; die neuen Seiten nehmen Einschaltverzögerungen bzw. die Analogwertvalidierung.
+* **Befehlsvorlage:** zwei Befehle hinten angehängt, „WW 1 Start (Befehl)“ (`aktion=start`) und „WW 1 Abbrechen
+  (Befehl)“ (`aktion=stop`), je nur mit Einbefehl. „WW 1 Programm (Befehl)“ bleibt für bestehende Projekte. Wer die
+  neuen nutzen will, liest die Befehlsvorlage neu ein oder legt die beiden Befehle von Hand am vorhandenen
+  virtuellen Ausgang an.
+* **Neue Vorlage „Weissware Dienst“** (Knopf „Dienst-Werte als Vorlage“): die Sammelwerte des Endpunkts
+  `aktion=dienst` (Geräte, davon laufend und fertig, Fehlversuche in Folge, schweigende Anbieter, OK, Alter) als ein
+  virtueller HTTP-Eingang mit 60 s Abfragezeit.
+* **Befehlstitel fest deutsch:** Die Vorlagen benennen ihre Befehle jetzt auch bei englischer Oberfläche deutsch
+  („WW 1 Zustand“, „WW 1 Läuft“ …), wie Liste, Bild und Musterprojekt. Suchtexte und Adressen bleiben, bestehende
+  Projekte behalten ihre Bausteine; die Kommentare bleiben übersetzt.
+* **Texte berichtigt:** Schritt 1 nennt HTTP als Weg des Musterprojekts (MQTT ist ab Werk aus und liefert kein
+  Alter), Schritt 3 den Abfragezyklus der Vorlage (60 statt 300 Sekunden), Schritt 7 die Ausfallerkennung über `OK`
+  (nach dreimal dem Ruhetakt) und die Analogwertvalidierung statt „1200 Sekunden“.
+* Kein Verhalten des Dienstes oder des Endpunkts geändert. Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät
+  angesehen.
 
 ## Neu in 0.9.41
 
@@ -970,6 +1004,7 @@ der laufenden Nummer darf überall die Kennung des Anbieters stehen.
 | `?token=T&aktion=status&geraet=N` | `WEISSWARE;OK=..;ZUSTAND=..;LAEUFT=..;FERTIG=..;VERBUNDEN=..;TUER=..;FORTSCHR=..;RESTMIN=..;STARTMIN=..;LAUFMIN=..;FERNSTART=..;FERNBED=..;NETZ=..;ALTER=..;FERTIGUM=..` plus eine Textzeile |
 | `?token=T&aktion=verbrauch&geraet=N` | `VERBRAUCH;OK=..;ENERGIE=..;WASSER=..;TEMP=..;SCHLEUDER=..;ALTER=..` |
 | `?token=T&aktion=geraete` | Liste aller erkannten Geräte |
+| `?token=T&aktion=dienst` | `DIENST;OK=..;GERAETE=..;LAEUFT=..;FERTIG=..;FEHLERFOLGE=..;AUSFAELLE=..;ALTER=..` – Sammelwerte aller Geräte (Vorlage „Weissware Dienst“) |
 | `?token=T&aktion=roh` | vollständiges Abbild als JSON |
 | `?token=T&aktion=start&geraet=N` | am Gerät gewähltes Programm starten |
 | `?token=T&aktion=start&geraet=N&programm=…` | bestimmtes Programm starten — **nur Home Connect** |
@@ -1012,6 +1047,14 @@ einmal `-`. Kommt es zurück, bekommt es seine alte Nummer.
 eine Home-Connect-Waschmaschine ohne WLAN), bleiben am Endpunkt wie über MQTT die
 zuletzt gemessenen Zustände stehen; `VERBUNDEN=0` sagt, dass sie alt sind. Ein Strich
 steht nur, wenn es seit dem ersten Abruf nie einen Wert gab.
+
+## Einbindung in Loxone
+
+Der Reiter *Einbindung in Loxone* führt in neun Schritten durch die Einbindung über HTTP, mit den Vorlagen zum
+Einlesen und in Schritt 8 den **Baustein-Listen** der drei Seiten zum Nachbauen. Fertig verbunden stehen die
+Bausteine auf den Seiten „Weissware“, „Weissware PV-Start“ und „Weissware Steuerung und Verbrauch“ im
+[LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt) – die ganze
+Projektdatei mit allen Plugin-Seiten und Vorlagen.
 
 ## Was nicht jeder Anbieter liefert
 

@@ -1664,6 +1664,27 @@ function ww_verbrauch_felder()
 }
 
 /**
+ * Die Sammelwerte des Endpunkts aktion=dienst (seit 0.9.6) - fuer EINEN virtuellen Eingang ueber alle Geraete:
+ * wie viele laufen, wie viele sind fertig, wie oft scheiterte der Abruf in Folge, wie viele Anbieter schweigen.
+ * Welle Bild 16 (0.9.42, Entwurf Welle 16 ww, E4): bis 0.9.41 gab es dafuer keine Vorlage. Die Suchtexte sind
+ * eindeutig: FERTIG= steckt nicht in FEHLERFOLGE=. 'titel' ist der Schluessel fuer ww_titel() (ohne Nummer).
+ * Kommentare GERAETE und OK wie die MQTT-Themen, die uebrigen in [WW_DFELD]. Grenzen gewaehlt wie bei den
+ * Status-Feldern.
+ */
+function ww_dienst_felder()
+{
+    return array(
+        'GERAETE'     => array('',  'WW_MQTT.GERAETE',       'min' => 0,  'max' => 99,         'analog' => true,  'titel' => 'D_GERAETE'),
+        'LAEUFT'      => array('',  'WW_DFELD.LAEUFT',       'min' => 0,  'max' => 99,         'analog' => true,  'titel' => 'D_LAEUFT'),
+        'FERTIG'      => array('',  'WW_DFELD.FERTIG',       'min' => 0,  'max' => 99,         'analog' => true,  'titel' => 'D_FERTIG'),
+        'FEHLERFOLGE' => array('',  'WW_DFELD.FEHLERFOLGE',  'min' => 0,  'max' => 9999,       'analog' => true,  'titel' => 'D_FEHLERFOLGE'),
+        'AUSFAELLE'   => array('',  'WW_DFELD.AUSFAELLE',    'min' => 0,  'max' => 3,          'analog' => true,  'titel' => 'D_AUSFAELLE'),
+        'OK'          => array('',  'WW_MQTT.OK',            'min' => 0,  'max' => 1,          'analog' => false, 'titel' => 'D_OK'),
+        'ALTER'       => array('s', 'WW_DFELD.ALTER',        'min' => -1, 'max' => 2147483647, 'analog' => true,  'titel' => 'D_ALTER'),
+    );
+}
+
+/**
  * Filtert eine Feldtabelle auf das, was dieses Geraet wirklich liefert.
  *
  * Eine Importdatei, die alle Messgroessen anlegt, legt auch die an, die kein
@@ -1752,12 +1773,52 @@ function ww_log_ende($datei, $anzahl = 400, $block = 8192)
  */
 function ww_titel($nummer, $schluessel)
 {
-    $t = ww_t('WW_NAME.' . $schluessel);
-    if ($t === 'WW_NAME.' . $schluessel) {
-        $t = $schluessel;
-    }
-    // Der Sofortabruf gilt der Anlage, nicht einem Geraet - deshalb ohne Nummer.
-    return ($schluessel === 'CMD_ABRUF') ? 'WW ' . $t : 'WW ' . (int) $nummer . ' ' . $t;
+    /* Welle Bild 16 (0.9.42, Entwurf Welle 16 ww, E11; Sprachregel 13.10.2026, Regeln/07): die Titel stehen fest
+     * deutsch im Code. Bis 0.9.41 kamen sie aus [WW_NAME] der Sprachdatei, und eine englische Oberflaeche legte
+     * "WW 1 State" oder "WW 1 Running" an - Baustein-Liste, Bild und Musterprojekt passten dann nicht mehr. Die
+     * Werte sind die bisherigen deutschen [WW_NAME]-Texte (im Bauskript gegen die Sprachdatei geprueft); nur die
+     * Kommentare der Vorlagen bleiben uebersetzt. Bestehende Projekte behalten ihre Bausteine, denn der Suchtext
+     * aendert sich nicht. CMD_START/CMD_STOP: die Impulsbefehle (E3); D_*: die Sammelwerte des Dienstes (E4).
+     * Reines ASCII: Umlaute als \u{..}. */
+    $namen = array(
+        'ZUSTAND' => 'Zustand',
+        'LAEUFT' => "L\u{e4}uft",
+        'FERTIG' => 'Fertig',
+        'VERBUNDEN' => 'Verbunden',
+        'TUER' => "T\u{fc}r",
+        'FORTSCHR' => 'Fortschritt',
+        'RESTMIN' => 'Restzeit',
+        'STARTMIN' => 'Startvorwahl',
+        'LAUFMIN' => 'Laufzeit',
+        'FERNSTART' => 'Fernstart',
+        'FERNBED' => 'Fernbedienung',
+        'NETZ' => 'Netz',
+        'ALTER' => 'Alter',
+        'OK' => 'OK',
+        'FERTIGUM' => 'Fertig um',
+        'ENERGIE' => 'Energie',
+        'WASSER' => 'Wasser',
+        'TEMP' => 'Temperatur',
+        'SCHLEUDER' => 'Schleuderdrehzahl',
+        'VOK' => 'OK (Verbrauch)',
+        'CMD_PROGRAMM' => 'Programm (Befehl)',
+        'CMD_PAUSE' => 'Pause (Befehl)',
+        'CMD_NETZ' => 'Ein/Aus (Befehl)',
+        'CMD_ABRUF' => 'Sofort abrufen (Befehl)',
+        'CMD_START' => 'Start (Befehl)',
+        'CMD_STOP' => 'Abbrechen (Befehl)',
+        'D_GERAETE' => "Ger\u{e4}te",
+        'D_LAEUFT' => "Ger\u{e4}te laufen",
+        'D_FERTIG' => "Ger\u{e4}te fertig",
+        'D_FEHLERFOLGE' => 'Fehlversuche',
+        'D_AUSFAELLE' => 'Anbieter still',
+        'D_OK' => 'Dienst OK',
+        'D_ALTER' => 'Dienst Alter',
+    );
+    $t = isset($namen[$schluessel]) ? $namen[$schluessel] : $schluessel;
+    // Der Sofortabruf und die Sammelwerte des Dienstes gelten der Anlage, nicht einem Geraet - ohne Nummer.
+    return ($schluessel === 'CMD_ABRUF' || strpos($schluessel, 'D_') === 0)
+        ? 'WW ' . $t : 'WW ' . (int) $nummer . ' ' . $t;
 }
 
 /** Der Name, unter dem der Miniserver diesen LoxBerry erreicht. */
@@ -1874,6 +1935,39 @@ function ww_vorlage_verbrauch($nummer = 1)
 }
 
 /**
+ * Vorlage fuer die SAMMELWERTE des Dienstes (Welle Bild 16, 0.9.42, E4) - eine Datei fuer die ganze Anlage,
+ * ohne Geraetenummer und ohne Filter (die Werte liefert immer der Endpunkt selbst, nie ein Anbieter).
+ * Rueckgabe: array(dateiname, inhalt)
+ */
+function ww_vorlage_dienst()
+{
+    $p = ww_paths();
+    $cmds = array();
+    foreach (ww_dienst_felder() as $feld => $info) {
+        $einheit = ww_klartext($info[0]);
+        $cmds[] = array(
+            'title'   => ww_titel(0, $info['titel']),
+            'comment' => ww_klartext(ww_t($info[1])) . ($einheit !== '' ? ' [' . $einheit . ']' : ''),
+            'check'   => '\i' . $feld . '=\i\v',
+            'unit'    => $einheit,
+            'min'     => $info['min'],
+            'max'     => $info['max'],
+            'analog'  => !empty($info['analog']),
+        );
+    }
+    return array(
+        'VI_weissware_dienst.xml',
+        ww_xml_virtual_in_http(array(
+            'title'   => 'Weissware Dienst',
+            'address' => 'http://' . ww_host() . '/plugins/' . $p['plugin']
+                       . '/index.php?token=' . ww_token() . '&aktion=dienst',
+            'polling' => '60',
+            'comment' => ww_vorlage_fussnote(0),
+        ), $cmds),
+    );
+}
+
+/**
  * Die Befehle als virtuelle AUSGAENGE.
  *
  * Drei Ausgaenge je Geraet, jeder mit Ein- UND Ausbefehl, weil das die beiden
@@ -1919,6 +2013,18 @@ function ww_vorlage_ausgang($nummer = 1)
                         'on'  => $frage . 'abruf',
                         'off' => '');
     }
+    /* Welle Bild 16 (0.9.42, Entwurf Welle 16 ww, E3): zwei Impulsbefehle, nur mit Einbefehl, hinten angehaengt
+     * (bestehende Projekte finden ihre Befehle unveraendert). "Programm (Befehl)" sendet beim Abfallen 'stop':
+     * ein Startimpuls aus einer Automatik oder eine App-Taste braeche das eben gestartete Programm wieder ab.
+     * Der Endpunkt kann start und stop seit jeher einzeln; es fehlte nur die Vorlage. */
+    $cmds[] = array('title' => ww_titel($nummer, 'CMD_START'),
+                    'comment' => ww_klartext(ww_t('LOX.VA_START')),
+                    'on'  => $frage . 'start' . $ziel,
+                    'off' => '');
+    $cmds[] = array('title' => ww_titel($nummer, 'CMD_STOP'),
+                    'comment' => ww_klartext(ww_t('LOX.VA_STOP')),
+                    'on'  => $frage . 'stop' . $ziel,
+                    'off' => '');
     return array(
         'VQ_weissware_geraet' . $nummer . '_befehle.xml',
         ww_xml_virtual_out(array(
@@ -2011,6 +2117,7 @@ function ww_vorlage($art = 'status', $nummer = 1)
     if ($art === 'verbrauch') { return ww_vorlage_verbrauch($nummer); }
     if ($art === 'ausgang')   { return ww_vorlage_ausgang($nummer); }
     if ($art === 'mqtt')      { return ww_vorlage_mqtt(); }
+    if ($art === 'dienst')    { return ww_vorlage_dienst(); }
     if ($art === 'status')    { return ww_vorlage_status($nummer); }
     return null;
 }

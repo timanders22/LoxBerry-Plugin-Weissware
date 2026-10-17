@@ -215,7 +215,7 @@ if ($ww_post && isset($_POST['vorlage'])) {
      * Geraeten musste die zweite Datei von Hand gebaut werden. Jetzt Art und
      * Nummer getrennt; was nicht ins Muster passt, wird abgewiesen. */
     $ww_art = (string) ww_post_text('vorlage');
-    if (!in_array($ww_art, array('status', 'verbrauch', 'ausgang', 'mqtt'), true)) {
+    if (!in_array($ww_art, array('status', 'verbrauch', 'ausgang', 'mqtt', 'dienst'), true)) {
         $ww_fehler[] = ww_t('LOX.FEHLER_VORLAGE');
     } else {
         $ww_rohnr = isset($_POST['vorlage_nr']) ? (string) ww_post_text('vorlage_nr') : '1';
@@ -895,6 +895,16 @@ if ($ww_rahmen) {
 .sm-wrap .sm-beanstandet { border: 2px solid #c62828 !important; background: #fff5f5 !important; }
 .sm-wrap input[type=checkbox].sm-beanstandet { outline: 2px solid #c62828; outline-offset: 2px; }
 
+/* Welle Bild 16 (0.9.42): drei Seiten aus dem Musterprojekt in Schritt 8 - Bild, Ueberschrift, Schritte und
+   Hinweise je Seite (wie Funkwacht 1.0.15). */
+.sm-bild { margin: 12px 0; }
+.sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
+.sm-wrap h4.sm-h4 { color: #4f7d17; font-size: 0.98em; font-weight: 700; margin: 22px 0 4px;
+    padding-top: 10px; border-top: 1px solid #e0e0e0; }
+.sm-schritte { margin: 6px 0 0 18px; padding: 0; }
+.sm-schritte li { margin: 3px 0; }
+
 </style>
 <div class="sm-wrap">
 
@@ -1454,7 +1464,9 @@ foreach (ww_mqtt_themen() as $ww_thema => $ww_schluessel) { ?>
 <tr><th><?= ww_e(ww_t('ALLG.EIGENSCHAFT')) ?></th><th><?= ww_e(ww_t('ALLG.WERT')) ?></th></tr>
 <tr><td><?= ww_e(ww_t('LOX.T_ADRESSE')) ?></td>
     <td><span class="sm-mono"><?= ww_e($ww_basis) ?>?token=<?= ww_e($ww_token) ?>&amp;aktion=status&amp;geraet=1</span></td></tr>
-<tr><td><?= ww_e(ww_t('LOX.T_ZYKLUS')) ?></td><td>300 <?= ww_e(ww_t('ALLG.SEKUNDEN')) ?></td></tr>
+<?php /* Welle Bild 16 (0.9.42, B5): 60 s wie die Vorlage (ww_vorlage_status() 'polling' => '60'); bis 0.9.41
+         stand hier 300. */ ?>
+<tr><td><?= ww_e(ww_t('LOX.T_ZYKLUS')) ?></td><td>60 <?= ww_e(ww_t('ALLG.SEKUNDEN')) ?></td></tr>
 </table>
 <?= ww_t('LOX.S3_BEFEHLE') ?>
 <table class="sm-tbl">
@@ -1518,6 +1530,16 @@ foreach ($ww_vnrn as $ww_vnr) {
   </form>
 </div>
 <?php } ?>
+<p><b><?= ww_e(ww_t('LOX.VORLAGEN_DIENST')) ?></b></p>
+<div class="sm-knopfreihe">
+<?php /* Welle Bild 16 (0.9.42, E4): die Sammelwerte des Dienstes - eine Datei fuer die ganze Anlage, daher
+         ohne vorlage_nr (der Handler nimmt dann 1, ww_vorlage_dienst() braucht keine Nummer). */ ?>
+  <form action="index.php" method="post">
+    <?php echo ww_fmt(); ?>
+    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="vorlage" value="dienst"><?= ww_e(ww_t('LOX.K_VORLAGE_DIENST')) ?></button>
+  </form>
+</div>
 <p><b><?= ww_e(ww_t('LOX.VORLAGEN_MQTT')) ?></b></p>
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
@@ -1598,87 +1620,187 @@ foreach ($ww_vnrn as $ww_vnr) {
 
 <?php
 /**
- * Die komplette Baustein-Liste. Pflicht im Hausstandard.
+ * Die Baustein-Listen fuer Schritt 8 (Welle Bild 16, 0.9.42; Hausherr 11.10.2026: Vollausstattung, ein
+ * absoluter Laie soll das Maximum leicht uebernehmen koennen; Entwurf Welle 16 ww, Entscheidungen 10 und 12).
+ * Drei Seiten aus dem LoxBerry-Plugins Musterprojekt, dort in Loxone Config gebaut und verbunden
+ * (Musterprojekt/baustein_listen.txt, Abschnitte "Weissware" 30, "Weissware PV-Start" 32 und "Weissware
+ * Steuerung und Verbrauch" 20 Zeilen, wortgleich). Je Tabellenzeile EIN Sprachschluessel BAUSTEIN.Z<seite>_<nn>
+ * = "Typ | Name | Parameter | Eingaenge" ohne Auszeichnung; jede Zelle und jeder Satz wird maskiert ausgegeben.
+ * Die Namen gelten fuer Geraet 1, so wie die Vorlagen sie anlegen (ww_titel(), fest deutsch).
  *
- * Anspruch: Wer die Tabelle von oben nach unten abarbeitet, hat die Funktion
- * nachgebaut, ohne nachzudenken. Loxone Config fuehrt alle Bausteine in der
- * Baustein-Suche (F5).
+ * Bis 0.9.41 stand hier ww_bausteine() mit 34 Zeilen "Waschen, wenn die Sonne scheint". Dort hing ein
+ * Impulsgeber ohne Ausloeser vor "WW 1 Programm (Befehl)", der beim Abfallen stop sendet (B1), und
+ * Schwellwertschalter hinter abgefragten Eingaengen meldeten je Abfrage (B2).
  *
- * Je Zeile: Nummer, Typ, Name, Parameter, woran die Eingaenge kommen.
- * Typ, Name und Parameter stehen als Sprachschluessel drin, die Eingangsspalte
- * ist symbolisch und damit sprachfrei.
+ * Rueckgabe: je Seite 'kopf' (Name der Musterseite), 'bild', 'schritte' und 'hinweise' (Saetze), 'zeilen'
+ * (je ein Text mit vier Zellen) - alles reiner Text.
  */
-function ww_bausteine()
+function ww_bausteinseiten()
 {
     return array(
-        array(1 , 'BAUSTEIN.T_VE',      'BAUSTEIN.N01', 'BAUSTEIN.P01', '&mdash;'),
-        array(2 , 'BAUSTEIN.T_VE',      'BAUSTEIN.N02', 'BAUSTEIN.P02', '&mdash;'),
-        array(3 , 'BAUSTEIN.T_VE',      'BAUSTEIN.N03', 'BAUSTEIN.P03', '&mdash;'),
-        array(4 , 'BAUSTEIN.T_VE',      'BAUSTEIN.N04', 'BAUSTEIN.P04', '&mdash;'),
-        array(5 , 'BAUSTEIN.T_VE',      'BAUSTEIN.N05', 'BAUSTEIN.P05', '&mdash;'),
-        array(6 , 'BAUSTEIN.T_VE',      'BAUSTEIN.N06', 'BAUSTEIN.P06', '&mdash;'),
-        array(7 , 'BAUSTEIN.T_VE',      'BAUSTEIN.N07', 'BAUSTEIN.P07', '&mdash;'),
-        array(8 , 'BAUSTEIN.T_VE',      'BAUSTEIN.N08', 'BAUSTEIN.P08', '&mdash;'),
-        array(9 , 'BAUSTEIN.T_VE',      'BAUSTEIN.N09', 'BAUSTEIN.P09', '&mdash;'),
-        array(10, 'BAUSTEIN.T_VE',      'BAUSTEIN.N10', 'BAUSTEIN.P10', '&mdash;'),
-        array(11, 'BAUSTEIN.T_VE',      'BAUSTEIN.N11', 'BAUSTEIN.P11', '&mdash;'),
-        array(12, 'BAUSTEIN.T_VE',      'BAUSTEIN.N12', 'BAUSTEIN.P12', '&mdash;'),
-        /* Zeilen 13-34 neu gelegt. Bis 0.9.6 stammten Typ- und Eingangsspalte
-         * wortgleich aus AudiConnect 0.9.6, waehrend Name und Parameter fuer
-         * Weissware neu geschrieben worden waren - um eine Zeile versetzt.
-         * Dadurch trug etwa #21 den Typ "Virtueller Ausgang Befehl" und den
-         * Parameter "Ein > 0,5, Aus < 0,5", #23 eine Benachrichtigung mit
-         * Schwellwerten. Dieselbe Altlastquelle wie das AUDI_-Praefix, das in
-         * 0.9.1 behoben wurde.
-         *
-         * Zwei Bedingungen bestimmen den Neuaufbau:
-         *   - UND und ODER haben ZWEI Eingaenge (REGELN_3, A4: I1=00, I2=01,
-         *     Q=02). Drei Bedingungen brauchen zwei Bausteine, keine dritte
-         *     Klemme. Die alte Zeile #15 fuehrte vier Eingaenge.
-         *   - Kein Vorwaertsverweis: jede Zeile bezieht sich nur auf kleinere
-         *     Nummern. Wer die Tabelle von oben nach unten abarbeitet, hat nie
-         *     einen Eingang ohne Quelle.
-         *
-         * Die Namen sind unveraendert die 22 aus den Sprachdateien - keiner
-         * ist hinzugekommen, keiner entfallen; sie stehen nur in Baureihenfolge.
-         */
-        array(13, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N13', 'BAUSTEIN.P13', 'I1 = ' . ww_t('BAUSTEIN.PVUEBERSCHUSS')),
-        array(14, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N14', 'BAUSTEIN.P14', 'I1 = ' . ww_t('BAUSTEIN.HAUSAKKU')),
-        array(15, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N15', 'BAUSTEIN.P15', 'I1 = ' . ww_t('BAUSTEIN.SPOTPREIS')),
-        array(16, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N16', '',             'I1 = #14, I2 = #15'),
-        array(17, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N17', '',             'I1 = #13, I2 = #16'),
-        array(18, 'BAUSTEIN.T_EVZ',     'BAUSTEIN.N18', 'BAUSTEIN.P18', '#17'),
-        array(19, 'BAUSTEIN.T_WOCHE',   'BAUSTEIN.N19', 'BAUSTEIN.P19', '&mdash;'),
-        array(20, 'BAUSTEIN.T_UND',     'BAUSTEIN.N20', 'BAUSTEIN.P20', 'I1 = #18, I2 = #19'),
-        array(21, 'BAUSTEIN.T_TASTER',  'BAUSTEIN.N21', 'BAUSTEIN.P21', '&mdash;'),
-        array(22, 'BAUSTEIN.T_ODER',    'BAUSTEIN.N22', '',             'I1 = #20, I2 = #21'),
-        array(23, 'BAUSTEIN.T_UND',     'BAUSTEIN.N23', 'BAUSTEIN.P23', 'I1 = #22, I2 = #6'),
-        array(24, 'BAUSTEIN.T_IMPULS',  'BAUSTEIN.N24', 'BAUSTEIN.P24', '#23'),
-        array(25, 'BAUSTEIN.T_VA',      'BAUSTEIN.N25', 'BAUSTEIN.P25', '#24'),
-        array(26, 'BAUSTEIN.T_VA',      'BAUSTEIN.N26', 'BAUSTEIN.P26', ww_t('BAUSTEIN.MANUELL')),
-        array(27, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N27', 'BAUSTEIN.P27', '#5'),
-        array(28, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N28', 'BAUSTEIN.P28', '#27'),
-        array(29, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N29', 'BAUSTEIN.P29', '#7'),
-        array(30, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N30', 'BAUSTEIN.P30', '#29'),
-        array(31, 'BAUSTEIN.T_SWS',     'BAUSTEIN.N31', 'BAUSTEIN.P31', '#11'),
-        array(32, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N32', 'BAUSTEIN.P32', '#31'),
-        array(33, 'BAUSTEIN.T_STATUS',  'BAUSTEIN.N33', 'BAUSTEIN.P33', 'V1 = #1, V2 = #3, V3 = #5'),
-        array(34, 'BAUSTEIN.T_BENACHR', 'BAUSTEIN.N34', 'BAUSTEIN.P34', '#24'),
+        array('kopf' => 'Weissware', 'bild' => 'einbindung_loxone.png',
+              'schritte' => array(
+                  sprintf(ww_t('BAUSTEIN.S1_SCHRITT1'), ww_t('REITER.EINSTELLUNGEN'), ww_t('EINST.H_ERKANNT'), ww_t('REITER.TEST'), ww_t('TEST.K_STATUS')),
+                  sprintf(ww_t('BAUSTEIN.S1_SCHRITT2'), ww_t('REITER.LOXONE'), ww_t('LOX.K_VORLAGE_STATUS')),
+                  ww_t('BAUSTEIN.S1_SCHRITT3'),
+                  ww_t('BAUSTEIN.S1_SCHRITT4'),
+                  ww_t('BAUSTEIN.S1_SCHRITT5'),
+                  ww_t('BAUSTEIN.S1_SCHRITT6')),
+              'zeilen' => array(
+                  ww_t('BAUSTEIN.Z1_01'),
+                  ww_t('BAUSTEIN.Z1_02'),
+                  ww_t('BAUSTEIN.Z1_03'),
+                  ww_t('BAUSTEIN.Z1_04'),
+                  ww_t('BAUSTEIN.Z1_05'),
+                  ww_t('BAUSTEIN.Z1_06'),
+                  ww_t('BAUSTEIN.Z1_07'),
+                  ww_t('BAUSTEIN.Z1_08'),
+                  ww_t('BAUSTEIN.Z1_09'),
+                  ww_t('BAUSTEIN.Z1_10'),
+                  ww_t('BAUSTEIN.Z1_11'),
+                  ww_t('BAUSTEIN.Z1_12'),
+                  ww_t('BAUSTEIN.Z1_13'),
+                  ww_t('BAUSTEIN.Z1_14'),
+                  ww_t('BAUSTEIN.Z1_15'),
+                  ww_t('BAUSTEIN.Z1_16'),
+                  ww_t('BAUSTEIN.Z1_17'),
+                  ww_t('BAUSTEIN.Z1_18'),
+                  ww_t('BAUSTEIN.Z1_19'),
+                  ww_t('BAUSTEIN.Z1_20'),
+                  ww_t('BAUSTEIN.Z1_21'),
+                  ww_t('BAUSTEIN.Z1_22'),
+                  ww_t('BAUSTEIN.Z1_23'),
+                  ww_t('BAUSTEIN.Z1_24'),
+                  ww_t('BAUSTEIN.Z1_25'),
+                  ww_t('BAUSTEIN.Z1_26'),
+                  ww_t('BAUSTEIN.Z1_27'),
+                  ww_t('BAUSTEIN.Z1_28'),
+                  ww_t('BAUSTEIN.Z1_29'),
+                  ww_t('BAUSTEIN.Z1_30')),
+              'hinweise' => array(
+                  ww_t('BAUSTEIN.S1_H1'),
+                  ww_t('BAUSTEIN.S1_H2'),
+                  ww_t('BAUSTEIN.S1_H3'),
+                  ww_t('BAUSTEIN.S1_H4'),
+                  ww_t('BAUSTEIN.S1_H5'),
+                  ww_t('BAUSTEIN.S1_H6'),
+                  ww_t('BAUSTEIN.S1_H7'),
+                  ww_t('BAUSTEIN.S1_H8'))),
+        array('kopf' => 'Weissware PV-Start', 'bild' => 'einbindung_loxone_pv_start.png',
+              'schritte' => array(
+                  sprintf(ww_t('BAUSTEIN.S2_SCHRITT1'), ww_t('REITER.EINSTELLUNGEN'), ww_t('EINST.L_STEUERUNG_EIN')),
+                  sprintf(ww_t('BAUSTEIN.S2_SCHRITT2'), ww_t('REITER.LOXONE'), ww_t('LOX.K_VORLAGE_BEFEHLE')),
+                  ww_t('BAUSTEIN.S2_SCHRITT3'),
+                  ww_t('BAUSTEIN.S2_SCHRITT4'),
+                  ww_t('BAUSTEIN.S2_SCHRITT5'),
+                  ww_t('BAUSTEIN.S2_SCHRITT6')),
+              'zeilen' => array(
+                  ww_t('BAUSTEIN.Z2_01'),
+                  ww_t('BAUSTEIN.Z2_02'),
+                  ww_t('BAUSTEIN.Z2_03'),
+                  ww_t('BAUSTEIN.Z2_04'),
+                  ww_t('BAUSTEIN.Z2_05'),
+                  ww_t('BAUSTEIN.Z2_06'),
+                  ww_t('BAUSTEIN.Z2_07'),
+                  ww_t('BAUSTEIN.Z2_08'),
+                  ww_t('BAUSTEIN.Z2_09'),
+                  ww_t('BAUSTEIN.Z2_10'),
+                  ww_t('BAUSTEIN.Z2_11'),
+                  ww_t('BAUSTEIN.Z2_12'),
+                  ww_t('BAUSTEIN.Z2_13'),
+                  ww_t('BAUSTEIN.Z2_14'),
+                  ww_t('BAUSTEIN.Z2_15'),
+                  ww_t('BAUSTEIN.Z2_16'),
+                  ww_t('BAUSTEIN.Z2_17'),
+                  ww_t('BAUSTEIN.Z2_18'),
+                  ww_t('BAUSTEIN.Z2_19'),
+                  ww_t('BAUSTEIN.Z2_20'),
+                  ww_t('BAUSTEIN.Z2_21'),
+                  ww_t('BAUSTEIN.Z2_22'),
+                  ww_t('BAUSTEIN.Z2_23'),
+                  ww_t('BAUSTEIN.Z2_24'),
+                  ww_t('BAUSTEIN.Z2_25'),
+                  ww_t('BAUSTEIN.Z2_26'),
+                  ww_t('BAUSTEIN.Z2_27'),
+                  ww_t('BAUSTEIN.Z2_28'),
+                  ww_t('BAUSTEIN.Z2_29'),
+                  ww_t('BAUSTEIN.Z2_30'),
+                  ww_t('BAUSTEIN.Z2_31'),
+                  ww_t('BAUSTEIN.Z2_32')),
+              'hinweise' => array(
+                  ww_t('BAUSTEIN.S2_H1'),
+                  ww_t('BAUSTEIN.S2_H2'),
+                  ww_t('BAUSTEIN.S2_H3'),
+                  ww_t('BAUSTEIN.S2_H4'),
+                  ww_t('BAUSTEIN.S2_H5'),
+                  ww_t('BAUSTEIN.S2_H6'),
+                  ww_t('BAUSTEIN.S2_H7'))),
+        array('kopf' => 'Weissware Steuerung und Verbrauch', 'bild' => 'einbindung_loxone_steuerung_verbrauch.png',
+              'schritte' => array(
+                  sprintf(ww_t('BAUSTEIN.S3_SCHRITT1'), ww_t('REITER.LOXONE'), ww_t('LOX.K_VORLAGE_VERBRAUCH'), ww_t('LOX.K_VORLAGE_DIENST')),
+                  ww_t('BAUSTEIN.S3_SCHRITT2'),
+                  ww_t('BAUSTEIN.S3_SCHRITT3')),
+              'zeilen' => array(
+                  ww_t('BAUSTEIN.Z3_01'),
+                  ww_t('BAUSTEIN.Z3_02'),
+                  ww_t('BAUSTEIN.Z3_03'),
+                  ww_t('BAUSTEIN.Z3_04'),
+                  ww_t('BAUSTEIN.Z3_05'),
+                  ww_t('BAUSTEIN.Z3_06'),
+                  ww_t('BAUSTEIN.Z3_07'),
+                  ww_t('BAUSTEIN.Z3_08'),
+                  ww_t('BAUSTEIN.Z3_09'),
+                  ww_t('BAUSTEIN.Z3_10'),
+                  ww_t('BAUSTEIN.Z3_11'),
+                  ww_t('BAUSTEIN.Z3_12'),
+                  ww_t('BAUSTEIN.Z3_13'),
+                  ww_t('BAUSTEIN.Z3_14'),
+                  ww_t('BAUSTEIN.Z3_15'),
+                  ww_t('BAUSTEIN.Z3_16'),
+                  ww_t('BAUSTEIN.Z3_17'),
+                  ww_t('BAUSTEIN.Z3_18'),
+                  ww_t('BAUSTEIN.Z3_19'),
+                  ww_t('BAUSTEIN.Z3_20')),
+              'hinweise' => array(
+                  ww_t('BAUSTEIN.S3_H1'),
+                  ww_t('BAUSTEIN.S3_H2'),
+                  ww_t('BAUSTEIN.S3_H3'),
+                  ww_t('BAUSTEIN.S3_H4'))),
     );
 }
 ?>
 
 <div class="sm-step"><b><?= ww_e(ww_t('LOX.S8_TITEL')) ?></b><br>
 <?= ww_t('LOX.S8_TEXT') ?>
+<?php foreach (ww_bausteinseiten() as $ww_bs) { ?>
+<h4 class="sm-h4"><?= ww_e($ww_bs['kopf']) ?></h4>
+<div class="sm-hinweis"><b><?= ww_e(ww_t('BAUSTEIN.SCHRITTE_TITEL')) ?></b>
+<ol class="sm-schritte">
+<?php foreach ($ww_bs['schritte'] as $ww_bx) { ?>
+<li><?= ww_e($ww_bx) ?></li>
+<?php } ?>
+</ol></div>
 <table class="sm-tbl">
 <tr><th>#</th><th><?= ww_e(ww_t('LOX.T_BAUSTEIN')) ?></th><th><?= ww_e(ww_t('LOX.T_NAMENSVORSCHLAG')) ?></th>
     <th><?= ww_e(ww_t('LOX.T_PARAMETER')) ?></th><th><?= ww_e(ww_t('LOX.T_EINGAENGE')) ?></th></tr>
-<?php foreach (ww_bausteine() as $ww_b) { ?>
-<tr><td><?= (int) $ww_b[0] ?></td><td><?= ww_t($ww_b[1]) ?></td><td><?= ww_t($ww_b[2]) ?></td>
-    <td><?= $ww_b[3] !== '' ? ww_t($ww_b[3]) : '&mdash;' ?></td><td><?= $ww_b[4] ?></td></tr>
+<?php foreach ($ww_bs['zeilen'] as $ww_i => $ww_bz) {
+    $ww_c = array_pad(explode(' | ', $ww_bz, 4), 4, ''); ?>
+<tr><td><?= (int) $ww_i + 1 ?></td><td><?= ww_e($ww_c[0]) ?></td><td><?= ww_e($ww_c[1]) ?></td>
+    <td><?= ww_e($ww_c[2]) ?></td><td><?= ww_e($ww_c[3]) ?></td></tr>
 <?php } ?>
 </table>
-<?= ww_t('LOX.S8_ERLAEUTERUNG') ?>
+<div class="sm-warnung"><b><?= ww_e(ww_t('BAUSTEIN.HINWEISE_TITEL')) ?></b>
+<ul class="sm-schritte">
+<?php foreach ($ww_bs['hinweise'] as $ww_bx) { ?>
+<li><?= ww_e($ww_bx) ?></li>
+<?php } ?>
+</ul></div>
+<figure class="sm-bild">
+<img src="<?= ww_e($ww_bs['bild']) ?>" alt="<?= ww_e(ww_t('LOX.BILD_ALT')) ?>" loading="lazy">
+<figcaption><?= ww_e(sprintf(ww_t('LOX.BILD_UNTERSCHRIFT'), $ww_bs['kopf'])) ?></figcaption>
+</figure>
+<div class="sm-hilfe"><?= ww_t('LOX.MUSTERPROJEKT') ?></div>
+<?php } ?>
 </div>
 
 <div class="sm-step"><b><?= ww_e(ww_t('LOX.S9_TITEL')) ?></b><br>
