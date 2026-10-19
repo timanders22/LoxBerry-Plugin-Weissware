@@ -10,12 +10,19 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.42 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.43 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.43
+
+Textnachzug zum Musterprojekt, Reiter **Einbindung in Loxone**, Seite „Weissware PV-Start“: Spotpreis aWATTar liefert die
+Werte jetzt über MQTT. Nr. 10 ist deshalb ein Virtueller Eingang `spot_awattar_rank` (bisher Virtueller HTTP-Eingang-Befehl
+`SPOT_RANK` aus der Vorlage „Spotpreis aWATTar“): Virtuellen Eingang mit dem Namen aus der Namenstabelle im Reiter ‚Einbindung in Loxone‘ des Plugins Spotpreis aWATTar (ab 1.2.38) anlegen.
+Kasten und Bild der Seite sind nachgezogen. Das Plugin selbst und seine Vorlagen sind unverändert.
 
 ## Neu in 0.9.42
 
