@@ -1,0 +1,79 @@
+#!/usr/bin/env php
+<?php
+/**
+ * Weissware Cloud - Anschluss an den LoxBerry-Healthcheck (seit 0.9.44, Gruppe 44)
+ *
+ * sbin/healthcheck.pl ruft eine ausfuehrbare Datei bin/healthcheck des Plugins auf - einmal mit "title", einmal
+ * mit "check" (Regeln/03 :73; direkt, die Shebang-Zeile entscheidet - Regeln/02 :691). Antworten sind JSON:
+ *   title -> {"desc":"Weissware Cloud"}
+ *   check -> {"desc", "status", "result", "url", "logfile"}; Status 0 unbekannt, 3 Fehler, 4 Warnung,
+ *            5 in Ordnung, 6 Hinweis.
+ * Form von BYD Autos 0.9.29 / Renault NG 2.1.20: das Urteil steht in ww_gesund_urteil() der Bibliothek, die Fakten
+ * sammelt ww_gesund_fakten() - NUR LESEND: kein Netz, kein Broker, keine Anmeldung beim Hersteller, kein Protokoll,
+ * keine Datei. Geurteilt wird ueber das ALTER, nie ueber einen einzelnen Abruf (Regeln/04 :809):
+ *   - kein Anbieter eingeschaltet -> 6 "nicht eingerichtet" (eine Neuinstallation ist kein Fehler);
+ *   - Dienst bewusst angehalten (kein Sollmerker, kein Prozess) -> 6;
+ *   - Dienst soll laufen, es laeuft keiner -> 3 ("laeuft" = ein Prozess, dessen /proc/<pid>/cmdline weissware.py
+ *     ist; die PID-Datei allein genuegt nicht);
+ *   - Lebenszeichen (zustand.json des laufenden Dienstes) aelter als max(10 min, 3 x Ruhetakt) plus eine gewollte
+ *     Pause der Fehlerbremse -> 3;
+ *   - letzter gelungener Abruf aelter als max(15 min, 3 x Takt) -> 4, als max(1 h, 6 x Takt) -> 3; nach einem
+ *     Neustart zaehlt die Zeit seit dem Start;
+ *   - MQTT an, aber kein Gateway mit UDP-Eingang oder kein Autostart -> 4; die Startlogik hat keine Verbindung
+ *     zum Broker -> 4; Gateway V2: Haken fehlen -> 4; Befehle ueber MQTT an, Bruecke steht -> 4.
+ * Der Text nennt keine Zugangsdaten, Kennungen oder Geraetenamen.
+ * Bis 0.9.43 gab es die Datei nicht, und healthcheck.pl uebersprang das Plugin.
+ * Aufruf wie LoxBerry: direkt, als loxberry, Eingabe aus /dev/null. Der Installer setzt bin/ 755.
+ * Kompatibel mit PHP 7.4 und PHP 8.x.
+ */
+
+error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
+ini_set('display_errors', '0');
+
+function ww_hc_antwort(array $a)
+{
+    $j = json_encode($a, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+    echo ($j !== false ? $j : '{"desc":"Weissware Cloud","status":0,"result":"unlesbar"}') . "\n";
+    exit(0);
+}
+
+$ww_hc_was = isset($argv[1]) ? strtolower((string) $argv[1]) : 'check';
+if ($ww_hc_was === 'title') {
+    ww_hc_antwort(array('desc' => 'Weissware Cloud'));
+}
+
+/* Die Bibliothek: liegt diese Datei unter .../bin/plugins/<ordner>, ist sie installiert, sonst im Archiv. */
+if (basename(dirname(__DIR__)) === 'plugins') {
+    $ww_hc_lib = dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/ww_lib.php';
+} else {
+    $ww_hc_lib = dirname(__DIR__) . '/webfrontend/html/ww_lib.php';
+}
+if (!is_file($ww_hc_lib)) {
+    ww_hc_antwort(array('desc' => 'Weissware Cloud', 'status' => 3,
+        'result' => 'ww_lib.php nicht gefunden - das Plugin ist unvollstaendig installiert.'));
+}
+require_once $ww_hc_lib;
+
+$ww_hc_p = ww_paths();
+if ($ww_hc_p['home'] === '') {
+    /* Ohne LoxBerry-Wurzel wird nichts gelesen und nichts behauptet: 0 = unbekannt. */
+    ww_hc_antwort(array('desc' => 'Weissware Cloud', 'status' => 0,
+        'result' => 'Kein LoxBerry-Wurzelverzeichnis gefunden (ausgepacktes Archiv oder Pruefordner) - nichts geprueft.'));
+}
+// Die Sprache des LoxBerry, wenn der Aufrufer keine setzt (nur gelesen) - fuer die Zeile "Gateway V2".
+if (!getenv('LBLANG')) {
+    $ww_hc_gen = json_decode((string) @file_get_contents($ww_hc_p['home'] . '/config/system/general.json'), true);
+    if (isset($ww_hc_gen['Base']['Lang']) && is_string($ww_hc_gen['Base']['Lang'])) {
+        putenv('LBLANG=' . $ww_hc_gen['Base']['Lang']);
+    }
+}
+
+list($ww_hc_status, $ww_hc_text) = ww_gesund_urteil(ww_gesund_fakten(ww_config(false)));
+
+ww_hc_antwort(array(
+    'desc' => 'Weissware Cloud',
+    'status' => (int) $ww_hc_status,
+    'result' => (string) $ww_hc_text,
+    'url' => '/admin/plugins/' . $ww_hc_p['plugin'] . '/index.php',
+    'logfile' => $ww_hc_p['logdir'] . '/weissware.log',
+));

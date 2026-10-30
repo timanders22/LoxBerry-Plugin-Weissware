@@ -61,7 +61,7 @@ SB="$BASE/config/plugins/$PFOLDER.backup"
 BEISEITE=""
 FEST=""
 for ZIEL in "$SB.weissware.json" "$SB.zugang.json" "$SB.token.json" \
-            "$SB.geraetenummern.json" "$SB.laeufe.json" "$SB.lief"; do
+            "$SB.geraetenummern.json" "$SB.laeufe.json" "$SB.lief" "$SB.daten.tar"; do
     if [ -e "$ZIEL" ] || [ -L "$ZIEL" ]; then
         rm -rf "${ZIEL:?}.alt" 2>/dev/null
         if mv -f "$ZIEL" "$ZIEL.alt" 2>/dev/null; then

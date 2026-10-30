@@ -10,12 +10,46 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.43 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.44 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.44
+
+Hausform (Gruppe 44): MQTT-Gateway V2, Befehlsbrücke, Startlogik im Plugin; dazu mehrere Lautsprecher gleichzeitig für die
+Ansagen.
+
+* **Startlogik (Automatik), ab Werk aus:** je Gerät im Reiter Einstellungen anhakbar. Gestartet wird nur mit
+  Fernstart-Freigabe am Gerät, einmal je Freigabe, zwischen 8 und 20 Uhr (einstellbar). Quelle **Strompreis**
+  (Vorgabe, `haus/strompreis` vom Spotpreis-Plugin): Start in einer der vier günstigsten Stunden bis zur Frist.
+  Quelle **Speicher** (`haus/speicher`): Start ab 60 % Füllstand, wenn der Speicher nicht entlädt. Schweigt die Quelle,
+  startet das Gerät an der Frist. Der Stand geht als `geraetN/auto_wartet` und `geraetN/auto_grund` an Loxone. Je Gerät
+  entweder diese Startlogik oder die Loxone-Seite „PV-Start“ (den PV-Überschuss kennt nur Loxone).
+* **Gateway V2:** Tabelle „Gateway V2: diese Datenpunkte anhaken“ im Reiter MQTT (Noncached: `ok`, `zaehler`,
+  `geraetN/ok`, `status/befehle`), Prüfzeile im Reiter Test; neues Lebenszeichen `weissware/zaehler` (0…999 je
+  Durchgang). Die MQTT-Importvorlage mit Scheinadresse entfällt – die Eingänge legt das Gateway an.
+* **Befehle über MQTT** (Befehlsbrücke, ab Werk aus): `start`, `stop`, `pause`, `fortsetzen`, `netz` 1/0 je Gerät und
+  `auffrischen`; Vorlage im Reiter MQTT. Dieselben Prüfungen wie der HTTP-Weg.
+* **HTTP-Endpunkt:** eigener Haken. Wer die HTTP-Vorlagen nutzt, ändert nichts – der Endpunkt bleibt beim Update an;
+  eine Neuinstallation hat ihn aus.
+* **−1-Regel:** ein Messwert ohne Aussage (Fortschritt, Rest-/Start-/Laufzeit, Energie, Wasser) kommt über MQTT als
+  −1 an, die Temperatur als −999; HTTP unverändert.
+* **Healthcheck** (`bin/healthcheck`), **Update-Rettung** aller Laufzeitdateien (Stand, Merker, Ansagestand,
+  Startlogik), Sprachausgabe 1.2.1 (Sonos4Lox und SonoX wählbar).
+* **Mehrere Lautsprecher gleichzeitig (Sprachmodul 1.2.1):** Unter der Ausgabeart (jetzt „Ziel 1“) nimmt die Tabelle
+  *Weitere Ausgabeziele (gleichzeitig)* bis zu fünf weitere Ziele auf – etwa Google-Lautsprecher (Chromecast 4 Lox NG)
+  in einem Raum und Amazon Echo (Alexa-NG) in einem anderen neben dem Loxone Music Server. Die Ansage geht an alle
+  eingeschalteten Ziele zugleich (eine Ansage dauert so lange wie das langsamste Ziel, höchstens 25 s);
+  scheitert eines, sprechen die anderen. Protokoll und Reiter Test nennen jedes Ziel, im Reiter Test gibt es je Ziel
+  eine Testansage. Die bestehende Einstellung ist unverändert Ziel 1; ohne weitere Ziele verhält sich alles wie in
+  0.9.43. Antwort an Loxone, MQTT-Themen und Brückenbefehl `ansage` bleiben, wie sie sind.
+* **Vor einem Zurückgehen** auf 0.9.43 oder älter die weiteren Ziele entfernen: ältere Fassungen kennen die Liste nicht
+  und fielen beim Laden auf die Werkseinstellung der Sprachausgabe zurück.
+* **Reiter Test:** *Testansage* spricht wie bisher den Testsatz dieses Plugins – jetzt an alle Ziele; die Knöpfe
+  *Testansage an Ziel n* daneben sprechen den festen Testsatz der Sprachausgabe nur an diesem Ziel.
 
 ## Neu in 0.9.43
 

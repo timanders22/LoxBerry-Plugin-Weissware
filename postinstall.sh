@@ -113,6 +113,7 @@ if [ "$WW_MARKE" != "1" ]; then
                  "$BASE/config/plugins/$PFOLDER.backup.token.json" \
                  "$BASE/config/plugins/$PFOLDER.backup.geraetenummern.json" \
                  "$BASE/config/plugins/$PFOLDER.backup.laeufe.json" \
+                 "$BASE/config/plugins/$PFOLDER.backup.daten.tar" \
                  "$BASE/config/plugins/$PFOLDER.backup.lief"; do
         [ -f "$ww_bk" ] || continue
         if mv -f "$ww_bk" "$ww_bk.alt" 2>/dev/null; then
@@ -200,6 +201,41 @@ chmod 600 "$PCONFIG/zugang.json"
 # LoxBerry lesen durfte, konnte damit Geraete schalten.
 chmod 600 "$PCONFIG/weissware.json"
 
+# Gruppe 44 (0.9.44, G3): beim UPDATE (Marke .upgrade_laeuft) bekommt eine Konfiguration ohne endpunkt_ein den
+# Wert 1 - der Bestand nutzt den HTTP-Weg und soll nach dem Update nichts verlieren. Eine Neuinstallation bleibt bei
+# der Vorgabe 0 (Gateway V2 und Befehlsbruecke). Konfiguration UND Zweitschrift; Rechte bleiben; ein vorhandener
+# Wert bleibt unangetastet; leere oder kaputte Dateien auch. Form BYD 0.9.29 (perl JSON::PP).
+if [ "$WW_MARKE" = "1" ] && command -v perl >/dev/null 2>&1; then
+    for f in "$PCONFIG/weissware.json" "$BASE/config/plugins/$PFOLDER.backup.weissware.json"; do
+        [ -s "$f" ] && [ ! -L "$f" ] || continue
+        perl -MJSON::PP -e '
+            my $f = shift; local $/;
+            open my $fh, "<", $f or exit 1; my $r = <$fh>; close $fh;
+            my $d = eval { JSON::PP->new->decode($r) };
+            exit 1 unless ref $d eq "HASH";
+            exit 3 unless %$d;
+            exit 3 if exists $d->{endpunkt_ein};
+            $d->{endpunkt_ein} = 1;
+            my $mode = (stat $f)[2] & 07777;
+            my $t = "$f.g44.$$";
+            umask 077;
+            open my $o, ">", $t or exit 1;
+            (print $o JSON::PP->new->pretty->canonical->encode($d)) or exit 1;
+            close $o or exit 1;
+            chmod $mode, $t;
+            rename $t, $f or exit 1;
+            exit 0;
+        ' "$f"
+        case $? in
+            0) echo "<OK> $(basename "$f"): HTTP-Endpunkt bleibt eingeschaltet (endpunkt_ein = 1, Bestand)." ;;
+            3) ;;
+            *) echo "<INFO> $(basename "$f"): endpunkt_ein liess sich nicht ergaenzen - der Endpunkt ist aus,"
+               echo "<INFO> bis er im Reiter MQTT eingeschaltet wird." ;;
+        esac
+    done
+fi
+chmod 600 "$PCONFIG/weissware.json"
+
 # ---------- Daten aus dem Upgrade zuruecklegen ----------
 # plugininstall.pl raeumt data/plugins/<ordner>/ beim Upgrade ab. preupgrade.sh
 # hat diese drei Dateien danebengelegt; ohne sie waere nach jedem Update die
@@ -261,6 +297,40 @@ for f in token.json geraetenummern.json laeufe.json; do
     fi
 done
 chmod 600 "$PDATA/token.json" 2>/dev/null || true
+
+# ---------- Laufzeitdaten zurueckspielen (Gruppe 44, 0.9.44) ----------
+# preupgrade.sh (Schritt 4b) hat Stand, Merker, Ansagestand und Startlogik neben den Konfigordner gelegt. Zurueck
+# kommen NUR Namen dieser festen Liste (die Sicherung bestimmt nicht, was geschrieben wird), nur bei einem Update
+# (Marke) und nur, was im Datenordner fehlt. Erst wenn alles angekommen ist, geht die Sicherung weg.
+DSICHERUNG="$BASE/config/plugins/$PFOLDER.backup.daten.tar"
+if [ "$WW_MARKE" = "1" ] && [ -f "$DSICHERUNG" ] && [ ! -L "$DSICHERUNG" ] && [ -s "$DSICHERUNG" ]; then
+    if ! command -v tar >/dev/null 2>&1; then
+        echo "<INFO> tar fehlt - die gesicherten Laufzeitdaten bleiben liegen unter $DSICHERUNG"
+    else
+        WW_DINHALT=$(tar -tf "$DSICHERUNG" 2>/dev/null)
+        WW_DZURUECK=""
+        WW_DFEHL=0
+        for f in loxone.json entfernt.json mqtt_praefixe_geraeumt.json retain_ts_geraeumt ansage_stand.json auto.json; do
+            printf '%s\n' "$WW_DINHALT" | grep -qx "$f" || continue
+            if [ -e "$PDATA/$f" ] || [ -L "$PDATA/$f" ]; then
+                continue
+            fi
+            if tar -xpf "$DSICHERUNG" -C "$PDATA" "$f" 2>/dev/null && [ -f "$PDATA/$f" ] && [ ! -L "$PDATA/$f" ]; then
+                chmod 600 "$PDATA/$f" 2>/dev/null
+                WW_DZURUECK="$WW_DZURUECK $f"
+            else
+                WW_DFEHL=1
+            fi
+        done
+        if [ "$WW_DFEHL" = 0 ]; then
+            [ -n "$WW_DZURUECK" ] && echo "<OK> Laufzeitdaten zurueckgespielt:$WW_DZURUECK"
+            rm -f "$DSICHERUNG"
+        else
+            echo "<INFO> Nicht alle gesicherten Laufzeitdaten liessen sich zurueckspielen; die Sicherung"
+            echo "<INFO> bleibt liegen unter $DSICHERUNG"
+        fi
+    fi
+fi
 
 # ---------- Python suchen ----------
 PY=""
@@ -326,6 +396,8 @@ echo "<OK> requests geladen, Fassung $IST"
 # ---------- Rechte ----------
 chmod 755 "$PBIN/weissware.py" 2>/dev/null
 chmod 755 "$PBIN/dienst.sh" 2>/dev/null
+# Gruppe 44: Healthcheck (sbin/healthcheck.pl ruft die Datei direkt) und Befehlsbruecke.
+chmod 755 "$PBIN/healthcheck" "$PBIN/befehlsbruecke.sh" 2>/dev/null
 chown -R loxberry:loxberry "$PBIN" "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
 chmod 600 "$PCONFIG/zugang.json"
 chmod 600 "$PDATA/token.json" 2>/dev/null

@@ -257,6 +257,20 @@ VORGABEN = {
     "miele_ein": 0,
     "st_ein": 0,
     "sprache": "de-DE",
+    # Gruppe 44 (0.9.44): Hausform. Befehle ueber MQTT (Befehlsbruecke) und HTTP-Endpunkt liest nur die
+    # Oberflaeche; hier stehen sie, damit beide Tabellen dieselben Schluessel fuehren.
+    "befehle_mqtt_ein": 0,
+    "endpunkt_ein": 0,
+    # Startlogik (E5): Geraetenummern mit Automatik ("1,3"; ab Werk keine), Quelle strompreis|speicher,
+    # Fenster auto_von..auto_frist (volle Stunden), k guenstigste Stunden, Speicherschwelle in %, an der
+    # Frist trotzdem starten.
+    "auto_geraete": "",
+    "auto_quelle": "strompreis",
+    "auto_von": 8,
+    "auto_frist": 20,
+    "auto_stunden": 4,
+    "auto_soc": 60,
+    "auto_frist_start": 1,
 }
 
 # Basisadressen. An einer Stelle, damit sie sich nachziehen lassen, wenn ein
@@ -691,6 +705,10 @@ RETAIN = {
     "geraetN/temperatur":         False,
     "geraetN/ok":                 False,
     "geraetN/ts":                 False,
+    # Gruppe 44 (0.9.44, B1): Lebenszeichen 0...999 je Durchgang; Startlogik je Geraet (E5e).
+    "zaehler":                    False,
+    "geraetN/auto_wartet":        False,
+    "geraetN/auto_grund":         False,
 }
 
 # Themen, deren zurueckbehaltener ALTWERT einmal abgeraeumt werden muss.
@@ -1982,6 +2000,57 @@ def st_befehl(sitzung, cfg: dict, token: str, kennung: str, aktion: str, wert=No
 # ===========================================================================
 # Token verwalten
 # ===========================================================================
+def oauth_antwort(a) -> tuple:
+    """Wertet die Antwort eines Token-Endpunkts aus, ohne an Nicht-JSON zu scheitern.
+
+    Nachfassung 30.10.2026 (0.9.44 am Geraet): "Anmeldung abschliessen" endete
+    in einem Traceback (requests JSONDecodeError in a.json()) - Home Connect
+    hatte am Token-Endpunkt KEIN JSON geliefert, und was es statt dessen war,
+    stand nirgends. Die Erneuerung meldete seit Tagen nur "400 Bad Request"
+    ohne den Grund aus der Antwort.
+
+    Rueckgabe: (Verzeichnis, Beschreibung). Das Verzeichnis ist {}, wenn kein
+    JSON-Objekt kam. Die Beschreibung lautet "HTTP <n>, Inhaltstyp <t>, Text:
+    <hoechstens 200 Zeichen>" und geht durch mitschnitt_maskieren(): ein Token
+    im Antworttext erscheint nur als seine Laenge.
+    """
+    stand = getattr(a, "status_code", 0)
+    try:
+        art = str((getattr(a, "headers", None) or {}).get("Content-Type") or "")
+    except Exception:  # noqa: BLE001
+        art = ""
+    try:
+        roh = str(getattr(a, "text", "") or "")
+    except Exception:  # noqa: BLE001
+        roh = ""
+    d = {}
+    if roh.strip():
+        try:
+            d = a.json()
+        except ValueError:
+            # requests.exceptions.JSONDecodeError ist ein ValueError - der
+            # Fall vom 30.10.: HTML, Klartext oder ein abgeschnittener Rumpf.
+            d = {}
+    if not isinstance(d, dict):
+        d = {}
+    # HTML ohne Marken: lesbar bleibt der Titel ("403 Forbidden" o. a.), und
+    # fehlertext() ersetzt die Meldung dann nicht durch den allgemeinen
+    # HTML-Hinweis, der Status und Inhaltstyp verschluckte.
+    kurz = " ".join(re.sub(r"<[^>]{0,500}>", " ", roh).split())
+    if len(kurz) > 200:
+        kurz = kurz[:200] + " ..."
+    return d, "HTTP %s, Inhaltstyp %s, Text: %s" % (
+        stand, art.split(";")[0].strip() or "(keiner)",
+        mitschnitt_maskieren(kurz) if kurz else "(leer)")
+
+
+def oauth_fehler(d: dict) -> tuple:
+    """error und error_description einer OAuth-Antwort (RFC 6749 5.2), gekuerzt und maskiert."""
+    grund = " ".join(str(d.get("error") or "").split())[:80]
+    erkl = " ".join(str(d.get("error_description") or "").split())[:200]
+    return mitschnitt_maskieren(grund), mitschnitt_maskieren(erkl)
+
+
 def _token_erneuern(sitzung, anbieter: str, titel: str, url: str, daten: dict,
                     vorgabe_s: int, marken: dict) -> str:
     """Gibt ein gueltiges Zugriffstoken zurueck, erneuert es bei Bedarf.
@@ -2009,22 +2078,30 @@ def _token_erneuern(sitzung, anbieter: str, titel: str, url: str, daten: dict,
         raise RuntimeError("%s ist nicht angemeldet." % titel)
     try:
         a = sitzung.post(url, data=daten, timeout=30)
-        if a.status_code in (400, 401) and "invalid_grant" in str(getattr(a, "text", "") or ""):
+        # Nachfassung 30.10.2026: die Antwort laeuft ueber oauth_antwort() - bei 400
+        # steht der Grund (error, error_description) im Protokoll statt nur
+        # "400 Bad Request" (so am Geraet seit rund 15 Tagen); Nicht-JSON mit
+        # Status, Inhaltstyp und gekuerztem, maskiertem Text. Nie ein Token.
+        neu, beschreibung = oauth_antwort(a)
+        grund, erkl = oauth_fehler(neu)
+        if a.status_code in (400, 401) and (grund == "invalid_grant" or
+                                            "invalid_grant" in str(getattr(a, "text", "") or "")):
             raise AnmeldungAbgewiesen(
-                "%s hat das Erneuerungstoken abgewiesen (HTTP %d, invalid_grant): die Anmeldung "
-                "ist abgelaufen oder zurueckgezogen - bitte im Reiter Einstellungen neu anmelden."
-                % (titel, a.status_code))
+                "%s: Anmeldung ungueltig - bitte neu anmelden (HTTP %d, invalid_grant%s). Das "
+                "Erneuerungstoken ist abgelaufen oder zurueckgezogen - im Reiter Einstellungen "
+                "neu anmelden." % (titel, a.status_code, (": " + erkl) if erkl else ""))
+        if a.status_code == 400 or (a.status_code == 401 and grund):
+            if grund:
+                raise RuntimeError("%s hat die Erneuerung abgewiesen (HTTP %d): %s%s.%s"
+                                   % (titel, a.status_code, grund, (" - " + erkl) if erkl else "",
+                                      _client_hinweis(grund)))
+            raise RuntimeError("%s hat die Erneuerung abgewiesen, ohne OAuth-Fehlerangabe (%s)."
+                               % (titel, beschreibung))
         a.raise_for_status()
-        try:
-            neu = a.json() or {}
-        except ValueError:
-            neu = {}
-        if not isinstance(neu, dict):
-            neu = {}
         zugriff = neu.get("access_token")
         if not isinstance(zugriff, str) or not zugriff.strip():
-            raise RuntimeError("%s: Antwort ohne Zugriffstoken (HTTP %d) - die Erneuerung gilt "
-                               "als gescheitert." % (titel, a.status_code))
+            raise RuntimeError("%s: Antwort ohne Zugriffstoken (%s) - die Erneuerung gilt "
+                               "als gescheitert." % (titel, beschreibung))
         erneuerung = neu.get("refresh_token")
         marke = {
             "access_token": zugriff,
@@ -2583,6 +2660,8 @@ def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str, ausfaelle: di
     for a in ANBIETER:
         grund["ausfall/" + a] = 1 if a in (ausfaelle or {}) else 0
     grund["ausfaelle"] = len(ausfaelle or {})
+    # Gruppe 44 (B1): das Lebenszeichen zaehler geht in jedem Lauf hinaus, fluechtig (Regeln/07 :256).
+    grund["zaehler"] = zaehler_weiter()
     # Bauliste C5 (Festlegung zu MQTT Befund 1, 02.10.2026): je Geraet ein
     # eigenes ok und ts, fluechtig, in jedem Lauf. ok bleibt das Gesamtzeichen;
     # schweigt nur ein Anbieter, gehen seine Geraete auf 0, ihre Zustaende
@@ -2590,6 +2669,10 @@ def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str, ausfaelle: di
     for nummer, g in geraete.items():
         grund["geraet%s/ok" % nummer] = 1 if ok and ganz(g.get("ok"), 1) == 1 else 0
         grund["geraet%s/ts" % nummer] = ganz(g.get("ts"), ganz(stand.get("ts"), 0))
+        # Gruppe 44 (E5e): Startlogik je Geraet - fluechtig, in jedem Lauf (0/0 ohne Automatik).
+        aw, ag = (_G44.get("auto") or {}).get(str(nummer), (0, 0))
+        grund["geraet%s/auto_wartet" % nummer] = int(aw)
+        grund["geraet%s/auto_grund" % nummer] = int(ag)
     if cfg.get("mqtt_ein"):
         immer = None if mqtt_voll_faellig(praefix) else set(grund)
         if not ok:
@@ -2613,7 +2696,10 @@ def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str, ausfaelle: di
                     if feld in ("ok", "ts"):
                         continue
                     v = g.get(feld)
-                    paare[f"geraet{nummer}/{feld}"] = ohne if (v is None or v == "") else v
+                    # Gruppe 44: -1-Regel - ein MESSWERT ohne Aussage geht als -1 (temperatur -999)
+                    # hinaus, ein Zustand weiter als "-" (mqtt_messwert(), MESSWERT_FEHLWERT).
+                    paare[f"geraet{nummer}/{feld}"] = ((mqtt_messwert(feld, v) if ohne == "-" else ohne)
+                                                       if (v is None or v == "") else v)
             mqtt_senden(paare, praefix, immer)
             entfernte_raeumen(praefix)
     praefixe_raeumen(cfg, praefix)
@@ -2866,6 +2952,523 @@ def zustand_schreiben(**felder) -> None:
 
 
 # ===========================================================================
+# Gruppe 44 (0.9.44): Hausform - Lebenszeichen zaehler, -1-Regel, Startlogik
+# (Automatik) mit den Haus-Themen haus/strompreis bzw. haus/speicher.
+# Bauvorschrift Pruefung-Durchgang-2026-09-29/wz_bild/GRUPPE44_BAUVORSCHRIFT.md,
+# Entscheidungen Musterprojekt/ENTSCHEIDUNGEN_GRUPPEN42_44.md (je Vorschlag 1)
+# mit ENTWURF_GRUPPE44_WEISSWARE_FUNKWACHT.md (E5a-f, B1, B3).
+#
+# Startlogik (E5): je Geraet anhakbar (auto_geraete, ab Werk leer), nur mit
+# "Schreibende Befehle zulassen" (steuerung_ein), nur mit Fernstart-Freigabe
+# am Geraet (fernstart_frei = 1), EINMAL je Freigabe, frueh-estens auto_von
+# (8 Uhr), spaetestens zur Frist auto_frist (20 Uhr). Quelle waehlbar:
+#   strompreis (Vorgabe): Start, sobald die laufende Stunde zu den
+#       auto_stunden (4) guenstigsten Stunden zwischen jetzt und der Frist
+#       gehoert (Viertelstunden zu Stundenmitteln, wie Marstek N1/BYD E9a);
+#   speicher: Start, sobald haus/speicher/soc >= auto_soc (60 %) und der
+#       Speicher nicht entlaedt (richtung != 2).
+# Eine Quelle gilt nur, solange ihr Zaehler binnen HAUS_FRIST s LIVE wechselt
+# (Regeln/07 Nr. 15); ein retained Wert wird angenommen, zaehlt aber nie als
+# Wechsel. Schweigt die Quelle oder passt bis zur Frist nichts, startet die
+# Automatik AN der Frist (auto_frist_start, ab Werk an; E5d) - hoechstens
+# AUTO_FRIST_NACHLAUF s danach, damit ein Dienst, der erst nachts wieder
+# anlaeuft, nicht nachts startet. Gelesen wird ueber eine eigene Dauerverbindung
+# zum Broker (HausLeser, E5f): diese Linie hat kein paho - MQTT 3.1.1 von Hand
+# wie mqtt_behalten_liste(). Der Dienst schreibt nichts unter haus/. Den
+# PV-Ueberschuss kennt nur Loxone - wer ihn nutzen will, bleibt je Geraet bei
+# der Loxone-Seite "PV-Start" (E5e); Plugin-Automatik und Loxone-Seite
+# schliessen sich je Geraet aus.
+# An Loxone (fluechtig, in jedem Lauf): geraetN/auto_wartet (1 = die
+# Automatik wartet auf ihre Stunde) und geraetN/auto_grund (Kennzahl, siehe
+# AUTO_GRUENDE; eine Zahl statt eines Textes, weil das Musterprojekt keinen
+# Texteingang hat).
+# ===========================================================================
+HAUS_FRIST = 120                 # Nr. 15: ein Wert gilt, solange der Zaehler der Quelle binnen 120 s live wechselt
+AUTO_FRIST_NACHLAUF = 3600       # an der Frist starten nur bis 1 h nach ihr
+AUTO_VERSUCHE = 2                # hoechstens zwei Startversuche je Freigabe
+AUTO_ABSTAND = 300               # Sekunden zwischen zwei Startversuchen
+AUTO_TAKT = 60                   # die Automatik prueft im Wartetakt alle 60 s
+DATEI_AUTO = PDATA / "auto.json"  # je Geraet: Freigabe, Frist, erledigt, Versuche (uebersteht Neustart und Update)
+# Kennzahlen fuer geraetN/auto_grund (dieselbe Liste wie ww_auto_gruende() in ww_lib.php):
+AUTO_GRUENDE = {
+    0: "aus",                    # Automatik fuer dieses Geraet nicht angehakt
+    1: "keine_freigabe",         # keine Fernstart-Freigabe am Geraet
+    2: "vor_fenster",            # wartet: vor dem Fensterbeginn (auto_von)
+    3: "preis_wartet",           # wartet: eine guenstigere Stunde kommt noch
+    4: "speicher_wartet",        # wartet: Speicher unter der Schwelle oder entlaedt
+    5: "quelle_schweigt",        # wartet: Quelle schweigt oder ohne Aussage - an der Frist wird gestartet
+    6: "gestartet",              # gestartet (guenstige Stunde bzw. Speicher voll genug)
+    7: "gestartet_frist",        # an der Frist gestartet
+    8: "frist_verstrichen",      # Frist verstrichen, nicht gestartet (Frist-Start aus oder > 1 h danach)
+    9: "erledigt",               # Geraet laeuft schon bzw. die Freigabe ist verbraucht
+    10: "steuerung_aus",         # Schreibende Befehle nicht zugelassen
+    11: "abgelehnt",             # Start vom Anbieter abgelehnt (zwei Versuche)
+    12: "geraet_schweigt",       # der Anbieter des Geraets hat im letzten Lauf nicht geantwortet
+}
+AUTO_WARTEND = (2, 3, 4, 5)
+# -1-Regel (Hausform, wie BYD 0.9.29): ein MESSWERT (nicht retained) ohne Aussage geht als -1 hinaus, nicht als "-"
+# (in Loxone stand sonst der letzte Wert und sah gemessen aus). temperatur -999: -1 Grad ist eine echte Temperatur
+# (Kuehlgeraete bei Miele). Zustaende (retained) ohne Aussage bleiben "-" (Entscheidung Nr. 5). HTTP unveraendert.
+MESSWERT_FEHLWERT = {"fortschritt": -1, "restzeit_min": -1, "startzeit_min": -1, "laufzeit_min": -1,
+                     "energie_kwh": -1, "wasser_l": -1, "temperatur": -999}
+_G44 = {"zaehler": -1, "auto": {}, "leser": None, "letzt_ok": 0, "auto_zeit": 0.0}
+
+
+def zaehler_weiter() -> int:
+    """B1: das Lebenszeichen <p>/zaehler - 0...999, je Durchgang eins weiter, nie retained."""
+    _G44["zaehler"] = (int(_G44["zaehler"]) + 1) % 1000
+    return _G44["zaehler"]
+
+
+def mqtt_messwert(feld: str, v, ohne="-"):
+    """-1-Regel: ein Messwert ohne Aussage -> -1 (temperatur -999), ein Zustand ohne Aussage -> ohne ("-");
+    mit Aussage unveraendert."""
+    if v is None or v == "":
+        return MESSWERT_FEHLWERT.get(feld, ohne)
+    return v
+
+
+# ---- Haus-Themen (rein) ----
+def haus_quelle(thema: str) -> str:
+    """'haus/strompreis/vorschau' -> 'strompreis'."""
+    teile = str(thema).split("/")
+    if len(teile) < 3 or teile[0] != "haus":
+        return ""
+    return teile[1]
+
+
+def haus_merken(stand: dict, thema: str, wert: str, retained: bool, jetzt: float) -> None:
+    """Eine Nachricht unter haus/ einarbeiten (Form BYD 0.9.29/MG). Ein retained Wert wird angenommen, gilt aber
+    erst, wenn der Zaehler seiner Quelle LIVE wechselt; ein retained Zaehler zaehlt nie."""
+    q = haus_quelle(thema)
+    if not q:
+        return
+    e = stand.setdefault(q, {"werte": {}, "zaehler": None, "seit": 0})
+    if str(thema).endswith("/zaehler"):
+        if not retained and str(wert) != str(e.get("zaehler")):
+            e["zaehler"] = str(wert)
+            e["seit"] = int(jetzt)
+    else:
+        e.setdefault("werte", {})[thema] = str(wert)
+
+
+def haus_frisch(stand: dict, q: str, jetzt: float) -> bool:
+    """Frisch: 0 <= jetzt - seit <= HAUS_FRIST, seit gesetzt und nicht in der Zukunft (Uhr zurueck -> nicht frisch)."""
+    seit = int((stand.get(q) or {}).get("seit") or 0)
+    return 0 < seit <= int(jetzt) and int(jetzt) - seit <= HAUS_FRIST
+
+
+def auto_quelle(cfg: dict) -> str:
+    return "speicher" if str(cfg.get("auto_quelle") or "") == "speicher" else "strompreis"
+
+
+def auto_geraete(cfg: dict) -> list:
+    """'1,3' -> ['1', '3']; was nicht ins Muster passt, zaehlt nicht (nie geraten)."""
+    s = str(cfg.get("auto_geraete") or "").strip()
+    if not re.fullmatch(r"([1-9][0-9]{0,2}(,[1-9][0-9]{0,2}){0,19})?", s):
+        return []
+    return [x for x in s.split(",") if x]
+
+
+def haus_themen(cfg: dict) -> list:
+    """Die Haus-Themen, die der HausLeser abonniert - nur, wenn ein Geraet die Automatik hat (dieselbe Bedingung
+    wie ww_haus_themen() in ww_lib.php). <stamm>/anbieter nur zur Anzeige (Anbieterregel, Gruppe 43)."""
+    if not auto_geraete(cfg):
+        return []
+    if auto_quelle(cfg) == "speicher":
+        return ["haus/speicher/" + x for x in ("soc", "richtung", "zaehler", "anbieter")]
+    return ["haus/strompreis/" + x for x in ("vorschau", "ab", "raster", "zaehler", "anbieter")]
+
+
+def anbieter_anzeige(name) -> str:
+    """Ein Name aus dem Broker erscheint nie ungeprueft: gueltig (a-z, 0-9, _ und -, 1-32) oder '-', sonst '?'."""
+    s = str(name if name is not None else "").strip()
+    if s == "":
+        return ""
+    return s if (s == "-" or re.fullmatch(r"[a-z0-9_-]{1,32}", s)) else "?"
+
+
+def auto_preisrang(vorschau, ab, raster, jetzt, frist_ts):
+    """Rang der laufenden Stunde (1 = guenstigste) unter den Stunden von ihr bis VOR die Frist, und deren Zahl
+    (rein; Form haus_preisrang() BYD 0.9.29). Viertelstunden werden zu Stundenmitteln; die laufende Stunde darf
+    angebrochen sein, jede spaetere zaehlt nur vollstaendig und ohne Luecke ('-'). Rueckgabe (rang, von) oder
+    (None, None) ohne Aussage - nie geraten."""
+    try:
+        a = int(float(str(ab).strip()))
+        r = int(float(str(raster).strip()))
+    except (TypeError, ValueError):
+        return (None, None)
+    if r not in (900, 3600) or a <= 0 or a % r:
+        return (None, None)
+    teile = [x.strip() for x in str(vorschau or "").split(";")] if str(vorschau or "").strip() not in ("", "-") else []
+    if not teile:
+        return (None, None)
+    je = 3600 // r
+    std = {}
+    for i, x in enumerate(teile):
+        s = (a + i * r) // 3600 * 3600
+        std.setdefault(s, []).append(zahl(x, None))
+    s = int(jetzt) // 3600 * 3600
+    mittel = []
+    while s in std and s < int(frist_ts) and len(mittel) < 36:
+        werte = std[s]
+        if any(w is None for w in werte) or (mittel and len(werte) != je):
+            break
+        mittel.append(sum(werte) / float(len(werte)))
+        s += 3600
+    if not mittel:
+        return (None, None)
+    return (1 + sum(1 for m in mittel if m < mittel[0]), len(mittel))
+
+
+def auto_stunde(t: float, stunde: int, tag_dazu: int = 0) -> int:
+    """Unix-Zeit von <stunde>:00 Ortszeit am Tag von t (+ tag_dazu)."""
+    lt = time.localtime(int(t))
+    return int(time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday + tag_dazu, int(stunde), 0, 0, 0, 0, -1)))
+
+
+def auto_frist_ts(t: float, frist_h: int) -> int:
+    """Die Frist einer Freigabe: heute frist_h:00, wenn das noch vor uns liegt, sonst morgen."""
+    heute = auto_stunde(t, frist_h)
+    return heute if int(t) < heute else auto_stunde(t, frist_h, 1)
+
+
+def auto_beginn_ts(frist_ts: int, von_h: int) -> int:
+    """Fensterbeginn am Tag der Frist (von_h:00)."""
+    return auto_stunde(frist_ts, von_h)
+
+
+def auto_schritt(e: dict, g: dict, cfg: dict, quelle: dict, jetzt: float):
+    """Ein Schritt der Startlogik fuer EIN Geraet (rein). e = gemerkter Stand des Geraets (auto.json),
+    g = Geraet aus dem Abbild, quelle = {'art': strompreis|speicher, 'frisch': bool, 'werte': Thema -> Text}.
+    Rueckgabe (aktion 'nichts'|'start', grund, neuer Stand). Gestartet wird erst vom Aufrufer; das Ergebnis
+    traegt auto_ergebnis() ein."""
+    e = dict(e or {})
+    jetzt = int(jetzt)
+    if g.get("fernstart_frei") != 1:
+        # Ohne Freigabe wartet nichts; eine neue Freigabe beginnt von vorn (einmal je Freigabe).
+        return ("nichts", 1, {"freigabe": 0, "grund": 1})
+    if e.get("freigabe") != 1:
+        try:
+            frist_h = max(1, min(23, int(cfg.get("auto_frist", 20))))
+        except (TypeError, ValueError):
+            frist_h = 20
+        e = {"freigabe": 1, "frist": auto_frist_ts(jetzt, frist_h), "erledigt": 0, "versuche": 0, "letzter": 0,
+             "seit": jetzt}
+    if g.get("zustand") in (LAEUFT, PAUSIERT) or g.get("laeuft") == 1:
+        if not e.get("erledigt"):
+            e["erledigt"] = 1
+            e["grund"] = 9
+        return ("nichts", int(e.get("grund") or 9), e)
+    if e.get("erledigt"):
+        return ("nichts", int(e.get("grund") or 9), e)
+    if ganz(g.get("ok"), 1) == 0:
+        e["grund"] = 12
+        return ("nichts", 12, e)
+    if not cfg.get("steuerung_ein"):
+        e["grund"] = 10
+        return ("nichts", 10, e)
+    if int(e.get("versuche") or 0) >= 1 and 0 <= jetzt - int(e.get("letzter") or 0) < AUTO_ABSTAND:
+        return ("nichts", int(e.get("grund") or 11), e)
+    frist = int(e.get("frist") or 0)
+    if jetzt >= frist:
+        if cfg.get("auto_frist_start", 1) and jetzt - frist <= AUTO_FRIST_NACHLAUF:
+            return ("start", 7, e)
+        e["erledigt"] = 1
+        e["grund"] = 8
+        return ("nichts", 8, e)
+    try:
+        von_h = max(0, min(23, int(cfg.get("auto_von", 8))))
+    except (TypeError, ValueError):
+        von_h = 8
+    if jetzt < auto_beginn_ts(frist, von_h):
+        e["grund"] = 2
+        return ("nichts", 2, e)
+    werte = quelle.get("werte") or {}
+    if not quelle.get("frisch"):
+        e["grund"] = 5
+        return ("nichts", 5, e)
+    if quelle.get("art") == "speicher":
+        soc = zahl(werte.get("haus/speicher/soc"), None)
+        ri = zahl(werte.get("haus/speicher/richtung"), None)
+        if soc is None or ri is None or soc < 0 or ri < 0:
+            e["grund"] = 5
+            return ("nichts", 5, e)
+        try:
+            schwelle = float(cfg.get("auto_soc", 60))
+        except (TypeError, ValueError):
+            schwelle = 60.0
+        if soc >= schwelle and int(ri) != 2:
+            return ("start", 6, e)
+        e["grund"] = 4
+        return ("nichts", 4, e)
+    rang, von = auto_preisrang(werte.get("haus/strompreis/vorschau"), werte.get("haus/strompreis/ab"),
+                               werte.get("haus/strompreis/raster"), jetzt, frist)
+    if rang is None:
+        e["grund"] = 5
+        return ("nichts", 5, e)
+    try:
+        k = max(1, min(24, int(cfg.get("auto_stunden", 4))))
+    except (TypeError, ValueError):
+        k = 4
+    e["rang"] = [int(rang), int(von)]
+    if rang <= k:
+        return ("start", 6, e)
+    e["grund"] = 3
+    return ("nichts", 3, e)
+
+
+def auto_ergebnis(e: dict, ok: int, grund: int, jetzt: float) -> dict:
+    """Ergebnis eines Startversuchs eintragen (rein). Angenommen -> erledigt mit grund (6/7); abgelehnt ->
+    grund 11, nach AUTO_VERSUCHE Versuchen erledigt."""
+    e = dict(e or {})
+    e["versuche"] = int(e.get("versuche") or 0) + 1
+    e["letzter"] = int(jetzt)
+    if ok:
+        e["erledigt"] = 1
+        e["grund"] = int(grund)
+    else:
+        e["grund"] = 11
+        if e["versuche"] >= AUTO_VERSUCHE:
+            e["erledigt"] = 1
+    return e
+
+
+# ---- MQTT 3.1.1 von Hand fuer die Dauerverbindung (rein) ----
+def mqtt_zk(text: str) -> bytes:
+    b = str(text).encode("utf-8")
+    return len(b).to_bytes(2, "big") + b
+
+
+def mqtt_laenge(n: int) -> bytes:
+    o = b""
+    while True:
+        b = n % 128
+        n //= 128
+        if n:
+            b |= 128
+        o += bytes([b])
+        if not n:
+            return o
+
+
+def mqtt_pakete(puffer: bytes):
+    """Zerlegt den Puffer in vollstaendige Pakete (rein). Rueckgabe (liste von (kopfbyte, rumpf), rest)."""
+    aus = []
+    while len(puffer) >= 2:
+        n, mult, i = 0, 1, 1
+        fertig = False
+        while i < len(puffer) and i <= 4:
+            b = puffer[i]
+            n += (b & 127) * mult
+            mult *= 128
+            i += 1
+            if not b & 128:
+                fertig = True
+                break
+        if not fertig or len(puffer) < i + n:
+            break
+        aus.append((puffer[0], puffer[i:i + n]))
+        puffer = puffer[i + n:]
+    return aus, puffer
+
+
+def mqtt_publish_lesen(k: int, r: bytes):
+    """PUBLISH-Rumpf -> (thema, nutzlast, retained) oder None (rein)."""
+    if k >> 4 != 3 or len(r) < 2:
+        return None
+    tl = int.from_bytes(r[0:2], "big")
+    t = r[2:2 + tl].decode("utf-8", "replace")
+    versatz = 2 + tl + (2 if (k >> 1) & 3 else 0)
+    return (t, r[versatz:].decode("utf-8", "replace"), bool(k & 1))
+
+
+class HausLeser:
+    """Dauerverbindung zum Broker fuer die Haus-Themen (E5f) - eigener Faden, nur lesend. Abonniert genau
+    haus_themen(cfg); aendert sich die Liste, wird neu verbunden. Ohne Liste keine Verbindung."""
+
+    def __init__(self):
+        import threading
+        self._lock = threading.Lock()
+        self.stand: dict = {}
+        self.soll: list = []
+        self.verbunden = False
+        self.fehler = ""
+        self._faden = threading.Thread(target=self._lauf, name="hausleser", daemon=True)
+
+    def starten(self) -> None:
+        self._faden.start()
+
+    def setze(self, themen) -> None:
+        with self._lock:
+            self.soll = list(themen or [])
+
+    def abbild(self):
+        with self._lock:
+            return json.loads(json.dumps(self.stand)), bool(self.verbunden), str(self.fehler), list(self.soll)
+
+    def _lauf(self) -> None:
+        while _LAUF:
+            with self._lock:
+                soll = list(self.soll)
+            if not soll:
+                with self._lock:
+                    self.verbunden, self.fehler = False, ""
+                time.sleep(2)
+                continue
+            try:
+                self._sitzung(soll)
+            except OSError as err:
+                with self._lock:
+                    self.fehler = "Broker: %s" % err.__class__.__name__
+            with self._lock:
+                self.verbunden = False
+            for _ in range(30):
+                if not _LAUF:
+                    return
+                time.sleep(1)
+
+    def _sitzung(self, soll: list) -> None:
+        z = mqtt_zugang()
+        if not z["port"]:
+            with self._lock:
+                self.fehler = "kein Brokerport in general.json"
+            return
+        s = socket.create_connection((z["host"], z["port"]), timeout=5)
+        try:
+            flags = 0x02
+            nutz = mqtt_zk("wwhaus%d" % os.getpid())
+            if z["user"]:
+                flags |= 0x80
+                nutz += mqtt_zk(z["user"])
+                if z["pass"]:
+                    flags |= 0x40
+                    nutz += mqtt_zk(z["pass"])
+            kopf = mqtt_zk("MQTT") + bytes([4, flags]) + (60).to_bytes(2, "big")
+            s.sendall(bytes([0x10]) + mqtt_laenge(len(kopf) + len(nutz)) + kopf + nutz)
+            s.settimeout(1.0)
+            puffer = b""
+            ende = time.monotonic() + 5
+            angemeldet = False
+            abonniert = False
+            letzter_ping = time.monotonic()
+            while _LAUF:
+                with self._lock:
+                    if self.soll != soll:
+                        break
+                if not angemeldet and time.monotonic() > ende:
+                    with self._lock:
+                        self.fehler = "Broker antwortet nicht (CONNACK)"
+                    break
+                if time.monotonic() - letzter_ping > 30:
+                    s.sendall(b"\xc0\x00")
+                    letzter_ping = time.monotonic()
+                try:
+                    d = s.recv(4096)
+                except socket.timeout:
+                    continue
+                if not d:
+                    raise OSError("Verbindung beendet")
+                pakete, puffer = mqtt_pakete(puffer + d)
+                for k, r in pakete:
+                    art = k >> 4
+                    if art == 2:
+                        if len(r) < 2 or r[1] != 0:
+                            with self._lock:
+                                self.fehler = "Anmeldung am Broker abgewiesen"
+                            return
+                        angemeldet = True
+                        sub = (1).to_bytes(2, "big")
+                        for t in soll:
+                            sub += mqtt_zk(t) + b"\x00"
+                        s.sendall(bytes([0x82]) + mqtt_laenge(len(sub)) + sub)
+                    elif art == 9:
+                        if any(b >= 0x80 for b in r[2:]):
+                            with self._lock:
+                                self.fehler = "Abonnement abgelehnt"
+                            return
+                        abonniert = True
+                        with self._lock:
+                            self.verbunden, self.fehler = True, ""
+                    elif art == 3:
+                        m = mqtt_publish_lesen(k, r)
+                        if m is not None and abonniert:
+                            with self._lock:
+                                haus_merken(self.stand, m[0], m[1], m[2], time.time())
+            try:
+                s.sendall(b"\xe0\x00")
+            except OSError:
+                pass
+        finally:
+            s.close()
+
+
+def auto_lauf(sitzung, cfg: dict, z: dict, marken: dict, geraete: dict) -> bool:
+    """Die Startlogik fuer alle Geraete eines Laufs. Rueckgabe True, wenn ein Start angenommen wurde (Nachfass)."""
+    leser = _G44.get("leser")
+    if leser is not None:
+        leser.setze(haus_themen(cfg))
+    _G44["auto_zeit"] = time.time()
+    jetzt = time.time()
+    nummern = auto_geraete(cfg)
+    daten = json_lesen(DATEI_AUTO)
+    if not isinstance(daten, dict):
+        daten = {}
+    stand = leser.abbild()[0] if leser is not None else {}
+    art = auto_quelle(cfg)
+    quelle = {"art": art, "frisch": haus_frisch(stand, art, jetzt),
+              "werte": (stand.get(art) or {}).get("werte") or {}}
+    aus = {}
+    gestartet = False
+    geaendert = False
+    for nr, g in (geraete or {}).items():
+        if not isinstance(g, dict):
+            continue
+        if str(nr) not in nummern:
+            aus[str(nr)] = (0, 0)
+            continue
+        schl = geraet_schluessel(g)
+        alt = daten.get(schl) if isinstance(daten.get(schl), dict) else {}
+        aktion, grund, neu = auto_schritt(alt, g, cfg, quelle, jetzt)
+        if aktion == "start":
+            try:
+                ok, meldung, _zus = befehl_ausfuehren(sitzung, cfg, z, marken, list(geraete.values()),
+                                                      {"aktion": "start", "geraet": str(nr)})
+            except Exception as err:  # noqa: BLE001
+                ok, meldung = 0, fehlertext(err)
+            neu = auto_ergebnis(neu, ok, grund, jetzt)
+            grund = int(neu.get("grund") or grund)
+            _LOG.info("Automatik: Geraet %s %s (%s) - ok=%s %s", nr,
+                      "an der Frist gestartet" if grund == 7 else "gestartet", art, ok, meldung)
+            gestartet = gestartet or bool(ok)
+        if neu != alt:
+            daten[schl] = neu
+            geaendert = True
+        aus[str(nr)] = (1 if grund in AUTO_WARTEND else 0, int(grund))
+    if geaendert:
+        json_schreiben(DATEI_AUTO, daten, 0o600)
+    _G44["auto"] = aus
+    return gestartet
+
+
+def haus_zustand_g44(jetzt: float) -> dict:
+    """Fuer zustand.json (Reiter Test, Healthcheck): Lage des HausLesers und je Quelle frisch/Alter/Anbieter - nie
+    Preise oder Speicherwerte."""
+    leser = _G44.get("leser")
+    if leser is None:
+        return {"horcher": [], "horcher_verbunden": 0, "horcher_fehler": "", "haus": {}, "auto": {}}
+    stand, verb, fehler, soll = leser.abbild()
+    haus = {}
+    for q, e in stand.items():
+        seit = int((e or {}).get("seit") or 0)
+        an = ((e or {}).get("werte") or {}).get("haus/%s/anbieter" % q)
+        haus[q] = {"frisch": 1 if haus_frisch(stand, q, jetzt) else 0, "seit": seit,
+                   "alter": int(jetzt) - seit if seit else -1, "anbieter": anbieter_anzeige(an)}
+    return {"horcher": soll, "horcher_verbunden": 1 if verb else 0, "horcher_fehler": fehler, "haus": haus,
+            "auto": {nr: {"wartet": w, "grund": gr} for nr, (w, gr) in (_G44.get("auto") or {}).items()}}
+
+
+# ===========================================================================
 # Dienst
 # ===========================================================================
 def signal_behandeln(*_):
@@ -2961,6 +3564,12 @@ def _dienst_lauf(einmal: bool = False) -> int:
     # gegen den von der Platte entstuende bei jedem Neustart ein Lauf, der
     # laengst vorbei ist (wie bis 0.9.36: der erste Lauf zaehlte nie).
     stand_von_platte = bool(stand["geraete"])
+    # Gruppe 44 (E5f): die Dauerverbindung fuer die Haus-Themen - verbindet nur, wenn ein Geraet die
+    # Automatik hat (haus_themen()); bei --einmal nie.
+    if not einmal and _G44.get("leser") is None:
+        _G44["leser"] = HausLeser()
+        _G44["leser"].setze(haus_themen(cfg))
+        _G44["leser"].starten()
     fehler_folge = 0
     befehl_liste: list = list(stand["geraete"].values())
 
@@ -3029,6 +3638,15 @@ def _dienst_lauf(einmal: bool = False) -> int:
                               if cfg.get(k) and a not in ausfaelle}
                 entfernte_merken(stand.get("geraete") or {}, geraete, antwortend)
                 stand = {"ts": int(time.time()), "geraete": geraete}
+            # Gruppe 44 (E5): die Startlogik nach einem gelungenen Abruf (die Freigabe am Geraet ist dann
+            # hoechstens einen Takt alt), vor dem Senden - damit geraetN/auto_* den Stand dieses Laufs tragen.
+            _G44["letzt_ok"] = ok
+            auto_nachfass = False
+            if ok and not einmal:
+                try:
+                    auto_nachfass = auto_lauf(sitzung, cfg, z, marken, stand.get("geraete") or {})
+                except Exception as err:  # noqa: BLE001
+                    _LOG.error("Automatik: %s", fehlertext(err))
             abbild_schreiben(stand, cfg, ok, fehler, ausfaelle, fehler_folge)
             # Die Warteschlange kennt alle Geraete des Abbilds (auch die eines
             # schweigenden Anbieters - ein Befehl an sie scheitert dann mit Grund).
@@ -3046,6 +3664,8 @@ def _dienst_lauf(einmal: bool = False) -> int:
             gebremst = fehler_folge >= 3
             if gebremst:
                 rest = min(3600, rest * min(8, fehler_folge))
+            if auto_nachfass:
+                rest = min(rest, NACHFASS_S)
 
             # pause_bis geht IMMER mit, auch als 0. zustand_schreiben() mischt
             # in den Bestand: ein weggelassenes Feld bliebe stehen, und eine
@@ -3056,7 +3676,8 @@ def _dienst_lauf(einmal: bool = False) -> int:
                               pid=os.getpid(), anzahl_geraete=len(stand["geraete"]),
                               ausfaelle=ausfaelle,
                               pause_bis=(int(time.time()) + rest
-                                         if gebremst and not einmal else 0))
+                                         if gebremst and not einmal else 0),
+                              **haus_zustand_g44(time.time()))
             if einmal:
                 return 0 if ok else 1
 
@@ -3067,6 +3688,12 @@ def _dienst_lauf(einmal: bool = False) -> int:
             while rest > 0 and _LAUF:
                 try:
                     nachfass = warteschlange(sitzung, cfg, z, marken, befehl_liste)
+                    # Gruppe 44 (E5): im Wartetakt alle AUTO_TAKT s - eine guenstige Stunde beginnt nicht
+                    # mit dem Abruftakt. Nur nach einem gelungenen Abruf; ein Start holt den Nachfass.
+                    if _G44["letzt_ok"] and time.time() - float(_G44["auto_zeit"]) >= AUTO_TAKT:
+                        if auto_lauf(sitzung, cfg, z, marken, stand.get("geraete") or {}) \
+                                and (nachfass < 0 or nachfass > NACHFASS_S):
+                            nachfass = NACHFASS_S
                     if nachfass == 0:
                         break
                     if nachfass > 0:
@@ -3091,20 +3718,52 @@ def _dienst_lauf(einmal: bool = False) -> int:
 # ===========================================================================
 # Anmeldung - wird von der Oberflaeche ueber die Warteschlange angestossen
 # ===========================================================================
+def _anmeldung_fehl(text: str) -> None:
+    """[FEHL]-Zeile fuer die Oberflaeche UND ins Protokoll (Nachfassung 30.10.2026:
+    der Traceback vom Geraet stand nur in der Oberflaeche, das Protokoll schwieg)."""
+    print("[FEHL] " + text)
+    _LOG.warning("Anmeldung: %s", text)
+
+
+def _client_hinweis(grund: str) -> str:
+    if grund in ("invalid_client", "unauthorized_client"):
+        return (" Client-ID und Client Secret im Reiter Einstellungen pruefen (sie muessen zur "
+                "Anwendung im Entwicklerportal passen).")
+    return ""
+
+
 def hc_anmeldung_starten() -> int:
-    """Device Flow, Schritt 1: Benutzercode holen und ablegen."""
+    """Device Flow, Schritt 1: Benutzercode holen und ablegen.
+
+    Nachfassung 30.10.2026: die Antwort wird ueber oauth_antwort() gelesen -
+    eine Nicht-JSON-Antwort oder ein Netzfehler endet in einer [FEHL]-Zeile mit
+    Status, Inhaltstyp und gekuerztem, maskiertem Text, nicht in einem Traceback.
+    """
     import requests
     cfg, z = config(), zugang()
     if not z["hc_client_id"]:
         print("[FEHL] Es ist keine Home-Connect-Client-ID hinterlegt.")
         return 1
-    a = requests.post(hc_host(cfg) + "/security/oauth/device_authorization",
-                      data={"client_id": z["hc_client_id"], "scope": HC_SCOPE}, timeout=30)
-    if a.status_code != 200:
-        print("[FEHL] Home Connect hat den Anmeldebeginn abgelehnt (HTTP %d): %s"
-              % (a.status_code, (a.text or "")[:300]))
+    try:
+        a = requests.post(hc_host(cfg) + "/security/oauth/device_authorization",
+                          data={"client_id": z["hc_client_id"], "scope": HC_SCOPE}, timeout=30)
+    except requests.RequestException as err:
+        _anmeldung_fehl("Home Connect ist nicht erreichbar: %s" % mitschnitt_maskieren(fehlertext(err)))
         return 1
-    d = a.json() or {}
+    d, beschreibung = oauth_antwort(a)
+    if a.status_code != 200:
+        grund, erkl = oauth_fehler(d)
+        if grund:
+            _anmeldung_fehl("Home Connect hat den Anmeldebeginn abgelehnt (HTTP %d): %s%s.%s"
+                            % (a.status_code, grund, (" - " + erkl) if erkl else "",
+                               _client_hinweis(grund)))
+        else:
+            _anmeldung_fehl("Home Connect hat den Anmeldebeginn abgelehnt (%s)." % beschreibung)
+        return 1
+    if not str(d.get("device_code") or "").strip() or not str(d.get("user_code") or "").strip():
+        _anmeldung_fehl("Home Connect hat mit HTTP 200 geantwortet, aber ohne Geraete- und "
+                        "Benutzercode (%s). Bitte spaeter erneut beginnen." % beschreibung)
+        return 1
     # Leerraum abstreifen: ein Tabulator oder Zeilenumbruch im Benutzercode
     # macht die fertige Adresse ungueltig - Home Connect antwortet dann mit
     # "invalid_request: Illegal URI reference ... expected query-char".
@@ -3122,7 +3781,20 @@ def hc_anmeldung_starten() -> int:
 
 
 def hc_anmeldung_abschliessen() -> int:
-    """Device Flow, Schritt 2: einmal nach dem Token fragen."""
+    """Device Flow, Schritt 2: einmal nach dem Token fragen.
+
+    Nachfassung 30.10.2026 (0.9.44 am Geraet, Traceback JSONDecodeError):
+      * client_secret geht mit, wenn eines hinterlegt ist - wie bei der
+        Erneuerung (hc_token_erneuern). Eine Anwendung MIT Geheimnis ist ein
+        vertraulicher Client und muss sich am Token-Endpunkt ausweisen; bis
+        hierher ging nur client_id hinaus. Bei leerem Feld geht es weiter nicht
+        mit (Device-Flow-Anwendung ohne Geheimnis, 0.9.22).
+      * die Antwort wird ueber oauth_antwort() gelesen: Nicht-JSON ergibt eine
+        [FEHL]-Zeile mit Status, Inhaltstyp und gekuerztem, maskiertem Text.
+      * slow_down (RFC 8628 3.5): kein Fehler - einige Sekunden warten und
+        erneut druecken. Rueckgabe 3: die Oberflaeche zeigt dann diesen Text
+        (2 bleibt "noch nicht bestaetigt").
+    """
     import requests
     cfg, z = config(), zugang()
     an = json_lesen(PDATA / "hc_anmeldung.json")
@@ -3132,25 +3804,49 @@ def hc_anmeldung_abschliessen() -> int:
     if time.time() > ganz(an.get("laeuft_ab"), 0):
         print("[FEHL] Die Anmeldung ist abgelaufen (fuenf Minuten). Bitte neu beginnen.")
         return 1
-    a = requests.post(hc_host(cfg) + "/security/oauth/token",
-                      data={"grant_type": "device_code",
-                            "device_code": an["device_code"],
-                            "client_id": z["hc_client_id"]}, timeout=30)
-    d = a.json() if a.content else {}
+    daten = {"grant_type": "device_code",
+             "device_code": an["device_code"],
+             "client_id": z["hc_client_id"]}
+    if z["hc_client_secret"]:
+        daten["client_secret"] = z["hc_client_secret"]
+    try:
+        a = requests.post(hc_host(cfg) + "/security/oauth/token", data=daten, timeout=30)
+    except requests.RequestException as err:
+        _anmeldung_fehl("Home Connect ist nicht erreichbar: %s" % mitschnitt_maskieren(fehlertext(err)))
+        return 1
+    d, beschreibung = oauth_antwort(a)
     if a.status_code != 200:
-        grund = str(d.get("error") or a.status_code)
+        grund, erkl = oauth_fehler(d)
         if grund == "authorization_pending":
             print("[INFO] Noch nicht bestaetigt. Code im Browser eingeben und dann erneut "
                   "auf 'Anmeldung abschliessen' druecken.")
             return 2
+        if grund == "slow_down":
+            print("[INFO] Home Connect bittet, langsamer nachzufragen (slow_down). Bitte einige "
+                  "Sekunden warten und dann erneut auf 'Anmeldung abschliessen' druecken.")
+            return 3
         if grund == "expired_token":
             print("[FEHL] Die Anmeldung ist abgelaufen. Bitte neu beginnen.")
             return 1
-        print("[FEHL] Home Connect hat abgelehnt: %s - %s"
-              % (grund, d.get("error_description") or ""))
+        if grund == "access_denied":
+            _anmeldung_fehl("Die Anmeldung wurde im Browser abgelehnt (access_denied). Bitte neu beginnen.")
+            return 1
+        if grund:
+            _anmeldung_fehl("Home Connect hat abgelehnt (HTTP %d): %s%s.%s"
+                            % (a.status_code, grund, (" - " + erkl) if erkl else "",
+                               _client_hinweis(grund)))
+        else:
+            _anmeldung_fehl("Home Connect hat am Token-Endpunkt ohne OAuth-Fehlerangabe "
+                            "geantwortet (%s). Bitte einige Sekunden warten und erneut "
+                            "druecken; bleibt es dabei, die Anmeldung neu beginnen." % beschreibung)
+        return 1
+    zugriff = d.get("access_token")
+    if not isinstance(zugriff, str) or not zugriff.strip():
+        _anmeldung_fehl("Home Connect hat mit HTTP 200 geantwortet, aber ohne Zugriffstoken (%s) - "
+                        "die Anmeldung ist NICHT gespeichert." % beschreibung)
         return 1
     if not token_eintragen("homeconnect", {
-            "access_token": d.get("access_token"),
+            "access_token": zugriff,
             "refresh_token": d.get("refresh_token"),
             "gueltig_bis": int(time.time()) + ganz(d.get("expires_in"), 86400)}):
         print("[FEHL] Home Connect hat angemeldet, aber %s liess sich nicht schreiben - "
@@ -3161,37 +3857,58 @@ def hc_anmeldung_abschliessen() -> int:
     except OSError:
         pass
     print("[OK]   Home Connect ist angemeldet.")
+    _LOG.info("Anmeldung: Home Connect ist angemeldet.")
     return 0
 
 
 def miele_anmeldung_abschliessen(code: str) -> int:
-    """Authorization Code Flow: den vom Browser zurueckgegebenen Code eintauschen."""
+    """Authorization Code Flow: den vom Browser zurueckgegebenen Code eintauschen.
+
+    Nachfassung 30.10.2026: dieselbe Auswertung wie bei Home Connect
+    (oauth_antwort) - kein Traceback bei Nicht-JSON, der Antworttext nur
+    gekuerzt und maskiert (bis hierher ungefiltert 300 Zeichen).
+    """
     import requests
     z = zugang()
     cfg = config()
     if not z["miele_client_id"] or not z["miele_client_secret"]:
         print("[FEHL] Es sind keine Miele-Zugangsdaten hinterlegt.")
         return 1
-    a = requests.post(MIELE_HOST + "/thirdparty/token",
-                      data={"grant_type": "authorization_code",
-                            "code": code,
-                            "client_id": z["miele_client_id"],
-                            "client_secret": z["miele_client_secret"],
-                            "redirect_uri": str(cfg.get("miele_redirect")
-                                                or "http://localhost")}, timeout=30)
-    if a.status_code != 200:
-        print("[FEHL] Miele hat den Code abgelehnt (HTTP %d): %s"
-              % (a.status_code, (a.text or "")[:300]))
+    try:
+        a = requests.post(MIELE_HOST + "/thirdparty/token",
+                          data={"grant_type": "authorization_code",
+                                "code": code,
+                                "client_id": z["miele_client_id"],
+                                "client_secret": z["miele_client_secret"],
+                                "redirect_uri": str(cfg.get("miele_redirect")
+                                                    or "http://localhost")}, timeout=30)
+    except requests.RequestException as err:
+        _anmeldung_fehl("Miele ist nicht erreichbar: %s" % mitschnitt_maskieren(fehlertext(err)))
         return 1
-    d = a.json() or {}
+    d, beschreibung = oauth_antwort(a)
+    if a.status_code != 200:
+        grund, erkl = oauth_fehler(d)
+        if grund:
+            _anmeldung_fehl("Miele hat den Code abgelehnt (HTTP %d): %s%s.%s"
+                            % (a.status_code, grund, (" - " + erkl) if erkl else "",
+                               _client_hinweis(grund)))
+        else:
+            _anmeldung_fehl("Miele hat den Code abgelehnt (%s)." % beschreibung)
+        return 1
+    zugriff = d.get("access_token")
+    if not isinstance(zugriff, str) or not zugriff.strip():
+        _anmeldung_fehl("Miele hat mit HTTP 200 geantwortet, aber ohne Zugriffstoken (%s) - "
+                        "die Anmeldung ist NICHT gespeichert." % beschreibung)
+        return 1
     if not token_eintragen("miele", {
-            "access_token": d.get("access_token"),
+            "access_token": zugriff,
             "refresh_token": d.get("refresh_token"),
             "gueltig_bis": int(time.time()) + ganz(d.get("expires_in"), 2592000)}):
         print("[FEHL] Miele hat angemeldet, aber %s liess sich nicht schreiben - "
               "die Anmeldung ist NICHT gespeichert (Schreibrecht? Platz?)." % DATEI_TOKEN)
         return 1
     print("[OK]   Miele ist angemeldet.")
+    _LOG.info("Anmeldung: Miele ist angemeldet.")
     return 0
 
 

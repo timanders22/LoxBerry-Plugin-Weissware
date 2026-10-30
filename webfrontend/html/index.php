@@ -92,6 +92,18 @@ if (!hash_equals($ww_soll, $ww_ist)) {
     exit;
 }
 
+/* Gruppe 44 (0.9.44, G3, Hausform G39 E-E1 A): der HTTP-Endpunkt hat einen eigenen Schalter endpunkt_ein. Eine
+ * Neuinstallation hat ihn aus (Gateway V2 und Befehlsbruecke); beim Update setzt postinstall.sh 1, wenn der
+ * Schluessel fehlt - wer die HTTP-Vorlagen nutzt, aendert nichts. Geprueft NACH dem Token: ein falsches Token
+ * antwortet wie bisher TOKEN. Lesend und schaltend gleich. */
+if (empty($ww_cfg['endpunkt_ein'])) {
+    http_response_code(403);
+    echo "FEHLER;OK=0;GRUND=ENDPUNKT_AUS\n";
+    echo "Der HTTP-Endpunkt ist ausgeschaltet (Reiter MQTT, Haken 'HTTP-Endpunkt fuer Loxone'). "
+       . "Neue Anlagen nehmen das MQTT-Gateway V2 und die Befehlsbruecke.\n";
+    exit;
+}
+
 /* ---------------- Aktion (Weissliste) ---------------- */
 $ww_lesend = array('status', 'verbrauch', 'geraete', 'roh', 'dienst');
 $ww_schaltend = array('start', 'stop', 'pause', 'fortsetzen', 'ein', 'aus', 'abruf');
@@ -289,40 +301,14 @@ if ($ww_aktion === 'verbrauch') {
  * abgewiesen. Bis 0.9.36 traf er still Geraet 1 - bei mehreren Geraeten das
  * falsche (weissware_agenten/code Befund 9). Nur der Sofortabruf gilt der
  * ganzen Anlage. */
-if ($ww_aktion !== 'abruf' && (!isset($_GET['geraet']) || $_GET['geraet'] === '')) {
-    http_response_code(400);
-    echo "SET;OK=0;GRUND=GERAET_FEHLT\n";
-    echo "Schaltende Befehle brauchen geraet=<Nummer oder Kennung>.\n";
-    exit;
+/* Gruppe 44 (0.9.44, G2): die Pruefungen des Schaltteils (Geraet angegeben, Steuerung, Dienst laeuft) und das
+ * Einreihen stehen seit 0.9.44 in ww_befehl_annehmen() (ww_lib.php) - DIESELBE Funktion nimmt die Befehle der
+ * Befehlsbruecke an (Regeln/07 Abschnitt 3a). Reihenfolge, Antwortzeilen und HTTP-Codes wie bis 0.9.43 (Probe
+ * P-G2-5 byte-gleich): GERAET_FEHLT 400, STEUERUNG_AUS 403, DIENST_LAEUFT_NICHT 503, abgelehnt 500,
+ * SET;OK=..;AKTION=..;UNVERAENDERT=..;MELDUNG=.. */
+$ww_erg = ww_befehl_annehmen($ww_aktion, array('programm' => $ww_programm),
+    (isset($_GET['geraet']) && $_GET['geraet'] !== '') ? $ww_geraet : '', 'http');
+if ((int) $ww_erg['http'] !== 200) {
+    http_response_code((int) $ww_erg['http']);
 }
-
-if ($ww_aktion !== 'abruf' && empty($ww_cfg['steuerung_ein'])) {
-    http_response_code(403);
-    echo "SET;OK=0;GRUND=STEUERUNG_AUS\n";
-    echo "Schreibende Befehle sind gesperrt. Reiter Einstellungen, Haken 'Schreibende Befehle zulassen'.\n";
-    exit;
-}
-if (ww_dienst_pid() === 0) {
-    // Nicht stillschweigend einreihen: ohne laufenden Dienst passiert nichts,
-    // und der Befehl laege bis zum naechsten Start in der Warteschlange.
-    http_response_code(503);
-    echo "SET;OK=0;GRUND=DIENST_LAEUFT_NICHT\n";
-    echo "Der Abrufdienst laeuft nicht. Reiter Einstellungen, Knopf 'Dienst starten'.\n";
-    exit;
-}
-
-$ww_befehl = array('aktion' => $ww_aktion, 'geraet' => $ww_geraet);
-if ($ww_aktion === 'start' && $ww_programm !== '') {
-    $ww_befehl['programm'] = $ww_programm;
-}
-
-$ww_antw = ww_befehl_absetzen($ww_befehl);
-list($ww_erg, $ww_meldung) = $ww_antw;
-if ($ww_erg === 0) {
-    http_response_code(500);
-}
-/* UNVERAENDERT (Bauliste C7) steht VOR der Meldung, damit MELDUNG das letzte
- * Feld bleibt; OK und AKTION behalten Platz und Bedeutung. */
-printf("SET;OK=%d;AKTION=%s;UNVERAENDERT=%d;MELDUNG=%s\n", $ww_erg, $ww_aktion,
-    !empty($ww_antw[2]) ? 1 : 0,
-    str_replace(array("\r", "\n", ';'), ' ', $ww_meldung));
+echo implode("\n", $ww_erg['zeilen']) . "\n";

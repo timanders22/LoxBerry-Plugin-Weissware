@@ -34,9 +34,10 @@ function ww_pruefzeile($stand, $frage, $antwort)
 function ww_lebenszeichen_themen()
 {
     // geraetN/ok und geraetN/ts: je Geraet, fluechtig (Bauliste C5, 02.10.2026).
+    // Gruppe 44 (0.9.44): zaehler (B1) und die Startlogik je Geraet (E5e) - Dienstaussagen, fluechtig.
     return array('ts', 'ok', 'fehler_folge', 'ausfaelle',
                  'ausfall/homeconnect', 'ausfall/miele', 'ausfall/smartthings',
-                 'geraetN/ok', 'geraetN/ts');
+                 'geraetN/ok', 'geraetN/ts', 'zaehler', 'geraetN/auto_wartet', 'geraetN/auto_grund');
 }
 
 /**
@@ -414,9 +415,14 @@ function ww_pruefungen($offen = false)
             $hat_daten ? ww_t('TEST.A_ZUGANG_DA') : ww_t('TEST.A_ZUGANG_FEHLT'));
         if ($braucht_anmeldung) {
             $an = ww_angemeldet($schluessel);
-            $zeilen[] = ww_pruefzeile($an ? 1 : 0,
+            /* Nachfassung 30.10.2026: "ja, der Dienst erneuert sich selbst"
+             * stand auch da, als die Erneuerung seit Tagen scheiterte - dieselbe
+             * Bewertung wie im Abschnitt Anmeldung (ww_erneuerung_scheitert()). */
+            $fehl = $an ? ww_erneuerung_scheitert($schluessel) : 0;
+            $zeilen[] = ww_pruefzeile(($an && !$fehl) ? 1 : 0,
                 sprintf(ww_t('TEST.F_ANGEMELDET'), $titel),
-                $an ? ww_t('TEST.A_ANGEMELDET') : ww_t('TEST.A_NICHT_ANGEMELDET'));
+                $fehl ? ww_t('EINST.ERNEUERUNG_SCHEITERT')
+                    : ($an ? ww_t('TEST.A_ANGEMELDET') : ww_t('TEST.A_NICHT_ANGEMELDET')));
         } else {
             $zeilen[] = ww_pruefzeile(-1, sprintf(ww_t('TEST.F_ANGEMELDET'), $titel),
                 ww_t('TEST.A_ST_TOKEN'));
@@ -550,6 +556,31 @@ function ww_pruefungen($offen = false)
     if (!empty($cfg['ansage_ein']) || $tts['mode'] === 'alexang' || $tts['mode'] === 'cc4lox') {
         list($st, $tx) = ww_ansage_pruefzeile($offen);
         $zeilen[] = ww_pruefzeile($st, ww_t('TEST.F_ANSAGE'), $tx);
+    }
+
+    /* Gruppe 44 (0.9.44): Gateway V2 (einheitliche Pruefzeile), Befehlsbruecke, HTTP-Endpunkt, Startlogik. */
+    list($st, $tx) = ww_v2_haken_lage($cfg);
+    $zeilen[] = ww_pruefzeile($st === 2 ? -1 : (int) $st, ww_t('PRUEF.V2_FRAGE'), ww_e($tx));
+    list($st, $tx) = ww_bruecke_lage();
+    $zeilen[] = ww_pruefzeile($st === null ? -1 : ($st ? 1 : 0), ww_t('BEFEHL.F_BRUECKE'), ww_e($tx));
+    if (!empty($cfg['befehle_mqtt_ein'])) {
+        list($rc, $aus) = ww_bruecke_pruefen();
+        $fe = array_values(array_filter($aus, function ($z) { return strpos($z, '[FEHL]') !== false; }));
+        $zeilen[] = ww_pruefzeile((int) $rc === 0 ? 1 : 0, ww_t('BEFEHL.F_PRUEFEN'),
+            (int) $rc === 0 ? ww_t('BEFEHL.T_PRUEFEN_OK') : ww_e(implode(' ', array_slice($fe ? $fe : $aus, 0, 4))));
+    }
+    $zeilen[] = ww_pruefzeile(!empty($cfg['endpunkt_ein']) ? 1 : -1, ww_t('G44.F_ENDPUNKT_HAKEN'),
+        ww_t(!empty($cfg['endpunkt_ein']) ? 'G44.A_ENDPUNKT_AN' : 'G44.A_ENDPUNKT_AUS'));
+    list($st, $tx) = ww_haus_lage($cfg);
+    $zeilen[] = ww_pruefzeile($st, ww_t('AUTO.F_QUELLE'), ww_e($tx));
+    $zu = ww_zustand();
+    $gr = ww_auto_gruende();
+    foreach (ww_auto_geraete($cfg) as $nr) {
+        $al = (isset($zu['auto'][$nr]) && is_array($zu['auto'][$nr])) ? $zu['auto'][$nr] : null;
+        $g = $al !== null && isset($al['grund']) ? (int) $al['grund'] : -1;
+        $zeilen[] = ww_pruefzeile($al === null ? -1 : (in_array($g, array(8, 10, 11, 12), true) ? 0 : 1),
+            sprintf(ww_t('AUTO.F_GERAET'), ww_e($nr)),
+            $al === null ? ww_t('AUTO.NOCH_KEIN_LAUF') : ww_e(ww_t(isset($gr[$g]) ? $gr[$g] : 'AUTO.G0')));
     }
 
     return $zeilen;

@@ -6,7 +6,14 @@
 # das Ausfuehrungsrecht an dienst.sh verloren, schluege der unmittelbare
 # Aufruf lautlos fehl - die Ausgabe geht nach /dev/null, und niemand
 # bemerkte, dass der Waechter nicht mehr laeuft.
-/bin/bash "REPLACELBPBINDIR/dienst.sh" waechter >/dev/null 2>&1
+# Gruppe 44 (0.9.44): zuerst der Waechter der Befehlsbruecke - er startet sie nur mit dem Haken "Befehle ueber
+# MQTT annehmen" und haelt sie sonst an (bin/befehlsbruecke.sh, Stamm 1.0.2).
+BBSH="REPLACELBPBINDIR/befehlsbruecke.sh"
+[ -f "$BBSH" ] && /bin/bash "$BBSH" waechter >/dev/null 2>&1
+# Die Fehlerausgabe des Dienstwaechters geht nach cron.err (Regeln/03), nicht mehr ins Leere.
+mkdir -p "REPLACELBPLOGDIR" 2>/dev/null
+touch "REPLACELBPLOGDIR/cron.err" 2>/dev/null
+/bin/bash "REPLACELBPBINDIR/dienst.sh" waechter >/dev/null 2>>"REPLACELBPLOGDIR/cron.err"
 # Ansage "Geraet ist fertig" - prueft den Zustand und spricht bei Bedarf.
 # Ueber die PHP-Kommandozeile, nie ueber HTTP (siehe bin/ansage.php).
 php "REPLACELBPBINDIR/ansage.php" >/dev/null 2>&1

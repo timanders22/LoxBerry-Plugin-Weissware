@@ -104,6 +104,15 @@ PCONFIG="$BASE/config/plugins"
 # sonst ebenfalls als zweites Argument. Der volle Pfad statt nur des
 # Dateinamens, damit die Deinstallation des einen Exemplars nicht den
 # Dienst eines zweiten abschiesst.
+# Gruppe 44 (0.9.44): die Befehlsbruecke anhalten, bevor der Dienst und die Ordner gehen.
+if [ -f "$PBIN/befehlsbruecke.sh" ]; then
+    if bash "$PBIN/befehlsbruecke.sh" stop >/dev/null 2>&1; then
+        echo "<OK> Befehlsbruecke angehalten."
+    else
+        echo "<INFO> Befehlsbruecke: stop meldete einen Fehler - sie lief vermutlich nicht."
+    fi
+fi
+
 ist_unser_dienst() {
     [ -r "/proc/$1/cmdline" ] || return 1
     # cat statt Umlenkung: endet der Prozess zwischen "[ -r ]" und dem Lesen,
@@ -217,7 +226,8 @@ fi
 for f in weissware.json zugang.json token.json geraetenummern.json laeufe.json lief \
          weissware.json.alt zugang.json.alt token.json.alt geraetenummern.json.alt \
          laeufe.json.alt lief.alt \
-         weissware.json.neu zugang.json.neu token.json.neu geraetenummern.json.neu laeufe.json.neu; do
+         weissware.json.neu zugang.json.neu token.json.neu geraetenummern.json.neu laeufe.json.neu \
+         daten.tar daten.tar.alt daten.tar.neu; do
     BK="$PCONFIG/$PFOLDER.backup.$f"
     if [ -f "$BK" ]; then
         # Ueberschreiben, dann entfernen: nur unlink liesse den Inhalt

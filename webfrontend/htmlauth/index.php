@@ -215,7 +215,8 @@ if ($ww_post && isset($_POST['vorlage'])) {
      * Geraeten musste die zweite Datei von Hand gebaut werden. Jetzt Art und
      * Nummer getrennt; was nicht ins Muster passt, wird abgewiesen. */
     $ww_art = (string) ww_post_text('vorlage');
-    if (!in_array($ww_art, array('status', 'verbrauch', 'ausgang', 'mqtt', 'dienst'), true)) {
+    /* Gruppe 44: 'mqtt' (VirtualInHttp-Kunstgriff, E6) ist gestrichen; 'befehle' = Vorlage der Befehlsbruecke. */
+    if (!in_array($ww_art, array('status', 'verbrauch', 'ausgang', 'befehle', 'dienst'), true)) {
         $ww_fehler[] = ww_t('LOX.FEHLER_VORLAGE');
     } else {
         $ww_rohnr = isset($_POST['vorlage_nr']) ? (string) ww_post_text('vorlage_nr') : '1';
@@ -321,7 +322,9 @@ if ($ww_post && isset($_POST['speichern'])) {
     }
     $ww_tmangel = array();
     $ww_tbean = array();
-    $ww_cfg['tts'] = ansage_formular_lesen($ww_tpost, ww_tts(), $ww_tmangel, $ww_tbean, ww_ansage_opt(), ww_ansage_k());
+    $ww_thinw = array();     // Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Hinweise des Moduls, die das Speichern nicht verhindern
+    $ww_cfg['tts'] = ansage_formular_lesen($ww_tpost, ww_tts(), $ww_tmangel, $ww_tbean,
+        ww_ansage_opt() + array('ziele' => ww_mit_zielen()), ww_ansage_k(), $ww_thinw);
     foreach ($ww_tmangel as $ww_tm) { $ww_fehler[] = ww_e($ww_tm['text']); }
     foreach ($ww_tbean as $ww_tb) { $ww_falsch[] = $ww_tb; }
 
@@ -385,6 +388,7 @@ if ($ww_post && isset($_POST['speichern'])) {
             $ww_fehler[] = ww_t('EINST.FEHLER_ZUGANG_SPEICHERN');
         } elseif (ww_config_speichern($ww_cfg)) {
             $ww_meldungen[] = ww_t('EINST.GESPEICHERT');
+            foreach ($ww_thinw as $ww_th) { $ww_hinweise[] = $ww_th['text']; }     // Welle Mehrfach-Ziele: erst nach dem Speichern
         } else {
             $ww_fehler[] = sprintf(ww_t('EINST.FEHLER_SPEICHERN'), ww_e($ww_p['config']));
         }
@@ -398,6 +402,7 @@ if ($ww_post && isset($_POST['speichern'])) {
             array_merge(array('takt_ruhe', 'takt_betrieb', 'wartezeit', 'sprache', 'ansage_ruhe_von', 'ansage_ruhe_bis',
                               'hc_client_id', 'miele_client_id'), $ww_ax2),
             array_merge($ww_haken_liste, $ww_ahk), $ww_falsch);
+        $ww_eingaben['werte'] += ww_ziele_x2_werte($_POST);     // Welle Mehrfach-Ziele (0.9.44): die Tabelle als name[N]
     }
     $ww_tab = 'tab-settings';
 
@@ -455,6 +460,77 @@ if ($ww_post && isset($_POST['save_mqtt'])) {
         $ww_eingaben = ww_eingaben_sammeln('mqtt', array('mqtt_topic'), array('mqtt_ein'), $ww_falsch);
     }
     $ww_tab = 'tab-mqtt';
+}
+
+/* ---------------- Gruppe 44 (G2/G3): Reiter MQTT - Befehle ueber MQTT, HTTP-Endpunkt ----------------
+ * Danach die Bruecke starten bzw. anhalten (der Waechter in cron.01min haelt sie danach). */
+if ($ww_post && isset($_POST['save_bruecke'])) {
+    $ww_g = ww_config();
+    foreach (array('befehle_mqtt_ein', 'endpunkt_ein') as $ww_k) {
+        $ww_g[$ww_k] = isset($_POST[$ww_k]) ? 1 : 0;
+    }
+    if (ww_config_speichern($ww_g)) {
+        $ww_meldungen[] = ww_t('EINST.GESPEICHERT');
+        list($ww_brc, $ww_bwas, $ww_baus) = ww_bruecke_schalten($ww_g);
+        if ($ww_brc !== null && (int) $ww_brc !== 0) {
+            $ww_fehler[] = sprintf(ww_t('BEFEHL.M_SCHALTEN_FEHL'), ww_e($ww_bwas), ww_e(is_array($ww_baus)
+                ? implode(' ', $ww_baus) : (string) $ww_baus));
+        }
+    } else {
+        $ww_fehler[] = sprintf(ww_t('EINST.FEHLER_SPEICHERN'), ww_e($ww_p['config']));
+    }
+    $ww_tab = 'tab-mqtt';
+}
+
+/* ---------------- Gruppe 44 (E5): Startlogik speichern ----------------
+ * Erst alles pruefen (ww_wert_pruefen(), dieselben Regeln wie die Sicherung), dann schreiben; bei einer
+ * Beanstandung bleiben die Eingaben stehen (X-2). Die Geraete kommen als Haken auto_nr[] und werden zu "1,3". */
+if ($ww_post && isset($_POST['save_auto'])) {
+    $ww_a = ww_config();
+    $ww_falsch = array();
+    $ww_nrn = array();
+    if (isset($_POST['auto_nr']) && is_array($_POST['auto_nr'])) {
+        foreach ($_POST['auto_nr'] as $ww_x) {
+            if (is_string($ww_x) && preg_match('/^[1-9][0-9]{0,2}$/', $ww_x) && !in_array($ww_x, $ww_nrn, true)) {
+                $ww_nrn[] = $ww_x;
+            }
+        }
+    }
+    sort($ww_nrn, SORT_NUMERIC);
+    $ww_neu = array('auto_geraete' => implode(',', array_slice($ww_nrn, 0, 20)),
+                    'auto_quelle' => (string) ww_post_text('auto_quelle'),
+                    'auto_von' => (string) ww_post_text('auto_von'),
+                    'auto_frist' => (string) ww_post_text('auto_frist'),
+                    'auto_stunden' => (string) ww_post_text('auto_stunden'),
+                    'auto_soc' => (string) ww_post_text('auto_soc'),
+                    'auto_frist_start' => isset($_POST['auto_frist_start']) ? '1' : '0');
+    foreach ($ww_neu as $ww_k => $ww_w) {
+        if (!ww_wert_pruefen($ww_k, $ww_w)) {
+            $ww_falsch[] = $ww_k;
+        }
+    }
+    if (!$ww_falsch && (int) $ww_neu['auto_von'] >= (int) $ww_neu['auto_frist']) {
+        $ww_falsch[] = 'auto_von';
+        $ww_falsch[] = 'auto_frist';
+    }
+    if ($ww_falsch) {
+        $ww_fehler[] = ww_t('AUTO.FEHLER_WERTE');
+        $ww_eingaben = ww_eingaben_sammeln('auto', array('auto_quelle', 'auto_von', 'auto_frist', 'auto_stunden',
+            'auto_soc'), array('auto_frist_start'), $ww_falsch);
+    } else {
+        foreach ($ww_neu as $ww_k => $ww_w) {
+            $ww_a[$ww_k] = ($ww_k === 'auto_geraete' || $ww_k === 'auto_quelle') ? $ww_w : (int) $ww_w;
+        }
+        if (ww_config_speichern($ww_a)) {
+            $ww_meldungen[] = ww_t('EINST.GESPEICHERT');
+            if ($ww_nrn && empty($ww_a['steuerung_ein'])) {
+                $ww_hinweise[] = ww_t('AUTO.HINWEIS_STEUERUNG');
+            }
+        } else {
+            $ww_fehler[] = sprintf(ww_t('EINST.FEHLER_SPEICHERN'), ww_e($ww_p['config']));
+        }
+    }
+    $ww_tab = 'tab-settings';
 }
 
 /* ---------------- Dienst starten, anhalten, neu starten ---------------- */
@@ -642,15 +718,26 @@ if ($ww_post && isset($_POST['selbsttest'])) {
 /* Testansage: spricht sofort ueber die eingestellte Ausgabeart (seit 0.9.39 ueber die gemeinsame
  * Sprachausgabe). Die Meldung nennt Ergebnis, Zeichenzahl und HTTP-Code - bei Alexa-NG und Chromecast 4
  * Lox NG mit deren Antwortzeile (ohne Token), nie den Text. POST, Einmalmeldung, 303 wie jeder Knopf. */
-if ($ww_post && isset($_POST['ansage_test'])) {
-    $ww_ar = ww_say_ergebnis(ww_t('WW_ANSAGE.TESTTEXT'));
-    if ($ww_ar['stand'] === 1) {
-        $ww_meldungen[] = ww_e(sprintf(ww_t('WW_ANSAGE.TEST_GESENDET'), sprintf(ww_t('WW_ANSAGE.TEST_WAS'),
-            (int) $ww_ar['zeichen'], (int) $ww_ar['http']) . ($ww_ar['zeile'] !== '' ? ' ' . $ww_ar['zeile'] : '')));
-    } elseif ($ww_ar['stand'] === -1) {
-        $ww_hinweise[] = ww_e(sprintf(ww_t('WW_ANSAGE.TEST_NICHTS'), ansage_kennung_text($ww_ar['kennung'], ww_ansage_k())));
+/* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht
+ * nur dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
+if ($ww_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
+    $ww_tk = ww_ansage_k();
+    $ww_tnur = (isset($_POST['ansage_test_ziel']) && ww_mit_zielen()) ? ansage_test_ziel($_POST) : 0;
+    if (isset($_POST['ansage_test_ziel']) && $ww_tnur === 0) {
+        $ww_tr = array('stand' => 0, 'kennung' => 'ZIEL_UNBEKANNT|-', 'art' => '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
+    } elseif ($ww_tnur >= 1) {
+        $ww_tr = ansage_testansage(ww_tts(), $ww_tk, $ww_tnur);
     } else {
-        $ww_misslungen[] = ww_e(sprintf(ww_t('WW_ANSAGE.TEST_NICHT'), ansage_kennung_text($ww_ar['kennung'], ww_ansage_k())));
+        $ww_tr = ww_say_ergebnis(ww_t('WW_ANSAGE.TESTTEXT'));
+    }
+    ww_log('Testansage' . ($ww_tnur >= 1 ? ' an Ziel ' . $ww_tnur : '') . ': ' . ansage_kurz($ww_tr));
+    if ($ww_tr['stand'] === 1) {
+        $ww_meldungen[] = ww_e(sprintf(ww_t('WW_ANSAGE.TEST_GESENDET'), sprintf(ww_t('WW_ANSAGE.TEST_WAS'),
+            (int) $ww_tr['zeichen'], (int) $ww_tr['http']) . ($ww_tr['zeile'] !== '' ? ' ' . $ww_tr['zeile'] : '')));
+    } elseif ($ww_tr['stand'] === -1) {
+        $ww_hinweise[] = ww_e(sprintf(ww_t('WW_ANSAGE.TEST_NICHTS'), ansage_kennung_text($ww_tr['kennung'], $ww_tk)));
+    } else {
+        $ww_misslungen[] = ww_e(sprintf(ww_t('WW_ANSAGE.TEST_NICHT'), ansage_kennung_text($ww_tr['kennung'], $ww_tk)));
     }
     $ww_tab = 'tab-test';
 }
@@ -760,6 +847,13 @@ $ww_pyv = ww_python_fassung();
 $ww_hc_an = ww_hc_anmeldung();
 $ww_ang = array('homeconnect' => ww_angemeldet('homeconnect'),
                 'miele' => ww_angemeldet('miele'));
+/* Nachfassung 30.10.2026 (am Geraet belegt): "angemeldet" hiess bisher nur
+ * "es liegt ein Erneuerungstoken". Am Geraet scheiterte die Erneuerung seit
+ * rund 15 Tagen mit 400, und die Seite zeigte trotzdem "angemeldet". Die
+ * Bewertung steht in ww_erneuerung_scheitert() (ww_lib.php), damit Seite und
+ * Selbsttest dieselbe Antwort geben. */
+$ww_ang_fehl = array('homeconnect' => ww_erneuerung_scheitert('homeconnect'),
+                     'miele' => ww_erneuerung_scheitert('miele'));
 $ww_miele_adresse = 'https://api.mcs3.miele.com/thirdparty/login'
     . '?response_type=code&client_id=' . rawurlencode($ww_zg['miele_client_id'])
     . '&redirect_uri=' . rawurlencode('http://localhost')
@@ -952,7 +1046,9 @@ if ($ww_rahmen) {
     <b class="<?= !empty($ww_cfg['mqtt_ein']) ? 'sm-an' : 'sm-aus' ?>"><?= !empty($ww_cfg['mqtt_ein']) ? ww_e(ww_t('ALLG.EIN')) : ww_e(ww_t('ALLG.AUS')) ?></b>
     <span class="sm-hilfe"><?= ww_e(sprintf(ww_t('ALLG.KACHEL_MQTT_HILFE'),
         !$ww_mqtt['gefunden'] ? ww_t('ALLG.NICHT_FESTSTELLBAR')
-        : ($ww_mqtt['autostart'] ? ww_t('ALLG.EIN') : ww_t('ALLG.AUS')))) ?></span>
+        : ($ww_mqtt['autostart'] ? ww_t('ALLG.EIN') : ww_t('ALLG.AUS')))
+        . '; ' . sprintf(ww_t('G44.KACHEL_FASSUNG'), (int) $ww_mqtt['fassung'] > 0
+            ? 'V' . (int) $ww_mqtt['fassung'] : ww_t('ALLG.NICHT_FESTSTELLBAR'))) ?></span>
   </div>
 </div>
 
@@ -1214,7 +1310,10 @@ if (!empty($ww_zustand['fehler'])) { ?>
     'w' => function ($n, $g) { return ww_fw('settings', $n, $g); },
     'm' => function ($n) { return ww_fm($n); },
     'c' => function ($n, $g) { return ww_fh('settings', $n, $g); },
-    'modi' => ww_ansage_modi()), ww_ansage_k()) ?>
+    'modi' => ww_ansage_modi(),
+    /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
+    'ziele' => ww_mit_zielen(),
+    'ziele_post' => (ww_fa('settings') && isset($ww_eingaben['werte']) && is_array($ww_eingaben['werte'])) ? ww_ziele_x2_post($ww_eingaben['werte']) : null), ww_ansage_k()); ?>
 
 <?php /* MQTT stand hier bis zu dieser Fassung. Es wohnt jetzt
          vollstaendig im Reiter MQTT - eine Sache, eine Stelle. */ ?>
@@ -1239,9 +1338,19 @@ if (!empty($ww_zustand['fehler'])) { ?>
 </div>
 
 <div class="sm-step"><b>Home Connect</b><br>
+<?php
+/* Nachfassung 30.10.2026 (am Geraet belegt): bis hierher stand die Abfrage
+ * "angemeldet?" VOR der laufenden Anmeldung. Lag noch eine alte Marke in
+ * token.json (am Geraet: Erneuerung scheitert seit rund 15 Tagen), zeigte die
+ * Seite "angemeldet" und verschluckte Code und Adresse einer gerade begonnenen
+ * Anmeldung - die Meldung "Code und Adresse stehen unten" zeigte ins Leere.
+ * Eine laufende, nicht abgelaufene Anmeldung (ww_hc_anmeldung() prueft
+ * laeuft_ab) hat deshalb Vorrang; die alte Marke wird nur noch genannt. */
+if ($ww_hc_an) { ?>
 <?php if ($ww_ang['homeconnect']) { ?>
-<span class="sm-an"><?= ww_e(ww_t('EINST.ANGEMELDET')) ?></span>
-<?php } elseif ($ww_hc_an) { ?>
+<p><?php if ($ww_ang_fehl['homeconnect']) { ?><span class="sm-aus"><?= ww_e(ww_t('EINST.ERNEUERUNG_SCHEITERT')) ?></span><?php } else { ?><span class="sm-an"><?= ww_e(ww_t('EINST.ANGEMELDET')) ?></span><?php } ?>
+&middot; <?= ww_e(ww_t('EINST.HC_ERSETZT')) ?></p>
+<?php } ?>
 <?= ww_t('EINST.HC_SCHRITT2') ?>
 <table class="sm-tbl">
 <tr><td><?= ww_e(ww_t('EINST.HC_CODE')) ?></td><td><b class="sm-mono" style="font-size:1.3em;"><?= ww_e($ww_hc_an['user_code']) ?></b></td></tr>
@@ -1269,7 +1378,12 @@ if ($ww_hc_fertig !== '' && preg_match('#^https?://#', $ww_hc_fertig)) { ?>
 <?php } ?>
 <tr><td><?= ww_e(ww_t('EINST.HC_GUELTIG')) ?></td><td><?= max(0, (int) $ww_hc_an['laeuft_ab'] - time()) ?> <?= ww_e(ww_t('ALLG.SEKUNDEN')) ?></td></tr>
 </table>
+<?php } elseif ($ww_ang['homeconnect'] && !$ww_ang_fehl['homeconnect']) { ?>
+<span class="sm-an"><?= ww_e(ww_t('EINST.ANGEMELDET')) ?></span>
 <?php } else { ?>
+<?php if ($ww_ang['homeconnect']) { ?>
+<p><span class="sm-aus"><?= ww_e(ww_t('EINST.ERNEUERUNG_SCHEITERT')) ?></span></p>
+<?php } ?>
 <?= ww_t('EINST.HC_SCHRITT1') ?>
 <?php } ?>
 <div class="sm-knopfreihe">
@@ -1294,10 +1408,17 @@ if ($ww_hc_fertig !== '' && preg_match('#^https?://#', $ww_hc_fertig)) { ?>
  * darueber, wie man sich anmeldet, und der eine entscheidende Hinweis ging
  * darin unter. Home Connect macht es zwei Kaesten weiter oben richtig: eine
  * Verzweigung, nicht eine Einblendung vor unveraendertem Text. */
-if ($ww_ang['miele']) { ?>
+if ($ww_ang['miele'] && !$ww_ang_fehl['miele']) { ?>
 <p><span class="sm-an"><?= ww_e(ww_t('EINST.ANGEMELDET')) ?></span>
 &middot; <?= ww_t('EINST.MIELE_SCHON_ANGEMELDET') ?></p>
 <?php } else { ?>
+<?php /* Nachfassung 30.10.2026: eine Marke, deren Erneuerung scheitert, ist
+         kein "angemeldet" - dann stehen die Schritte zum Neuanmelden da.
+         (Miele hat keine laufende Anmeldung, die verschluckt werden koennte:
+         Adresse und Codefeld stehen unten in jedem Fall.) */ ?>
+<?php if ($ww_ang['miele']) { ?>
+<p><span class="sm-aus"><?= ww_e(ww_t('EINST.ERNEUERUNG_SCHEITERT')) ?></span></p>
+<?php } ?>
 <?= ww_t('EINST.MIELE_SCHRITTE') ?>
 <?php } ?>
 <?php /* Die Anmeldeadresse steht in beiden Faellen da: auch wer angemeldet
@@ -1349,6 +1470,69 @@ if ($ww_ang['miele']) { ?>
 <p class="sm-hilfe"><?= ww_t('EINST.KENNUNG_HINWEIS') ?></p>
 <?php } ?>
 
+<?php /* ================= Gruppe 44 (0.9.44, E5): Startlogik je Geraet ================= */
+$ww_anr = ww_auto_geraete($ww_cfg);
+$ww_azu = ww_zustand();
+$ww_aq = ww_fw('auto', 'auto_quelle', $ww_cfg['auto_quelle']); ?>
+<h2><?= ww_e(ww_t('AUTO.H_TITEL')) ?></h2>
+<div class="sm-hinweis"><?= ww_t('AUTO.ERKLAERUNG') ?></div>
+<div class="sm-warnung"><?= ww_t('AUTO.PV_START') ?></div>
+<form action="index.php" method="post">
+  <?php echo ww_fmt(); ?>
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<input data-role="none" type="hidden" name="save_auto" value="1">
+<?php if (!$ww_geraete) { ?>
+<p class="sm-hilfe"><?= ww_t('AUTO.KEINE_GERAETE') ?></p>
+<?php } else { ?>
+<table class="sm-tbl">
+<tr><th><?= ww_e(ww_t('AUTO.T_AUTO')) ?></th><th><?= ww_e(ww_t('EINST.T_NR')) ?></th><th><?= ww_e(ww_t('EINST.T_NAME')) ?></th><th><?= ww_e(ww_t('AUTO.T_LAGE')) ?></th></tr>
+<?php $ww_ag = ww_auto_gruende();
+foreach ($ww_geraete as $ww_nr => $ww_fz) {
+    $ww_al = (isset($ww_azu['auto'][(string) $ww_nr]) && is_array($ww_azu['auto'][(string) $ww_nr])) ? $ww_azu['auto'][(string) $ww_nr] : array();
+    $ww_gr = isset($ww_al['grund']) ? (int) $ww_al['grund'] : 0; ?>
+<tr><td><input data-role="none" type="checkbox" name="auto_nr[]" value="<?= ww_e($ww_nr) ?>" <?= in_array((string) $ww_nr, $ww_anr, true) ? 'checked' : '' ?>></td>
+    <td><?= ww_e($ww_nr) ?></td><td><?= ww_e(isset($ww_fz['name']) ? $ww_fz['name'] : '') ?></td>
+    <td><?= in_array((string) $ww_nr, $ww_anr, true) ? ww_e(ww_t(isset($ww_ag[$ww_gr]) ? $ww_ag[$ww_gr] : 'AUTO.G0')) : '&ndash;' ?></td></tr>
+<?php } ?>
+</table>
+<?php } ?>
+<div class="sm-feld">
+  <label for="auto_quelle"><?= ww_e(ww_t('AUTO.L_QUELLE')) ?></label>
+  <select data-role="none" id="auto_quelle" name="auto_quelle"<?= ww_fm('auto_quelle') ?>>
+    <option value="strompreis" <?= $ww_aq !== 'speicher' ? 'selected' : '' ?>><?= ww_e(ww_t('AUTO.Q_STROMPREIS')) ?></option>
+    <option value="speicher" <?= $ww_aq === 'speicher' ? 'selected' : '' ?>><?= ww_e(ww_t('AUTO.Q_SPEICHER')) ?></option>
+  </select>
+  <div class="sm-hilfe"><?= ww_t('AUTO.H_QUELLE') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="auto_von"><?= ww_e(ww_t('AUTO.L_VON')) ?></label>
+  <input data-role="none" type="<?= ww_ftyp('auto_von') ?>" id="auto_von" name="auto_von" min="0" max="22" value="<?= ww_e(ww_fw('auto', 'auto_von', $ww_cfg['auto_von'])) ?>"<?= ww_fm('auto_von') ?>>
+</div>
+<div class="sm-feld">
+  <label for="auto_frist"><?= ww_e(ww_t('AUTO.L_FRIST')) ?></label>
+  <input data-role="none" type="<?= ww_ftyp('auto_frist') ?>" id="auto_frist" name="auto_frist" min="1" max="23" value="<?= ww_e(ww_fw('auto', 'auto_frist', $ww_cfg['auto_frist'])) ?>"<?= ww_fm('auto_frist') ?>>
+  <div class="sm-hilfe"><?= ww_t('AUTO.H_FENSTER') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="auto_stunden"><?= ww_e(ww_t('AUTO.L_STUNDEN')) ?></label>
+  <input data-role="none" type="<?= ww_ftyp('auto_stunden') ?>" id="auto_stunden" name="auto_stunden" min="1" max="24" value="<?= ww_e(ww_fw('auto', 'auto_stunden', $ww_cfg['auto_stunden'])) ?>"<?= ww_fm('auto_stunden') ?>>
+</div>
+<div class="sm-feld">
+  <label for="auto_soc"><?= ww_e(ww_t('AUTO.L_SOC')) ?></label>
+  <input data-role="none" type="<?= ww_ftyp('auto_soc') ?>" id="auto_soc" name="auto_soc" min="1" max="100" value="<?= ww_e(ww_fw('auto', 'auto_soc', $ww_cfg['auto_soc'])) ?>"<?= ww_fm('auto_soc') ?>>
+</div>
+<div class="sm-feld">
+  <label style="display:inline-flex;align-items:center;gap:8px;">
+    <input data-role="none" type="checkbox" name="auto_frist_start" value="1" <?= ww_fh('auto', 'auto_frist_start', $ww_cfg['auto_frist_start']) ? 'checked' : '' ?>>
+    <?= ww_e(ww_t('AUTO.L_FRIST_START')) ?>
+  </label>
+  <div class="sm-hilfe"><?= ww_t('AUTO.H_FRIST_START') ?></div>
+</div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= ww_e(ww_t('ALLG.SPEICHERN')) ?></button>
+</div>
+</form>
+
 <h2><?= ww_t('EINST.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= ww_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= ww_t('EINST.SICH_WARNUNG') ?></div>
@@ -1397,7 +1581,8 @@ if ($ww_sich_namen) { ?>
   <div class="sm-hilfe"><?= ww_e(sprintf(ww_t('MQTT.ALT_LISTE'), implode(', ', $ww_palt))) ?></div>
 <?php } ?>
 </div>
-<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= ww_t('LEGENDE.AKTION') ?></span></div>
+<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= ww_t('LEGENDE.AKTION') ?></span>
+<span><i class="sm-punkt sm-b-lesen"></i> <?= ww_t('LEGENDE.LESEN') ?></span></div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= ww_e(ww_t('ALLG.SPEICHERN')) ?></button>
 </div>
@@ -1441,10 +1626,63 @@ foreach (ww_mqtt_themen() as $ww_thema => $ww_schluessel) { ?>
 </table>
 <p class="sm-hilfe"><?= ww_t('MQTT.RETAIN_ERKLAERUNG') ?></p>
 <p class="sm-hilfe"><?= ww_t('MQTT.PLATZHALTER') ?></p>
+<?php /* ================= Gruppe 44 (0.9.44): Gateway V2, Befehlsbruecke, HTTP-Endpunkt ================= */ ?>
+<h2><?= ww_e(ww_t('G44.H_V2')) ?></h2>
+<?php if ((int) $ww_mqtt['fassung'] === 1) { ?>
+<p class="sm-hilfe"><?= ww_t('G44.V2_NUR_V1') ?></p>
+<?php } else { $ww_v2 = ww_v2_haken($ww_cfg); ?>
+<p class="sm-hilfe"><?= ww_t('G44.V2_TEXT') ?></p>
+<?php if (!$ww_v2) { ?><div class="sm-warnung"><?= ww_e(ww_t('PRUEF.V2_LEER')) ?></div><?php } else { ?>
+<table class="sm-tbl">
+<tr><th><?= ww_e(ww_t('MQTT.T_THEMA')) ?></th><th><?= ww_e(ww_t('G44.T_NAME')) ?></th><th>Noncached</th><th><?= ww_e(ww_t('MQTT.T_BEDEUTUNG')) ?></th></tr>
+<?php foreach ($ww_v2 as $ww_h) { ?>
+<tr><td><span class="sm-mono"><?= ww_e($ww_h['thema']) ?></span></td><td><span class="sm-mono"><?= ww_e($ww_h['name']) ?></span></td>
+    <td><?= ww_e(ww_t($ww_h['noncached'] ? 'ALLG.JA' : 'ALLG.NEIN')) ?></td><td><?= $ww_h['bez'] !== '' ? ww_t($ww_h['bez']) : '' ?></td></tr>
+<?php } ?>
+</table>
+<?php } } ?>
+
+<h2><?= ww_e(ww_t('BEFEHL.H_TITEL')) ?></h2>
+<div class="sm-warnung"><?= ww_t('BEFEHL.UDP_HINWEIS') ?></div>
+<form action="index.php" method="post">
+  <?php echo ww_fmt(); ?>
+<input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+<input data-role="none" type="hidden" name="save_bruecke" value="1">
+<div class="sm-feld"><label style="display:inline-flex;align-items:center;gap:8px;">
+  <input data-role="none" type="checkbox" name="befehle_mqtt_ein" value="1" <?= !empty($ww_cfg['befehle_mqtt_ein']) ? 'checked' : '' ?>>
+  <?= ww_e(ww_t('BEFEHL.L_ANNEHMEN')) ?></label><div class="sm-hilfe"><?= ww_t('BEFEHL.H_ANNEHMEN') ?></div></div>
+<div class="sm-feld"><label style="display:inline-flex;align-items:center;gap:8px;">
+  <input data-role="none" type="checkbox" name="endpunkt_ein" value="1" <?= !empty($ww_cfg['endpunkt_ein']) ? 'checked' : '' ?>>
+  <?= ww_e(ww_t('BEFEHL.L_ENDPUNKT')) ?></label><div class="sm-hilfe"><?= ww_t('BEFEHL.H_ENDPUNKT') ?></div></div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= ww_e(ww_t('ALLG.SPEICHERN')) ?></button>
+</div>
+</form>
+<?php list($ww_bl, $ww_blf) = ww_bruecke_liste(); if ($ww_bl === null) { ?>
+<div class="sm-warnung"><?= ww_e($ww_blf) ?></div>
+<?php } else { ?>
+<table class="sm-tbl">
+<tr><th><?= ww_e(ww_t('MQTT.T_THEMA')) ?></th><th><?= ww_e(ww_t('BEFEHL.T_ART')) ?></th><th><?= ww_e(ww_t('BEFEHL.T_TITEL')) ?></th></tr>
+<?php foreach ((isset($ww_bl['befehle']) && is_array($ww_bl['befehle']) ? $ww_bl['befehle'] : array()) as $ww_be) { ?>
+<tr><td><span class="sm-mono"><?= ww_e(isset($ww_be['thema']) ? $ww_be['thema'] : '') ?></span></td>
+    <td><?= ww_e(isset($ww_be['art']) ? $ww_be['art'] : '') ?></td><td><?= ww_e(isset($ww_be['titel']) ? $ww_be['titel'] : '') ?></td></tr>
+<?php } ?>
+</table>
+<p class="sm-hilfe"><?= ww_t('BEFEHL.H_GERAETE') ?></p>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <?php echo ww_fmt(); ?>
+    <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="vorlage" value="befehle"><?= ww_e(ww_t('BEFEHL.K_VORLAGE')) ?></button>
+  </form>
+</div>
+<?php } ?>
 </div>
 
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
 <div class="sm-seite<?= $ww_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
+<?php /* Gruppe 44 (G3): die HTTP-Vorlagen sind der bisherige Weg. */ ?>
+<div class="sm-hinweis"><?= ww_t('G44.LOX_BISHER') ?><?= empty($ww_cfg['endpunkt_ein']) ? ' ' . ww_t('G44.LOX_AUS') : '' ?></div>
 <h2><?= ww_e(ww_t('LOX.H_TITEL')) ?></h2>
 <p><?= ww_t('LOX.EINLEITUNG') ?></p>
 
@@ -1541,13 +1779,9 @@ foreach ($ww_vnrn as $ww_vnr) {
   </form>
 </div>
 <p><b><?= ww_e(ww_t('LOX.VORLAGEN_MQTT')) ?></b></p>
-<div class="sm-knopfreihe">
-  <form action="index.php" method="post">
-    <?php echo ww_fmt(); ?>
-    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="vorlage" value="mqtt"><?= ww_e(ww_t('LOX.K_VORLAGE_MQTT')) ?></button>
-  </form>
-</div>
+<?php /* Gruppe 44 (E6): die MQTT-Importvorlage mit dem VirtualInHttp-Kunstgriff ist gestrichen (Regeln/07
+         R2_078). Die Eingaenge legt das Gateway V2 an; die Namen stehen im Reiter MQTT. */ ?>
+<p class="sm-hilfe"><?= ww_t('G44.LOX_MQTT_WEG') ?></p>
 <div class="sm-hilfe"><?= ww_t('LOX.VORLAGEN_HINWEIS') ?></div>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-lesen"></i> <?= ww_t('LEGENDE.LESEN') ?></span>
@@ -1881,6 +2115,9 @@ function ww_bausteinseiten()
     <?php echo ww_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_test" value="1"><?= ww_e(ww_t('WW_ANSAGE.K_TEST')) ?></button>
+<?php /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): je weiteres Ziel ein Knopf "Testansage an Ziel n (Geraet (Plugin))";
+   ohne weitere Ziele nichts. */
+if (ww_mit_zielen()) { echo ansage_testknoepfe_html(ww_tts(), ww_ansage_k(), array('klasse' => 'sm-btn sm-b-aktion')); } ?>
   </form>
 </div>
 <div class="sm-hilfe"><?= ww_t('WW_ANSAGE.H_TEST_TEXT') ?></div>
@@ -1953,6 +2190,13 @@ function ww_bausteinseiten()
 
 <!-- ================= Reiter: Logdateien ================= -->
 <div class="sm-seite<?= $ww_tab === 'tab-log' ? ' sm-active' : '' ?>" id="tab-log">
+<?php /* Gruppe 44: Protokoll der Befehlsbruecke und Fehlerausgabe des Waechters (je die letzten 40 Zeilen). */
+foreach (array('befehle_start.log' => 'G44.LOG_BRUECKE', 'cron.err' => 'G44.LOG_CRONERR') as $ww_lf => $ww_lt) {
+    $ww_lp = $ww_p['logdir'] . '/' . $ww_lf;
+    if (is_file($ww_lp) && filesize($ww_lp) > 0) { ?>
+<h3><?= ww_e(ww_t($ww_lt)) ?></h3>
+<div class="sm-log"><?= ww_e(implode("\n", ww_log_ende($ww_lp, 40))) ?></div>
+<?php } } ?>
 <h2><?= ww_e(ww_t('LOG.H_TITEL')) ?></h2>
 <?php
 if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) {

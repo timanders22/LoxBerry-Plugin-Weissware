@@ -1,0 +1,4 @@
+# Debian-Pakete, die LoxBerry waehrend der Installation als root einspielt (Gruppe 44, 0.9.44).
+# mosquitto-clients: die Befehlsbruecke (bin/befehlsbruecke.sh) liest mit mosquitto_sub und quittiert
+# mit mosquitto_pub.
+mosquitto-clients

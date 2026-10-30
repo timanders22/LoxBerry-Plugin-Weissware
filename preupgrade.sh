@@ -74,6 +74,9 @@ SICHER="$BASE/config/plugins"
 # sie hoechstens eine Stunde alt ist. postinstall.sh entfernt sie.
 mkdir -p "$BASE/data/plugins" 2>/dev/null
 MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+# Gruppe 44: lag die Marke schon VOR diesem Lauf, ist ein frueheres Update nicht zu Ende gekommen (Schritt 4b).
+WW_VORHER_MARKE=0
+[ -f "$MARKE" ] && WW_VORHER_MARKE=1
 date +%s > "$MARKE" 2>/dev/null
 if [ -s "$MARKE" ]; then
     echo "<OK> Dienststart bis zum Ende der Aktualisierung gesperrt."
@@ -339,6 +342,79 @@ done
 
 # Beide Geheimnisdateien auf 0600 - weissware.json traegt das Aktionstoken,
 # mit dem der Endpunkt schaltende Befehle annimmt, token.json die Anmeldung.
+# ---------- 4b. Laufzeitdaten herausretten (Gruppe 44, 0.9.44) ----------
+# Bis 0.9.43 gingen nur token.json, geraetenummern.json und laeufe.json (oben) ueber ein Update. Bestandsaufnahme
+# aller Dateien, die Dienst, Oberflaeche, Bruecke und Sprachmodul in data/plugins/<ordner>/ schreiben (Bericht
+# Gruppe 44). Zusaetzlich gerettet wird, was nach dem Update gebraucht wird:
+#   loxone.json                 der zuletzt abgelegte Stand - der Dienst beginnt damit (stand_laden(), Bauliste C6):
+#                               getrennte Geraete behalten ihre Zustaende, ALTER springt nicht auf -1
+#   entfernt.json               entfernte Geraete (Bauliste M2) - sonst antwortet HTTP GERAET_UNBEKANNT statt
+#                               GERAET_ENTFERNT und das Abraeumen ihrer retained Themen begaenne neu
+#   mqtt_praefixe_geraeumt.json abgeraeumte fruehere MQTT-Praefixe (Merker, Nachlesen beim Broker)
+#   retain_ts_geraeumt          Merker der einmaligen Altwert-Abraeumung (ALTWERTE_LOESCHEN)
+#   ansage_stand.json           Stand der Ansage "Geraet fertig" - sonst kaeme die Meldung nach dem Update erneut
+#   auto.json                   die Startlogik je Geraet (Freigabe, Frist, erledigt) - sonst startete ein Geraet nach
+#                               dem Update ein zweites Mal in derselben Freigabe
+# Bewusst NICHT: cache.json, zustand.json (entstehen im naechsten Lauf), dienst.pid, dienst.lock, start.lock,
+# token.lock, soll_laufen (dafuer .backup.lief), wache_* (Laufzeit des alten Waechters), befehle/ und antworten/
+# (ein Befehl von vor dem Update soll danach nicht mehr laufen; auch die Bruecke befehle/zustand.json,
+# waechter.json, waechter.lock), hc_anmeldung.json und miele_code (eine Anmeldung gilt Minuten), einmalmeldung.json,
+# endpunkt_pruefung.json, .meldung_* (kurzlebig), <art>_letzte.json (Ergebnis der letzten Ansage fuer den Reiter).
+# Bauart BYD 0.9.29: unter .neu packen, Zahl der Eintraege gegen die Liste halten, dann umbenennen; die vorhandene
+# Sicherung faellt erst, wenn die neue steht; ohne Datenordner (zweiter Anlauf) bleibt sie; ohne Marke vor diesem
+# Lauf stammt eine liegende aus einem frueheren Vorgang und geht nach .alt. Der Name liegt NEBEN dem Konfigordner.
+DSICHERUNG="$SICHER/$PFOLDER.backup.daten.tar"
+DNEU="$DSICHERUNG.neu"
+rm -f "$DNEU" 2>/dev/null
+WW_DLISTE=""
+for f in loxone.json entfernt.json mqtt_praefixe_geraeumt.json retain_ts_geraeumt ansage_stand.json auto.json; do
+    [ -f "$PDATA/$f" ] && [ ! -L "$PDATA/$f" ] && WW_DLISTE="$WW_DLISTE $f"
+done
+if [ -n "$WW_DLISTE" ]; then
+    WW_DSOLL=$(echo $WW_DLISTE | wc -w | tr -d ' ')
+    if command -v tar >/dev/null 2>&1 \
+       && ( umask 077; tar -cf "$DNEU" -C "$PDATA" $WW_DLISTE ) 2>/dev/null \
+       && [ "$(tar -tf "$DNEU" 2>/dev/null | grep -c .)" = "$WW_DSOLL" ] \
+       && mv -f "$DNEU" "$DSICHERUNG" 2>/dev/null; then
+        chmod 600 "$DSICHERUNG" 2>/dev/null
+        echo "<OK> Laufzeitdaten gesichert:$WW_DLISTE - sie werden nach dem Update zurueckgespielt."
+    else
+        rm -f "$DNEU" 2>/dev/null
+        WW_GESCHEITERT="$WW_GESCHEITERT daten.tar"
+        if [ -f "$DSICHERUNG" ]; then
+            echo "<WARNING> Die Laufzeitdaten liessen sich nicht neu sichern; die vorhandene Sicherung bleibt: $DSICHERUNG"
+        else
+            echo "<WARNING> Die Laufzeitdaten (Stand, Merker, Startlogik) liessen sich nicht sichern;"
+            echo "<WARNING> sie gehen bei diesem Update verloren."
+        fi
+    fi
+elif [ -f "$DSICHERUNG" ] && [ "$WW_VORHER_MARKE" = "1" ]; then
+    echo "<INFO> Im Datenordner liegen keine Laufzeitdaten, wohl aber die Sicherung eines frueheren, nicht zu"
+    echo "<INFO> Ende gebrachten Updates - sie bleibt und wird nach dem Update zurueckgespielt: $DSICHERUNG"
+elif [ -f "$DSICHERUNG" ]; then
+    rm -f "${DSICHERUNG:?}.alt" 2>/dev/null
+    if mv -f "$DSICHERUNG" "$DSICHERUNG.alt" 2>/dev/null; then
+        chmod 600 "$DSICHERUNG.alt" 2>/dev/null
+        echo "<WARNING> Gesicherte Laufzeitdaten aus einem frueheren Vorgang werden NICHT eingespielt und liegen"
+        echo "<WARNING> beiseite: $DSICHERUNG.alt (die Deinstallation raeumt sie ab)."
+    else
+        echo "<WARNING> Gesicherte Laufzeitdaten aus einem frueheren Vorgang liessen sich nicht beiseitelegen: $DSICHERUNG"
+    fi
+fi
+
+# Gruppe 44 (0.9.44): die Befehlsbruecke anhalten - der Waechter startet sie nach dem Update wieder, wenn der Haken
+# gesetzt ist. Die Marke .upgrade_laeuft (oben) haelt ihn bis dahin an.
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    if bash "$BBSH" stop >/dev/null 2>&1; then
+        echo "<INFO> Befehlsbruecke angehalten (der Waechter startet sie nach dem Update, wenn der Haken gesetzt ist)."
+    else
+        echo "<INFO> Befehlsbruecke: stop meldete einen Fehler - sie lief vermutlich nicht."
+    fi
+else
+    echo "<INFO> Keine Befehlsbruecke installiert (Fassung vor 0.9.44) - nichts anzuhalten."
+fi
+
 for f in zugang.json weissware.json token.json; do
     chmod 600 "$SICHER/$PFOLDER.backup.$f" 2>/dev/null || true
 done

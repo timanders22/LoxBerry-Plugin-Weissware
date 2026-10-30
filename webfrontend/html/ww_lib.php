@@ -26,8 +26,8 @@ if (!function_exists('ww_e')) {
 
 
 /* Gemeinsame Sprachausgabe (Abschrift von Werkzeuge/gemeinsam/sprachausgabe.php,
- * Nr. 36 b, Stufe 1). Liegt neben dieser Datei; sie legt beim Einbinden nur
- * Funktionen an und schuetzt sich selbst gegen doppeltes Laden. */
+ * Nr. 36 b, Stufe 1; seit 0.9.44 Stamm 1.2.1 mit weiteren Ausgabezielen, ww_mit_zielen(), Welle Mehrfach-Ziele).
+ * Liegt neben dieser Datei; sie legt beim Einbinden nur Funktionen an und schuetzt sich selbst gegen doppeltes Laden. */
 require_once __DIR__ . '/sprachausgabe.php';
 
 
@@ -219,6 +219,22 @@ function ww_vorgaben()
          * die retained Themen darunter mit Nachlesen ab, die Deinstallation
          * leert sie mit (bin/weissware.py, praefixe_raeumen()/mqtt_leeren()). */
         'mqtt_topic_alt' => array(),
+        /* Gruppe 44 (0.9.44): Hausform. befehle_mqtt_ein: Befehle ueber die Befehlsbruecke (ab Werk und beim
+         * Update aus). endpunkt_ein: der HTTP-Endpunkt mit Token - Neuinstallation aus; beim Update setzt
+         * postinstall.sh 1, wenn der Schluessel fehlt (Bestand nutzt den HTTP-Weg). */
+        'befehle_mqtt_ein' => 0,
+        'endpunkt_ein'     => 0,
+        /* Startlogik (E5): Geraetenummern mit Automatik als Text "1,3" (ab Werk keine), Quelle strompreis
+         * (haus/strompreis) oder speicher (haus/speicher), Fenster auto_von bis auto_frist (volle Stunden),
+         * die k guenstigsten Stunden, Speicherschwelle in %, an der Frist trotzdem starten. Werte wie die
+         * Loxone-Seite "PV-Start" (8-20 Uhr, Rang <= 4, Hausakku > 60 %). */
+        'auto_geraete'     => '',
+        'auto_quelle'      => 'strompreis',
+        'auto_von'         => 8,
+        'auto_frist'       => 20,
+        'auto_stunden'     => 4,
+        'auto_soc'         => 60,
+        'auto_frist_start' => 1,
         /* Sprachausgabe. Stand bis 0.9.17 NICHT in den Vorgaben, obwohl
          * die Oberflaeche den Schluessel bei jedem Speichern schreibt.
          * Folge: ww_sicherung_lesen() pruefte gegen diese Liste und wies
@@ -685,6 +701,40 @@ function ww_hc_anmeldung()
 }
 
 /**
+ * Angemeldet, aber die Erneuerung scheitert? 1 = ja, 0 = nein oder nicht
+ * angemeldet.
+ *
+ * Nachfassung 30.10.2026 (am Geraet belegt): die Seite zeigte "angemeldet",
+ * waehrend die Erneuerung seit rund 15 Tagen mit 400 scheiterte. Einen
+ * eigenen Zaehler fuer gescheiterte Erneuerungen fuehrt der Dienst nicht;
+ * _token_erneuern() in bin/weissware.py schreibt aber bei Erfolg ein neues
+ * gueltig_bis in token.json und erneuert zehn Minuten VOR Ablauf. Liegt
+ * gueltig_bis in der Vergangenheit, ist mindestens ein Versuch gescheitert -
+ * oder der naechste Abruf stand noch aus. Darum gilt es als gescheitert, wenn
+ *   - zustand.json fuer diesen Anbieter einen Ausfall fuehrt (mit abgelaufenem
+ *     Zugriffstoken scheitert der Abruf genau an der Erneuerung), oder
+ *   - die Marke laenger als 7800 s abgelaufen ist (laengster Ruhetakt 7200 s
+ *     plus die zehn Minuten Vorlauf) - dann haette auch ein stehender Dienst
+ *     sie erneuern muessen.
+ * Ohne gueltig_bis (0) bleibt es bei "angemeldet": das waere eine Vermutung.
+ */
+function ww_erneuerung_scheitert($anbieter)
+{
+    $m = ww_json_lesen(ww_paths()['datadir'] . '/token.json');
+    if (!isset($m[$anbieter]) || !is_array($m[$anbieter]) || empty($m[$anbieter]['refresh_token'])) {
+        return 0;
+    }
+    $bis = isset($m[$anbieter]['gueltig_bis']) ? (int) $m[$anbieter]['gueltig_bis'] : 0;
+    $jetzt = time();
+    if ($bis <= 0 || $bis >= $jetzt) {
+        return 0;
+    }
+    $z = ww_zustand();
+    $ausfall = isset($z['ausfaelle']) && is_array($z['ausfaelle']) && !empty($z['ausfaelle'][$anbieter]);
+    return ($ausfall || $jetzt - $bis > 7800) ? 1 : 0;
+}
+
+/**
  * Ruft das Dienstskript mit einem Schalter auf (Anmeldung, Selbsttest).
  *
  * Zugangsdaten werden NIE ueber die Kommandozeile uebergeben - Argumente
@@ -838,6 +888,11 @@ function ww_endpunkt_pruefen($frisch = false)
             $alt['alter'] = time() - (int) $alt['ts'];
             return $alt;
         }
+    }
+    /* Gruppe 44 (G3): ist der HTTP-Endpunkt ausgeschaltet (endpunkt_ein = 0), antwortet er 403 ENDPUNKT_AUS -
+     * kein Aufruf, grau mit Satz. */
+    if (empty(ww_config(false)['endpunkt_ein'])) {
+        return array('stand' => -1, 'http' => 0, 'text' => ww_t('BEFEHL.T_ENDPUNKT_AUS'), 'ts' => time(), 'alter' => 0);
     }
     $geraete = ww_geraete();
     $nr = $geraete ? (string) array_keys($geraete)[0] : '1';
@@ -1367,6 +1422,10 @@ function ww_mqtt_retain()
         'geraetN/temperatur'         => false,
         'geraetN/ok'                 => false,
         'geraetN/ts'                 => false,
+        // Gruppe 44 (0.9.44): Lebenszeichen und Startlogik - fluechtig.
+        'zaehler'                    => false,
+        'geraetN/auto_wartet'        => false,
+        'geraetN/auto_grund'         => false,
     );
 }
 
@@ -1436,6 +1495,10 @@ function ww_mqtt_themen()
         // Bauliste C5: je Geraet, fluechtig, in jedem Lauf.
         'geraetN/ok'                => 'WW_MQTT.GERAET_OK',
         'geraetN/ts'                => 'WW_MQTT.GERAET_TS',
+        // Gruppe 44 (0.9.44, B1, E5e)
+        'zaehler'                   => 'WW_MQTT.ZAEHLER',
+        'geraetN/auto_wartet'       => 'WW_MQTT.AUTO_WARTET',
+        'geraetN/auto_grund'        => 'WW_MQTT.AUTO_GRUND',
     );
 }
 
@@ -2043,80 +2106,17 @@ function ww_vorlage_ausgang($nummer = 1)
     );
 }
 
-/**
- * Vorlage fuer die Eingaenge des MQTT-Gateways.
- *
- * Gateway-Eingaenge sind nackte VirtualIn - dafuer kennt Loxone Config kein
- * Vorlagenformat ("Als Vorlage speichern" ist nicht waehlbar), das Gateway
- * legt sie beim ersten Empfang selbst an. Der Kunstgriff, mit dem sechs
- * Plugins im Bestand trotzdem einen Knopf anbieten: ein VirtualInHttp mit
- * Scheinadresse http://localhost und PollingTime 604800 (eine Woche). Loxone
- * legt daraus die richtig benannten Eingaenge an; die Werte kommen danach vom
- * Gateway, nicht ueber diese Adresse. Check ist deshalb ein Leerzeichen.
- *
- * Textthemen (Name, Anbieter, Zustandstext, Programm) bleiben AUSSEN VOR:
- * das nachgebaute Format ist nur fuer Zahlenwerte belegt.
- */
-function ww_vorlage_mqtt()
-{
-    $cfg = ww_config();
-    $praefix = trim((string) $cfg['mqtt_topic'], '/');
-    if ($praefix === '') {
-        $praefix = 'weissware';
-    }
-    /* Textthemen bekommen keinen virtuellen Eingang - das nachgebaute
-     * Vorlagenformat ist nur fuer Zahlenwerte belegt. 'gewaehlt_text'
-     * fehlte bis 0.9.17 in dieser Liste; Loxone bekam dafuer einen
-     * analogen Eingang, der dauerhaft auf 0 stand. */
-    $text = array('name', 'anbieter', 'zustand_text', 'programm_text',
-                  'gewaehlt_text');
-    $geraete = ww_geraete();
-    $nummern = $geraete ? array_keys($geraete) : array('1');
-
-    $cmds = array();
-    $ohne = 0;
-    foreach (ww_mqtt_themen() as $thema => $schluessel) {
-        $blatt = substr($thema, strrpos($thema, '/') === false ? 0 : strrpos($thema, '/') + 1);
-        if (in_array($blatt, $text, true)) {
-            $ohne++;
-            continue;
-        }
-        $liste = (strpos($thema, 'geraetN/') === 0)
-            ? array_map(function ($n) use ($thema) {
-                return str_replace('geraetN/', 'geraet' . (int) $n . '/', $thema);
-            }, $nummern)
-            : array($thema);
-        foreach ($liste as $t) {
-            $cmds[] = array(
-                'title'   => str_replace('/', '_', $praefix . '/' . $t),
-                'comment' => ww_klartext(ww_t($schluessel)),
-                'check'   => ' ',
-                'unit'    => '',
-                'min'     => -2147483647,
-                'max'     => 2147483647,
-                'analog'  => true,
-            );
-        }
-    }
-    return array(
-        'VI_weissware_mqtt.xml',
-        ww_xml_virtual_in_http(array(
-            'title'   => 'Weissware MQTT',
-            'address' => 'http://localhost',
-            'polling' => '604800',
-            'comment' => ww_klartext(ww_t('LOX.MQTT_VORLAGE_HINWEIS')) . ' '
-                       . $ohne . ' Textthema(en) sind bewusst nicht enthalten. '
-                       . ww_vorlage_fussnote(0),
-        ), $cmds),
-    );
-}
+/* Gruppe 44 (0.9.44, E6): ww_vorlage_mqtt() - die MQTT-Importvorlage mit dem VirtualInHttp-Kunstgriff
+ * (Scheinadresse http://localhost, PollingTime 604800) - ist gestrichen. Regeln/07 R2_078: nur Bestand. Werte des
+ * MQTT-Gateways sind Virtuelle Eingaenge, die das Gateway V2 anlegt; die Namen stehen in der Tabelle im Reiter MQTT
+ * (ww_v2_haken()). Bestehende Projekte verlieren nichts: die Eingaenge stehen schon in Loxone. */
 
 /** Waehlt die Vorlage nach Art. Rueckgabe: array(dateiname, inhalt) oder null. */
 function ww_vorlage($art = 'status', $nummer = 1)
 {
     if ($art === 'verbrauch') { return ww_vorlage_verbrauch($nummer); }
     if ($art === 'ausgang')   { return ww_vorlage_ausgang($nummer); }
-    if ($art === 'mqtt')      { return ww_vorlage_mqtt(); }
+    if ($art === 'befehle')   { return ww_vorlage_befehle(); }
     if ($art === 'dienst')    { return ww_vorlage_dienst(); }
     if ($art === 'status')    { return ww_vorlage_status($nummer); }
     return null;
@@ -2265,10 +2265,66 @@ function ww_ansage_log($msg)
  */
 
 /** Ausgabearten dieser Linie: alle des Moduls ausser Sonos4Lox (bis 0.9.38 nicht angeboten). 'aus' ist
- *  neu waehlbar; ab Werk bleibt es musicserver (ww_tts()). */
+ *  neu waehlbar; ab Werk bleibt es musicserver (ww_tts()). Weitere Ausgabeziele (Tabelle, 'ziele') seit 0.9.44 mit
+ *  Stamm 1.2.1 - ww_mit_zielen() unten; ohne Tabelle wie bisher. */
 function ww_ansage_modi()
 {
-    return array('aus', 'musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox');
+    /* Gruppe 44 (0.9.44, Sprachmodul 1.2.1, E7): aus ansage_modi() abgeleitet statt abgeschrieben - damit kommen
+     * sonos4lox und (ab Modul 1.1.4) sonox dazu. Bis 0.9.43 stand hier eine feste Liste ohne Sonos. audioserver
+     * bleibt wie bisher waehlbar. */
+    $m = function_exists('ansage_modi') ? ansage_modi()
+        : array('aus', 'musicserver', 'ms4h', 'audioserver', 'custom', 'alexang', 'cc4lox');
+    $aus = array();
+    foreach ($m as $x) {
+        if ($x === 'sonox' && (!defined('ANSAGE_FASSUNG') || version_compare(ANSAGE_FASSUNG, '1.1.4', '<'))) {
+            continue;
+        }
+        $aus[] = $x;
+    }
+    return $aus;
+}
+
+/** Welle Mehrfach-Ziele (Sprachmodul 1.2.1): bietet diese Linie die Tabelle der weiteren Ausgabeziele an? Nur, wenn die
+ *  geladene Abschrift sie kann - laden zwei Abschriften im selben Prozess, gilt die zuerst geladene. */
+function ww_mit_zielen() {
+    return version_compare(ANSAGE_FASSUNG, '1.2.0', '>=') && function_exists('ansage_ziele_html')
+        && function_exists('ansage_ziele_pruefen') && function_exists('ansage_testknoepfe_html');
+}
+
+/** Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Schluessel des Ansageblocks, die diese Linie prueft und aus einer
+ *  Sicherung annimmt - die des Moduls und, wenn die geladene Abschrift sie kann, die Liste der weiteren Ziele. */
+function ww_ansage_schluessel() {
+    $s = array_keys(ansage_vorgaben());
+    if (ww_mit_zielen()) { $s[] = 'ziele'; }
+    return $s;
+}
+
+/** Welle Mehrfach-Ziele (0.9.44), X-2: die Felder der Tabelle aus dem POST (name[N], N = 2..9) fuer die Einmalmeldung -
+ *  ww_eingaben_sammeln() liest nur flache Zeichenketten. Nur, wenn die geladene Abschrift die Tabelle kann. */
+function ww_ziele_x2_werte(array $post)
+{
+    $w = array();
+    if (!ww_mit_zielen()) { return $w; }
+    foreach (array('tts_ziel_art', 'tts_ziel_wo', 'tts_ziel_laut', 'tts_ziel_sprache', 'tts_ziel_ein', 'tts_ziel_loeschen') as $n) {
+        if (!isset($post[$n]) || !is_array($post[$n])) { continue; }
+        foreach ($post[$n] as $i => $v) {
+            if (is_string($v) && preg_match('/^[2-9]\z/', (string) $i) && strlen($v) <= 2100 && preg_match('//u', $v)) {
+                $w[$n . '[' . $i . ']'] = $v;
+            }
+        }
+    }
+    return $w;
+}
+
+/** Welle Mehrfach-Ziele (0.9.44), X-2: aus den Eingaben der Einmalmeldung (Schluessel name[N]) wieder das POST der Tabelle
+ *  (ziele_post); null, wenn die Tabelle nicht darin steht (die gespeicherten Ziele bleiben sichtbar). */
+function ww_ziele_x2_post(array $werte)
+{
+    $p = array();
+    foreach ($werte as $k => $v) {
+        if (is_string($v) && preg_match('/^(tts_ziel_[a-z]+)\[([2-9])\]\z/', (string) $k, $m)) { $p[$m[1]][(int) $m[2]] = $v; }
+    }
+    return isset($p['tts_ziel_art']) ? $p : null;
 }
 
 /** Optionen fuer Formular-Baustein und Formular-Lesen. Die POST-Namen des Moduls (tts_<x>,
@@ -2312,7 +2368,11 @@ function ww_ansage_k($ua = 'LoxBerry Weissware')
                  /* Ab Werk ist in dieser Linie der Music Server gewaehlt (ww_tts()). Seit Modul 1.1.2
                   * sagt das Modul es selbst ('werk'); die eigenen Saetze WW_ANSAGE.ART_HINWEIS und
                   * WW_ANSAGE.O_AUS (Entwurf F7) sind seit 0.9.41 gestrichen. */
-                 'werk' => 'musicserver');
+                 'werk' => 'musicserver',
+                 /* Gruppe 44 (Sprachmodul 1.2.1): Sprechfrist 25 s - gesprochen wird aus cron.01min
+                  * (bin/ansage.php, eine Minute Abstand) und aus dem Knopf im Reiter Test (Webanfrage);
+                  * Modul 1.2.1 wendet sie in jedem Weg an (ansage_frist()). */
+                 'frist' => 25);
 }
 
 /**
@@ -2552,7 +2612,22 @@ function ww_wert_pruefen($schluessel, $w)
         case 'ansage_ein':
         case 'ansage_stoerung':
         case 'ansage_fernstart':
+        case 'befehle_mqtt_ein':
+        case 'endpunkt_ein':
+        case 'auto_frist_start':
             return (string) $w === '0' || (string) $w === '1';
+        case 'auto_geraete':
+            return preg_match('/^([1-9][0-9]{0,2}(,[1-9][0-9]{0,2}){0,19})?$/', (string) $w) === 1;
+        case 'auto_quelle':
+            return in_array((string) $w, array('strompreis', 'speicher'), true);
+        case 'auto_von':
+            return preg_match('/^[0-9]{1,2}$/', (string) $w) === 1 && (int) $w >= 0 && (int) $w <= 22;
+        case 'auto_frist':
+            return preg_match('/^[0-9]{1,2}$/', (string) $w) === 1 && (int) $w >= 1 && (int) $w <= 23;
+        case 'auto_stunden':
+            return preg_match('/^[0-9]{1,2}$/', (string) $w) === 1 && (int) $w >= 1 && (int) $w <= 24;
+        case 'auto_soc':
+            return preg_match('/^[0-9]{1,3}$/', (string) $w) === 1 && (int) $w >= 1 && (int) $w <= 100;
         case 'ansage_ruhe_von':
         case 'ansage_ruhe_bis':
             return preg_match('/^([01][0-9]|2[0-3]):[0-5][0-9]$/', (string) $w) === 1;
@@ -2591,7 +2666,8 @@ function ww_tts_pruefen($w, &$mangel)
         if ($f === 'alexa_token' || $f === 'google_token') {
             continue;
         }
-        if (!array_key_exists($f, ansage_vorgaben())) {
+        // Welle Mehrfach-Ziele (0.9.44): die Liste 'ziele' gehoert dazu (ww_ansage_schluessel()) - bis dahin "fremd"
+        if (!in_array($f, ww_ansage_schluessel(), true)) {
             $mangel[] = sprintf(ww_t('EINST.SICH_FREMD'), htmlspecialchars('tts.' . $f, ENT_QUOTES, 'UTF-8'));
             $ok = false;
             continue;
@@ -2744,6 +2820,18 @@ function ww_sicherung_lesen($roh, &$namen = null)
                 $neu['tts'] = array_merge(ww_vorgaben()['tts'], $w);
                 $neu['tts']['alexa_token'] = $akt['alexa_token'];
                 $neu['tts']['google_token'] = $akt['google_token'];
+                $ww_tjetzt = array('tts' => $akt);
+                $ww_spaet = array();
+                /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1, Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei einer
+                 * aelteren Fassung), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis. Eine Sicherung MIT leerer Liste
+                 * heisst "keine weiteren Ziele" und wird so uebernommen. */
+                $ww_spaete = array();
+                if (is_array($neu['tts']) && function_exists('ansage_sicherung_spaet')) {
+                    list($neu['tts'], $ww_spaete) = ansage_sicherung_spaet($neu['tts'],
+                        (isset($ww_tjetzt['tts']) && is_array($ww_tjetzt['tts'])) ? $ww_tjetzt['tts'] : null);
+                }
+                foreach ($ww_spaete as $ww_sn) { $ww_spaet[] = $ww_sn; }     // Welle Mehrfach-Ziele: tts.ziele (Spaetliste)
+                if ($ww_spaet) { $hinweise[] = sprintf(ww_t('EINST.SICH_SPAET'), implode(', ', $ww_spaet)); }
                 $anzahl++;
             } elseif (count($mangel) > $vorher) {
                 $namen[] = 'tts';
@@ -2930,4 +3018,670 @@ function ww_wachposten()
         return ww_t('WACHE.FALSCH');
     }
     return '';
+}
+
+/* ==================================================================
+ * Gruppe 44 (0.9.44): Hausform - Gateway V2, Befehlsbruecke 1.0.2,
+ * endpunkt_ein, Startlogik (Anzeige), Healthcheck. Bauvorschrift
+ * Pruefung-Durchgang-2026-09-29/wz_bild/GRUPPE44_BAUVORSCHRIFT.md,
+ * Vorlage BYD Autos 0.9.29 (by_v2_*, by_befehl_annehmen(), by_bruecke_*,
+ * by_gesund_*) und MGiSmart 1.1.28.
+ * ================================================================== */
+
+/** Ist ein Anbieter eingeschaltet? Ohne ihn gibt es keine Werte - "noch nicht eingerichtet". */
+function ww_eingerichtet($cfg = null)
+{
+    if (!is_array($cfg)) {
+        $cfg = ww_config(false);
+    }
+    return !empty($cfg['hc_ein']) || !empty($cfg['miele_ein']) || !empty($cfg['st_ein']);
+}
+
+/* ---------------- G1: MQTT-Gateway V2 ---------------- */
+
+/** Der Name, den das MQTT-Gateway vergibt: '/', '%' und Leerzeichen werden '_' (Regeln/07 :69). Rein. */
+function ww_gateway_name($thema)
+{
+    return str_replace(array('/', '%', ' '), '_', (string) $thema);
+}
+
+/** Die Geraetenummern fuer die Hakenliste: aus dem Abbild, ohne Abbild Geraet 1. */
+function ww_v2_geraetenummern()
+{
+    $n = array();
+    foreach (array_keys(ww_geraete()) as $k) {
+        if (preg_match('/^[0-9]{1,3}$/', (string) $k) && (int) $k >= 1) {
+            $n[] = (int) $k;
+        }
+    }
+    sort($n);
+    return $n ? array_values(array_unique($n)) : array(1);
+}
+
+/** Textthemen und Zeitstempel: nicht in der Hakenliste (das Musterprojekt hat keinen Texteingang; ts wechselt je Lauf). */
+function ww_v2_ohne()
+{
+    return array('ts', 'geraetN/ts', 'geraetN/name', 'geraetN/anbieter', 'geraetN/zustand_text',
+                 'geraetN/programm_text', 'geraetN/gewaehlt_text');
+}
+
+/**
+ * Namenstabelle und V2-Hakenliste - EINE Quelle fuer Reiter MQTT, Reiter Test, Healthcheck und Messskript (G1).
+ * Die Themen kommen aus der RETAIN-Tabelle in bin/weissware.py (ww_py_retain(), dieselbe Tabelle, nach der der
+ * Dienst sendet) - keine zweite Liste. Noncached genau: ok, zaehler, geraetN/ok und status/befehle (Lebenszeichen
+ * der Bruecke). Rueckgabe Liste von array(thema, name, noncached, bez); leer -> "nicht feststellbar".
+ * $themen nur fuer Proben (sonst ww_py_retain()).
+ */
+function ww_v2_haken($cfg = null, $themen = null, $nummern = null)
+{
+    if (!is_array($cfg)) {
+        $cfg = ww_config(false);
+    }
+    $pf = trim((string) (isset($cfg['mqtt_topic']) ? $cfg['mqtt_topic'] : ''), '/ ');
+    if ($pf === '') {
+        $pf = 'weissware';
+    }
+    if ($themen === null) {
+        $py = ww_py_retain();
+        $themen = is_array($py) ? array_keys($py) : array();
+    }
+    if (!$themen) {
+        return array();
+    }
+    $bez = ww_mqtt_themen();
+    $b = function ($k) use ($bez) {
+        return isset($bez[$k]) ? (string) $bez[$k] : '';
+    };
+    $ohne = ww_v2_ohne();
+    $aus = array();
+    $je = array();
+    foreach ($themen as $th) {
+        $th = (string) $th;
+        if (in_array($th, $ohne, true)) {
+            continue;
+        }
+        if (strpos($th, 'geraetN/') === 0) {
+            $je[] = $th;
+            continue;
+        }
+        $t = $pf . '/' . $th;
+        $aus[] = array('thema' => $t, 'name' => ww_gateway_name($t),
+                       'noncached' => in_array($th, array('ok', 'zaehler'), true), 'bez' => $b($th));
+    }
+    if (!$je) {
+        return array();
+    }
+    foreach (($nummern === null ? ww_v2_geraetenummern() : $nummern) as $nr) {
+        foreach ($je as $th) {
+            $t = $pf . '/geraet' . (int) $nr . '/' . substr($th, strlen('geraetN/'));
+            $aus[] = array('thema' => $t, 'name' => ww_gateway_name($t), 'noncached' => $th === 'geraetN/ok',
+                           'bez' => $b($th));
+        }
+    }
+    $t = $pf . '/status/befehle';
+    $aus[] = array('thema' => $t, 'name' => ww_gateway_name($t), 'noncached' => true, 'bez' => 'BEFEHL.STATUS_BEFEHLE');
+    return $aus;
+}
+
+/** Die angehakten Datenpunkte aus subscriptions.json (Rein): Id => noncached. null = unlesbar. Abschrift by_v2_abos(). */
+function ww_v2_abos($daten)
+{
+    if (!is_array($daten)) {
+        return null;
+    }
+    $liste = array();
+    foreach (array('Subscriptions', 'subscriptions') as $s) {
+        if (isset($daten[$s]) && is_array($daten[$s])) {
+            $liste = $daten[$s];
+            break;
+        }
+    }
+    $abo = array();
+    foreach ($liste as $e) {
+        if (!is_array($e)) {
+            continue;
+        }
+        $id = '';
+        foreach (array('Id', 'id', 'Topic', 'topic') as $k) {
+            if (isset($e[$k]) && is_string($e[$k])) {
+                $id = $e[$k];
+                break;
+            }
+        }
+        if ($id === '') {
+            continue;
+        }
+        $nc = false;
+        foreach (array('Noncached', 'noncached') as $k) {
+            if (isset($e[$k])) {
+                $nc = ($e[$k] === true || in_array(strtolower(trim((string) $e[$k])), array('1', 'true', 'yes', 'on'), true));
+            }
+        }
+        $abo[$id] = $nc;
+    }
+    return $abo;
+}
+
+/** Soll gegen Ist (Rein): array(1|0, fehlt[], noncached_falsch[], da, soll). Abschrift by_v2_haken_abgleich(). */
+function ww_v2_haken_abgleich(array $soll, array $abo)
+{
+    $fehlt = array();
+    $nc = array();
+    $da = 0;
+    foreach ($soll as $e) {
+        if (!array_key_exists($e['thema'], $abo)) {
+            $fehlt[] = $e['name'];
+            continue;
+        }
+        $da++;
+        if ((bool) $abo[$e['thema']] !== (bool) $e['noncached']) {
+            $nc[] = $e['name'] . ($e['noncached'] ? ' (Noncached fehlt)' : ' (Noncached zu viel)');
+        }
+    }
+    return array(($fehlt || $nc) ? 0 : 1, $fehlt, $nc, $da, count($soll));
+}
+
+/**
+ * Pruefzeile "Gateway V2: alle Datenpunkte angehakt?" (einheitliche Pruefzeile, Nachtwelle 29.10.):
+ * array(1|0|2, Text) - 2 = grau (nicht feststellbar, Gateway V1, noch nicht eingerichtet). Liest nur.
+ * Die Argumente nach $cfg nur fuer Proben; sonst aus weissware.py, general.json und subscriptions.json.
+ */
+function ww_v2_haken_lage($cfg = null, $soll = null, $abo = false, $fassung = null, $eingerichtet = null)
+{
+    if (!is_array($cfg)) {
+        $cfg = ww_config(false);
+    }
+    if ($fassung === null) {
+        $m = ww_mqtt_zustand();
+        $fassung = !empty($m['gefunden']) ? (int) $m['fassung'] : 0;
+    }
+    if ((int) $fassung <= 0) {
+        return array(2, ww_t('PRUEF.V2_UNKLAR'));
+    }
+    if ((int) $fassung < 2) {
+        return array(2, ww_t('PRUEF.V2_V1'));
+    }
+    if ($soll === null) {
+        $soll = ww_v2_haken($cfg);
+    }
+    if (!$soll) {
+        return array(2, ww_t('PRUEF.V2_LEER'));
+    }
+    if ($eingerichtet === null) {
+        $eingerichtet = ww_eingerichtet($cfg);
+    }
+    if (!$eingerichtet) {
+        return array(2, ww_t('PRUEF.V2_NICHT_EINGERICHTET'));
+    }
+    if ($abo === false) {
+        $p = ww_paths();
+        $f = $p['home'] !== '' ? $p['home'] . '/config/system/subscriptions.json' : '';
+        $abo = ($f !== '' && is_file($f)) ? ww_v2_abos(json_decode((string) @file_get_contents($f), true)) : null;
+    }
+    if ($abo === null) {
+        return array(2, ww_t('PRUEF.V2_UNKLAR'));
+    }
+    list($ok, $fehlt, $nc, $da, $zahl) = ww_v2_haken_abgleich($soll, $abo);
+    $txt = sprintf(ww_t('PRUEF.V2_ZAHL'), $da, $zahl);
+    if ($fehlt) {
+        $txt .= ' ' . sprintf(ww_t('PRUEF.V2_FEHLT'), implode(', ', array_slice($fehlt, 0, 12))
+            . (count($fehlt) > 12 ? ' ...' : ''));
+    }
+    if ($nc) {
+        $txt .= ' ' . sprintf(ww_t('PRUEF.V2_NC'), implode(', ', $nc));
+    }
+    return array($ok, $txt);
+}
+
+/* ---------------- G2: eine Annahmefunktion fuer HTTP und MQTT ---------------- */
+
+/** Die schaltenden Aktionen des Endpunkts (dieselbe Liste wie $ww_schaltend in index.php). */
+function ww_schaltende()
+{
+    return array('start', 'stop', 'pause', 'fortsetzen', 'ein', 'aus', 'abruf');
+}
+
+/**
+ * Einen schaltenden Befehl annehmen - DIESELBE Funktion fuer den HTTP-Endpunkt und die Befehlsbruecke
+ * (Regeln/07 Abschnitt 3a). Reihenfolge wie der Endpunkt bis 0.9.43 (dort inline): Aktion bekannt -> Muster der
+ * Zusatzwerte -> Geraet angegeben (ausser abruf) -> Steuerung (ausser abruf) -> nur MQTT: Geraet im Abbild
+ * (GERAET_UNBEKANNT) und bei start die Fernstart-Freigabe (FERNSTART_FEHLT) - der HTTP-Weg bekommt beides als
+ * Absage des Dienstes in der Wartezeit, MQTT wartet nie und saehe sie nicht -> Dienst laeuft -> Einreihen. HTTP wartet
+ * wie bisher (wartezeit, Antwortzeile byte-gleich); MQTT wartet nie (Quittung "uebergeben"). Die 60-s-Sollwertbremse
+ * (ein/aus, X-7) und die Fernstart-Pruefung des Dienstes gelten fuer beide Wege (eine Warteschlange).
+ * $geraet: '' = nicht angegeben. Rueckgabe array('ok' => 0|1|2, 'grund', 'http', 'zeilen' => Zeilen der
+ * Endpunktantwort, 'art' => abgewiesen|gesetzt|unveraendert).
+ */
+function ww_befehl_annehmen($aktion, array $param, $geraet, $quelle)
+{
+    $mqtt = ($quelle === 'mqtt');
+    $aktion = is_string($aktion) ? $aktion : '';
+    $raus = function ($grund, $http, $zeile, $zusatz = '') {
+        return array('ok' => 0, 'grund' => $grund, 'http' => $http,
+                     'zeilen' => $zusatz === '' ? array($zeile) : array($zeile, $zusatz), 'art' => 'abgewiesen');
+    };
+    if (!in_array($aktion, ww_schaltende(), true)) {
+        return $raus('UNBEKANNTE_AKTION', 400, 'FEHLER;OK=0;GRUND=UNBEKANNTE_AKTION');
+    }
+    $geraet = is_string($geraet) || is_int($geraet) ? (string) $geraet : '';
+    $programm = isset($param['programm']) && is_string($param['programm']) ? $param['programm'] : '';
+    if (($geraet !== '' && !preg_match('/^[A-Za-z0-9](?!.*\.\.)[A-Za-z0-9._-]{0,63}$/', $geraet))
+        || ($programm !== '' && !preg_match('/^[A-Za-z0-9](?!.*\.\.)[A-Za-z0-9._-]{0,79}$/', $programm))) {
+        return $raus('PARAMETER', 400, 'FEHLER;OK=0;GRUND=PARAMETER');
+    }
+    $cfg = ww_config(false);
+    if ($aktion !== 'abruf' && $geraet === '') {
+        return $raus('GERAET_FEHLT', 400, 'SET;OK=0;GRUND=GERAET_FEHLT',
+                     'Schaltende Befehle brauchen geraet=<Nummer oder Kennung>.');
+    }
+    if ($aktion !== 'abruf' && empty($cfg['steuerung_ein'])) {
+        return $raus('STEUERUNG_AUS', 403, 'SET;OK=0;GRUND=STEUERUNG_AUS',
+                     "Schreibende Befehle sind gesperrt. Reiter Einstellungen, Haken 'Schreibende Befehle zulassen'.");
+    }
+    if ($mqtt && $aktion !== 'abruf') {
+        $g = null;
+        foreach (ww_geraete() as $nr => $x) {
+            if ((string) $nr === $geraet) {
+                $g = $x;
+                break;
+            }
+        }
+        if ($g === null) {
+            return $raus('GERAET_UNBEKANNT', 404, 'SET;OK=0;GRUND=GERAET_UNBEKANNT');
+        }
+        if ($aktion === 'start' && isset($g['fernstart_frei']) && $g['fernstart_frei'] !== null
+            && (int) $g['fernstart_frei'] === 0) {
+            return $raus('FERNSTART_FEHLT', 409, 'SET;OK=0;GRUND=FERNSTART_FEHLT');
+        }
+    }
+    if (ww_dienst_pid() === 0) {
+        return $raus('DIENST_LAEUFT_NICHT', 503, 'SET;OK=0;GRUND=DIENST_LAEUFT_NICHT',
+                     "Der Abrufdienst laeuft nicht. Reiter Einstellungen, Knopf 'Dienst starten'.");
+    }
+    $befehl = array('aktion' => $aktion, 'geraet' => $geraet === '' ? '1' : $geraet);
+    if ($aktion === 'start' && $programm !== '') {
+        $befehl['programm'] = $programm;
+    }
+    if ($mqtt) {
+        $b = $befehl;
+        $b['quelle'] = 'mqtt';
+        $antw = ww_befehl_absetzen($b, 0);
+        if ((int) $antw[0] === 0) {
+            return $raus('NICHT_EINGEREIHT', 503, 'SET;OK=0;GRUND=NICHT_EINGEREIHT');
+        }
+        return array('ok' => 1, 'grund' => '', 'http' => 200, 'zeilen' => array('SET;OK=1;AKTION=' . $aktion),
+                     'art' => 'gesetzt');
+    }
+    $antw = ww_befehl_absetzen($befehl);
+    list($erg, $meldung) = $antw;
+    return array('ok' => (int) $erg, 'grund' => (int) $erg === 0 ? 'ABGELEHNT' : '',
+                 'http' => (int) $erg === 0 ? 500 : 200,
+                 'zeilen' => array(sprintf('SET;OK=%d;AKTION=%s;UNVERAENDERT=%d;MELDUNG=%s', $erg, $aktion,
+                     !empty($antw[2]) ? 1 : 0, str_replace(array("\r", "\n", ';'), ' ', $meldung))),
+                 'art' => !empty($antw[2]) ? 'unveraendert' : 'gesetzt');
+}
+
+/** Quittung fuer die Bruecke: array(true, '') bei ok >= 1, sonst array(false, Grund). */
+function ww_befehl_quittung($erg)
+{
+    if (is_array($erg) && isset($erg['ok']) && (int) $erg['ok'] >= 1) {
+        return array(true, '');
+    }
+    return array(false, (is_array($erg) && isset($erg['grund']) && $erg['grund'] !== '') ? (string) $erg['grund'] : 'FEHLER');
+}
+
+/* ---------------- G2: Befehlsbruecke fuer die Oberflaeche (Abschrift by_bruecke_*) ---------------- */
+
+/** Die Bruecke als Bibliothek laden (BB_NUR_LADEN). Rueckgabe true, wenn bb_waechter() danach da ist. */
+function ww_bruecke_laden()
+{
+    if (function_exists('bb_waechter')) {
+        return true;
+    }
+    $p = ww_paths();
+    $kand = array();
+    if ($p['home'] !== '') {
+        $kand[] = $p['home'] . '/bin/plugins/' . $p['plugin'] . '/befehlsbruecke.php';
+    }
+    $kand[] = dirname(dirname(__DIR__)) . '/bin/befehlsbruecke.php';
+    foreach ($kand as $k) {
+        if (is_file($k)) {
+            if (!defined('BB_NUR_LADEN')) {
+                define('BB_NUR_LADEN', true);
+            }
+            require_once $k;
+            return function_exists('bb_waechter');
+        }
+    }
+    return false;
+}
+
+/** Die Befehlsliste der Bruecke (bb_liste()). array(Liste oder null, Fehlertext). */
+function ww_bruecke_liste()
+{
+    if (!ww_bruecke_laden()) {
+        return array(null, ww_t('BEFEHL.T_NICHT_DA'));
+    }
+    list($z, $fehler) = bb_zuordnung_laden();
+    if ($z === null) {
+        return array(null, $fehler);
+    }
+    $GLOBALS['bb_zuordnung'] = $z;
+    list($fehl) = bb_zuordnung_pruefen($z);
+    if ($fehl) {
+        return array(null, $fehl[0]);
+    }
+    return array(bb_liste($z, bb_einstellungen($z)), '');
+}
+
+/** Nach dem Speichern im Reiter MQTT: start (Haken an) bzw. stop. array(rc|null, start|stop|'', Ausgabe). */
+function ww_bruecke_schalten($cfg = null)
+{
+    if (!is_array($cfg)) {
+        $cfg = ww_config(false);
+    }
+    if (!ww_bruecke_laden()) {
+        return array(1, '', ww_t('BEFEHL.T_NICHT_DA'));
+    }
+    $p = bb_pfade();
+    if (!$p) {
+        return array(1, '', 'keine LoxBerry-Installation erkannt');
+    }
+    if (!empty($cfg['befehle_mqtt_ein'])) {
+        list($rc, $aus) = bb_sh($p, 'start');
+        return array($rc, 'start', $aus);
+    }
+    if (!bb_dienste()) {
+        return array(null, '', '');
+    }
+    list($rc, $aus) = bb_sh($p, 'stop');
+    return array($rc, 'stop', $aus);
+}
+
+/** Lage der Bruecke (Reiter Test, Reiter MQTT): array(true|false|null, Text); null = aus (Haken). */
+function ww_bruecke_lage()
+{
+    if (!ww_bruecke_laden()) {
+        return array(false, ww_t('BEFEHL.T_NICHT_DA'));
+    }
+    list($soll, $grund) = bb_soll_ermitteln();
+    if ($soll === 1) {
+        return array(null, ww_t('BEFEHL.T_AUS'));
+    }
+    if ($soll !== 0) {
+        return array(false, sprintf(ww_t('BEFEHL.T_DEFEKT'), $grund));
+    }
+    $zu = bb_zustand_lesen();
+    $pids = bb_dienste();
+    $alter = (is_array($zu) && isset($zu['ts'])) ? time() - (int) $zu['ts'] : null;
+    if ($pids && $alter !== null && $alter <= BB_WACHE_GRENZE && !empty($zu['abo'])) {
+        $zl = (isset($zu['zaehler']) && is_array($zu['zaehler'])) ? $zu['zaehler'] : array();
+        $txt = sprintf(ww_t('BEFEHL.T_LAEUFT'), count($pids),
+            isset($zl['angenommen']) ? (int) $zl['angenommen'] : 0, isset($zl['abgelehnt']) ? (int) $zl['abgelehnt'] : 0);
+        $lz = isset($zu['letzter']) && is_array($zu['letzter']) ? $zu['letzter'] : null;
+        if ($lz !== null && isset($lz['name'])) {
+            $txt .= ' ' . sprintf(ww_t('BEFEHL.T_LETZTER'), (string) $lz['name'],
+                isset($lz['ergebnis']) ? (string) $lz['ergebnis'] : '-',
+                isset($lz['zeit']) ? max(0, time() - (int) $lz['zeit']) : 0);
+        } else {
+            $txt .= ' ' . ww_t('BEFEHL.T_KEINER');
+        }
+        return array(true, $txt);
+    }
+    $wie = !$pids ? 'kein Dienst' : ($alter === null ? 'kein Zustand' : ($alter > BB_WACHE_GRENZE
+        ? 'Zustand ' . $alter . ' s alt' : 'ohne Abo'));
+    return array(false, sprintf(ww_t('BEFEHL.T_STEHT'), $wie));
+}
+
+/** befehlsbruecke.php --pruefen: array(rc, Zeilen). */
+function ww_bruecke_pruefen()
+{
+    if (!ww_bruecke_laden()) {
+        return array(1, array(ww_t('BEFEHL.T_NICHT_DA')));
+    }
+    $p = bb_pfade();
+    $skript = $p ? $p['bin'] . '/befehlsbruecke.php' : dirname(dirname(__DIR__)) . '/bin/befehlsbruecke.php';
+    $php = (defined('PHP_BINARY') && PHP_BINARY !== '') ? PHP_BINARY : 'php';
+    $aus = array();
+    $rc = 1;
+    @exec(escapeshellarg($php) . ' ' . escapeshellarg($skript) . ' --pruefen 2>&1', $aus, $rc);
+    return array((int) $rc, $aus);
+}
+
+/** Der Rechnername fuer UDP-Adressen in der Brueckenvorlage: nie die Rueckschleife (Regeln/07). */
+function ww_rechnername()
+{
+    $h = ww_host();
+    if (substr_count($h, ':') === 1) {
+        $h = substr($h, 0, strpos($h, ':'));
+    }
+    if (in_array(strtolower($h), array('', '127.0.0.1', 'localhost', '::1', '[::1]'), true)) {
+        $g = gethostname();
+        $h = ($g !== false && $g !== '') ? $g : 'loxberry';
+    }
+    return $h;
+}
+
+/** Die Vorlage der Befehlsbruecke fuer Loxone (bb_vorlage(), CRLF, UDP an den LoxBerry). array(Name, Inhalt). */
+function ww_vorlage_befehle()
+{
+    list($l) = ww_bruecke_liste();
+    if ($l === null) {
+        return null;
+    }
+    $bp = bb_pfade();
+    $port = $bp ? bb_broker($bp)['udpin'] : 11884;
+    return array('VQ_weissware_mqtt.xml', bb_vorlage($l, ww_rechnername(), $port));
+}
+
+/* ---------------- E5: Startlogik (Anzeige; gerechnet wird im Dienst) ---------------- */
+
+/** Kennzahl -> Sprachschluessel; dieselbe Liste wie AUTO_GRUENDE in bin/weissware.py. */
+function ww_auto_gruende()
+{
+    return array(0 => 'AUTO.G0', 1 => 'AUTO.G1', 2 => 'AUTO.G2', 3 => 'AUTO.G3', 4 => 'AUTO.G4', 5 => 'AUTO.G5',
+                 6 => 'AUTO.G6', 7 => 'AUTO.G7', 8 => 'AUTO.G8', 9 => 'AUTO.G9', 10 => 'AUTO.G10', 11 => 'AUTO.G11',
+                 12 => 'AUTO.G12');
+}
+
+/** '1,3' -> array('1', '3'); dieselbe Pruefung wie auto_geraete() im Dienst. */
+function ww_auto_geraete($cfg = null)
+{
+    if (!is_array($cfg)) {
+        $cfg = ww_config(false);
+    }
+    $s = trim((string) (isset($cfg['auto_geraete']) ? $cfg['auto_geraete'] : ''));
+    if (!preg_match('/^([1-9][0-9]{0,2}(,[1-9][0-9]{0,2}){0,19})?$/', $s)) {
+        return array();
+    }
+    return $s === '' ? array() : explode(',', $s);
+}
+
+/** Die Haus-Themen, die der Dienst liest - dieselbe Bedingung wie haus_themen() in bin/weissware.py. */
+function ww_haus_themen($cfg = null)
+{
+    if (!is_array($cfg)) {
+        $cfg = ww_config(false);
+    }
+    if (!ww_auto_geraete($cfg)) {
+        return array();
+    }
+    if (isset($cfg['auto_quelle']) && $cfg['auto_quelle'] === 'speicher') {
+        return array('haus/speicher/soc', 'haus/speicher/richtung', 'haus/speicher/zaehler', 'haus/speicher/anbieter');
+    }
+    return array('haus/strompreis/vorschau', 'haus/strompreis/ab', 'haus/strompreis/raster',
+                 'haus/strompreis/zaehler', 'haus/strompreis/anbieter');
+}
+
+/**
+ * Zeile "Haus-Quelle der Startlogik" im Reiter Test: array(Stand 1/0/-1, Text). Aus zustand.json des laufenden
+ * Dienstes - nie Preise oder Speicherwerte, nur frisch/schweigt, Alter und der Name des Anbieters (geprueft).
+ */
+function ww_haus_lage($cfg = null, $zu = null, $pid = null)
+{
+    if (!is_array($cfg)) {
+        $cfg = ww_config(false);
+    }
+    if (!ww_haus_themen($cfg)) {
+        return array(-1, ww_t('AUTO.Q_AUS'));
+    }
+    $q = (isset($cfg['auto_quelle']) && $cfg['auto_quelle'] === 'speicher') ? 'speicher' : 'strompreis';
+    if (!is_array($zu)) {
+        $zu = ww_zustand();
+    }
+    if (($pid === null ? ww_dienst_pid() : (int) $pid) === 0) {
+        return array(-1, ww_t('AUTO.Q_KEIN_DIENST'));
+    }
+    if (empty($zu['horcher_verbunden'])) {
+        $fe = isset($zu['horcher_fehler']) ? trim((string) $zu['horcher_fehler']) : '';
+        return array(0, sprintf(ww_t('AUTO.Q_KEINE_VERBINDUNG'), $fe !== '' ? $fe : '-'));
+    }
+    $e = (isset($zu['haus'][$q]) && is_array($zu['haus'][$q])) ? $zu['haus'][$q] : array();
+    $an = isset($e['anbieter']) && preg_match('/^([a-z0-9_-]{1,32}|-|\?)$/', (string) $e['anbieter'])
+        ? (string) $e['anbieter'] : '';
+    $an = $an === '' ? '' : ' ' . sprintf(ww_t('AUTO.Q_ANBIETER'), $an);
+    if (!empty($e['frisch'])) {
+        return array(1, sprintf(ww_t('AUTO.Q_FRISCH'), 'haus/' . $q, (int) $e['alter']) . $an);
+    }
+    $alter = isset($e['alter']) ? (int) $e['alter'] : -1;
+    return array(0, ($alter < 0 ? sprintf(ww_t('AUTO.Q_NIE'), 'haus/' . $q)
+        : sprintf(ww_t('AUTO.Q_SCHWEIGT'), 'haus/' . $q, $alter)) . $an);
+}
+
+/* ---------------- Healthcheck (Form BYD 0.9.29 / Renault NG 2.1.20) ---------------- */
+
+/**
+ * Das Urteil des LoxBerry-Healthchecks (bin/healthcheck), rein. Regeln/03 :73 (3 Fehler, 4 Warnung, 5 in Ordnung,
+ * 6 Hinweis), Regeln/04 :809 (geurteilt wird ueber das ALTER, nie ueber einen einzelnen Abruf), Regeln/04 :826.
+ * $f: eingerichtet (bool, ein Anbieter eingeschaltet), soll (bool), pid (int; 0 = kein Prozess des Plugins),
+ * start_alter_s, leben_alter_s (zustand.json des laufenden Dienstes; -1 = keins), pause_rest_s (gewollte Pause der
+ * Fehlerbremse, 0 = keine), takt_s, erfolg_alter_s (-1 = noch nie), fehler_folge, geraete, mqtt_ein, gateway,
+ * broker_fehler (bool|null), v2 (array(lage, Text)), bruecke_soll, bruecke_laeuft (bool|null).
+ * Rueckgabe array(status, Text); der Text traegt keine Zugangsdaten, Kennungen oder Geraetenamen.
+ */
+function ww_gesund_urteil(array $f)
+{
+    $f += array('eingerichtet' => false, 'soll' => false, 'pid' => 0, 'start_alter_s' => -1, 'leben_alter_s' => -1,
+                'pause_rest_s' => 0, 'takt_s' => 300, 'erfolg_alter_s' => -1, 'fehler_folge' => 0, 'geraete' => 0,
+                'mqtt_ein' => false, 'gateway' => array(), 'broker_fehler' => null, 'v2' => array(null, ''),
+                'bruecke_soll' => false, 'bruecke_laeuft' => null);
+    if (!$f['eingerichtet']) {
+        return array(6, 'nicht eingerichtet - im Reiter Einstellungen einen Anbieter einschalten und anmelden');
+    }
+    $pid = (int) $f['pid'];
+    if (!$f['soll'] && $pid <= 0) {
+        return array(6, 'Abrufdienst angehalten (so eingestellt, kein Fehler) - Start im Reiter Einstellungen');
+    }
+    $befunde = array();
+    $status = 5;
+    $setze = function ($s, $t) use (&$status, &$befunde) {
+        if ($s < $status) {
+            $status = $s;
+        }
+        $befunde[] = $t;
+    };
+    $takt = max(60, (int) $f['takt_s']);
+    if ($pid <= 0) {
+        $setze(3, 'Abrufdienst soll laufen, es laeuft aber keiner');
+    } else {
+        $a = (int) $f['leben_alter_s'];
+        $g = max(600, 3 * $takt) + max(0, (int) $f['pause_rest_s']);
+        if ($a < 0) {
+            $setze(4, 'Abrufdienst laeuft, hat aber noch kein Lebenszeichen geschrieben');
+        } elseif ($a > $g) {
+            $setze(3, sprintf('Abrufdienst laeuft, meldet sich aber seit %d min nicht mehr (erwartet hoechstens %d min)',
+                (int) round($a / 60), (int) round($g / 60)));
+        }
+    }
+    $e = (int) $f['erfolg_alter_s'];
+    $s0 = (int) $f['start_alter_s'];
+    $seit_start = $pid > 0 && $s0 >= 0 && ($e < 0 || $e > $s0);
+    $e_eff = $seit_start ? $s0 : $e;
+    $folge = (int) $f['fehler_folge'] > 0 ? sprintf(' (%d Fehlversuche in Folge)', (int) $f['fehler_folge']) : '';
+    $satz = $seit_start ? 'seit dem Start vor %d min kein gelungener Abruf' : 'letzter gelungener Abruf vor %d min';
+    if ($e_eff < 0) {
+        $setze(4, 'noch kein gelungener Abruf' . $folge);
+    } elseif ($e_eff > max(3600, 6 * $takt)) {
+        $setze(3, sprintf($satz, (int) round($e_eff / 60)) . $folge);
+    } elseif ($e_eff > max(900, 3 * $takt)) {
+        $setze(4, sprintf($satz, (int) round($e_eff / 60)) . $folge);
+    }
+    if ($f['mqtt_ein']) {
+        $gw = is_array($f['gateway']) ? $f['gateway'] : array();
+        if (empty($gw['gefunden']) || empty($gw['udpport'])) {
+            $setze(4, 'MQTT eingeschaltet, aber kein MQTT-Gateway mit UDP-Eingang eingerichtet - es wird nichts gesendet');
+        } elseif (empty($gw['autostart'])) {
+            $setze(4, 'MQTT eingeschaltet, aber das MQTT-Gateway steht nicht auf Autostart');
+        }
+    }
+    if ($f['broker_fehler'] === true) {
+        $setze(4, 'keine Verbindung zum MQTT-Broker - die Startlogik bekommt keinen Strompreis bzw. Speicherstand');
+    }
+    if (is_array($f['v2']) && isset($f['v2'][0]) && $f['v2'][0] === 0) {
+        $setze(4, 'Gateway V2: ' . (isset($f['v2'][1]) ? (string) $f['v2'][1] : ''));
+    }
+    if ($f['bruecke_soll'] && $f['bruecke_laeuft'] === false) {
+        $setze(4, 'Befehle ueber MQTT eingeschaltet, aber die Befehlsbruecke steht');
+    }
+    if (!$befunde) {
+        if ($seit_start) {
+            return array(5, sprintf('in Ordnung - Abrufdienst laeuft seit %d min, %d Geraet(e), seit dem Start noch '
+                . 'kein gelungener Abruf', (int) round($s0 / 60), (int) $f['geraete']));
+        }
+        return array(5, sprintf('in Ordnung - Abrufdienst laeuft, %d Geraet(e), letzter gelungener Abruf vor %d min',
+            (int) $f['geraete'], (int) round($e / 60)));
+    }
+    return array($status, implode('; ', $befunde));
+}
+
+/** Die Fakten des Healthchecks - nur lesend: kein Netz, kein Broker, keine Anmeldung, keine Datei, kein Protokoll. */
+function ww_gesund_fakten(array $cfg)
+{
+    clearstatcache();
+    $p = ww_paths();
+    $jetzt = time();
+    $f = array();
+    $f['eingerichtet'] = (bool) ww_eingerichtet($cfg);
+    $f['soll'] = (int) ww_dienst_soll() === 1;
+    $f['pid'] = (int) ww_dienst_pid();
+    $start = 0;
+    $pf = $p['datadir'] . '/dienst.pid';
+    if ($f['pid'] > 0 && is_file($pf) && (int) trim((string) @file_get_contents($pf)) === $f['pid']) {
+        $start = (int) @filemtime($pf);
+    }
+    $f['start_alter_s'] = $start > 0 ? max(0, $jetzt - $start) : -1;
+    $zu = json_decode((string) @file_get_contents($p['datadir'] . '/zustand.json'), true);
+    $zu = is_array($zu) ? $zu : array();
+    $zts = isset($zu['ts']) && is_numeric($zu['ts']) ? (int) $zu['ts'] : 0;
+    $zu_frisch = $zts > 0 && $zts >= $start;
+    $lox = json_decode((string) @file_get_contents($p['datadir'] . '/loxone.json'), true);
+    $lox = is_array($lox) ? $lox : array();
+    /* Weissware: zustand.json schreibt der Dienst in jedem Durchgang (takt_ruhe, im Betrieb takt_betrieb); die
+     * Fehlerbremse verlaengert den Abstand bis 3600 s und sagt es in pause_bis. */
+    $f['takt_s'] = isset($cfg['takt_ruhe']) && is_numeric($cfg['takt_ruhe']) ? (int) $cfg['takt_ruhe'] : 300;
+    $lts = max($zu_frisch ? $zts : 0, $start);
+    $f['leben_alter_s'] = $lts > 0 ? max(0, $jetzt - $lts) : -1;
+    $pb = ($zu_frisch && isset($zu['pause_bis']) && is_numeric($zu['pause_bis'])) ? (int) $zu['pause_bis'] : 0;
+    $f['pause_rest_s'] = $pb > $zts ? $pb - $zts : 0;
+    $ts = isset($lox['ts']) && is_numeric($lox['ts']) ? (int) $lox['ts'] : 0;
+    $f['erfolg_alter_s'] = $ts > 0 ? max(0, $jetzt - $ts) : -1;
+    $f['geraete'] = isset($lox['geraete']) && is_array($lox['geraete']) ? count($lox['geraete']) : 0;
+    $f['fehler_folge'] = ($zu_frisch && isset($zu['fehler_folge']) && is_numeric($zu['fehler_folge']))
+        ? (int) $zu['fehler_folge'] : 0;
+    $f['mqtt_ein'] = !empty($cfg['mqtt_ein']);
+    $f['gateway'] = ww_mqtt_zustand();
+    $f['broker_fehler'] = null;
+    if ($f['pid'] > 0 && $zu_frisch) {
+        $th = (isset($zu['horcher']) && is_array($zu['horcher'])) ? $zu['horcher'] : array();
+        $fe = isset($zu['horcher_fehler']) ? trim((string) $zu['horcher_fehler']) : '';
+        $f['broker_fehler'] = $th ? ($fe !== '' || empty($zu['horcher_verbunden'])) : null;
+    }
+    $f['v2'] = ww_v2_haken_lage($cfg);
+    $f['bruecke_soll'] = !empty($cfg['befehle_mqtt_ein']);
+    $f['bruecke_laeuft'] = null;
+    if ($f['bruecke_soll'] && ww_bruecke_laden()) {
+        $l = ww_bruecke_lage();
+        $f['bruecke_laeuft'] = $l[0] === true;
+    }
+    return $f;
 }
