@@ -10,12 +10,19 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.45 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.46 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.46
+
+Reiter *Test*: Die Zeile „Stimmt die Themenliste mit dem Sendecode überein?“ zählt jetzt auch die Themen, die der
+Dienst je Gerät neben den Zuständen sendet – `geraetN/auto_wartet` und `geraetN/auto_grund` der Startlogik aus 0.9.44.
+Bis 0.9.45 zeigte sie deshalb „Abweichung: auto_wartet, auto_grund“, obwohl beide Themen gesendet werden. Das war ein
+Fehlalarm der Prüfzeile, kein Fehler im Versand. Sonst keine Änderung gegen 0.9.45.
 
 ## Neu in 0.9.45
 

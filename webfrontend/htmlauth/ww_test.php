@@ -108,6 +108,41 @@ function ww_py_tabelle($anfang, $muster)
     return $m[1];
 }
 
+/**
+ * Themenliste gegen Sendecode (NEU 0.9.46 als eigene Funktion).
+ *
+ * Der Dienst sendet die Themen je Geraet auf ZWEI Wegen: die Zustaende ueber
+ * MQTT_FELDER, das Lebenszeichen je Geraet und die Startlogik ueber das
+ * Grund-Verzeichnis (grund["geraet%s/auto_wartet" % nummer] = ...). Bis
+ * 0.9.45 las die Pruefzeile nur MQTT_FELDER und meldete deshalb seit der
+ * Gruppe 44 "Abweichung: auto_wartet, auto_grund", obwohl beide gesendet
+ * werden. Dieselbe Nachrechnung steht in Werkzeuge/ww_pruefen.py.
+ *
+ * Rueckgabe: null = bin/weissware.py nicht lesbar; sonst 'ab' (Themen, die
+ * nur eine Seite kennt) und 'anzahl' (Themen je Geraet im Sendecode).
+ */
+function ww_test_themen()
+{
+    $py_felder = ww_py_tabelle('MQTT_FELDER = (', '/"([a-z_]+)"/');
+    if ($py_felder === null) {
+        return null;
+    }
+    $q = (string) @file_get_contents(ww_paths()['bindir'] . '/weissware.py');
+    /* Nur Zeilen, die mit der Zuweisung BEGINNEN - eine auskommentierte
+     * Zeile ("# grund[...] = ...") sendet nichts und darf nicht zaehlen
+     * (geeicht: auskommentiertes auto_grund -> "Abweichung: auto_grund"). */
+    preg_match_all('/^[ \t]*grund\["geraet%s\/([a-z_]+)" % nummer\]\s*=/m', $q, $m);
+    $gesendet = array_values(array_unique(array_merge($py_felder, $m[1])));
+    $doku = array();
+    foreach (array_keys(ww_mqtt_themen()) as $t) {
+        if (strpos($t, 'geraetN/') === 0) {
+            $doku[] = substr($t, strlen('geraetN/'));
+        }
+    }
+    $ab = array_values(array_merge(array_diff($gesendet, $doku), array_diff($doku, $gesendet)));
+    return array('ab' => $ab, 'anzahl' => count($gesendet));
+}
+
 /** $offen: ist der Reiter Test die geladene Seite? Nur dann fragen die
  *  Zeilen der Ausgabearten Alexa-NG und Chromecast 4 Lox NG die Gegenstelle
  *  (Bauliste A1) - sonst kostete jeder Seitenaufbau bis zu 10 s. */
@@ -145,21 +180,15 @@ function ww_pruefungen($offen = false)
     /* Themenliste gegen Sendecode. Bei Renault nannten Oberflaeche, Baustein-
      * Liste und Importdatei fuenf Themen, die der Sendecode nie
      * veroeffentlicht hat - der Anwender bekam virtuelle Eingaenge, die
-     * dauerhaft auf 0 standen, ohne Fehlermeldung. */
-    $py_felder = ww_py_tabelle('MQTT_FELDER = (', '/"([a-z_]+)"/');
-    if ($py_felder === null) {
+     * dauerhaft auf 0 standen, ohne Fehlermeldung. Seit 0.9.46 zaehlen die
+     * Themen aus dem Grund-Verzeichnis mit (ww_test_themen()). */
+    $th = ww_test_themen();
+    if ($th === null) {
         $zeilen[] = ww_pruefzeile(-1, ww_t('TEST.F_THEMEN'), ww_t('TEST.A_THEMEN_UNLESBAR'));
     } else {
-        $doku = array();
-        foreach (array_keys(ww_mqtt_themen()) as $t) {
-            if (strpos($t, 'geraetN/') === 0) {
-                $doku[] = substr($t, strlen('geraetN/'));
-            }
-        }
-        $ab = array_merge(array_diff($py_felder, $doku), array_diff($doku, $py_felder));
-        $zeilen[] = ww_pruefzeile($ab ? 0 : 1, ww_t('TEST.F_THEMEN'),
-            $ab ? sprintf(ww_t('TEST.A_THEMEN_AB'), ww_e(implode(', ', $ab)))
-                : sprintf(ww_t('TEST.A_THEMEN_OK'), count($py_felder)));
+        $zeilen[] = ww_pruefzeile($th['ab'] ? 0 : 1, ww_t('TEST.F_THEMEN'),
+            $th['ab'] ? sprintf(ww_t('TEST.A_THEMEN_AB'), ww_e(implode(', ', $th['ab'])))
+                      : sprintf(ww_t('TEST.A_THEMEN_OK'), $th['anzahl']));
     }
 
     /* Stimmen die beiden Retain-Tabellen ueberein?
