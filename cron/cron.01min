@@ -12,8 +12,13 @@ BBSH="REPLACELBPBINDIR/befehlsbruecke.sh"
 [ -f "$BBSH" ] && /bin/bash "$BBSH" waechter >/dev/null 2>&1
 # Die Fehlerausgabe des Dienstwaechters geht nach cron.err (Regeln/03), nicht mehr ins Leere.
 mkdir -p "REPLACELBPLOGDIR" 2>/dev/null
-touch "REPLACELBPLOGDIR/cron.err" 2>/dev/null
-/bin/bash "REPLACELBPBINDIR/dienst.sh" waechter >/dev/null 2>>"REPLACELBPLOGDIR/cron.err"
+ERR="REPLACELBPLOGDIR/cron.err"
+touch "$ERR" 2>/dev/null
+# 0.9.47 (Nachzug 01.11.2026, Bauart Renault NG 2.1.23): ist die Fehlerdatei nicht schreibbar, braeche die
+# Umlenkung den Befehl ab, BEVOR er startet - bis 0.9.46 kein Lauf und keine Spur. Dann geht die Fehlerausgabe
+# nach /dev/null, und der Lauf findet statt.
+[ -f "$ERR" ] && [ -w "$ERR" ] || ERR=/dev/null
+/bin/bash "REPLACELBPBINDIR/dienst.sh" waechter >/dev/null 2>>"$ERR"
 # Ansage "Geraet ist fertig" - prueft den Zustand und spricht bei Bedarf.
 # Ueber die PHP-Kommandozeile, nie ueber HTTP (siehe bin/ansage.php).
 php "REPLACELBPBINDIR/ansage.php" >/dev/null 2>&1

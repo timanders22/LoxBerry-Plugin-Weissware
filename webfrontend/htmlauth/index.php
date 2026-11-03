@@ -296,20 +296,6 @@ if ($ww_post && isset($_POST['speichern'])) {
         $ww_cfg[$ww_haken] = isset($_POST[$ww_haken]) ? 1 : 0;
     }
 
-    /* Ruhezeit der Ansage. Was nicht ins Muster passt, wird gemeldet - eine
-     * stillschweigend auf 00:00 zurechtgebogene Zeit hiesse: es spricht doch
-     * nachts. Der Sprachschluessel steht AUSGESCHRIEBEN neben dem Feld. */
-    foreach (array('ansage_ruhe_von' => 'WW_ANSAGE.L_RUHE_VON',
-                   'ansage_ruhe_bis' => 'WW_ANSAGE.L_RUHE_BIS') as $ww_zf => $ww_zk) {
-        $ww_zw = (string) ww_post_text($ww_zf);
-        if (!preg_match('/^([01][0-9]|2[0-3]):[0-5][0-9]$/', $ww_zw)) {
-            $ww_fehler[] = sprintf(ww_t('WW_ANSAGE.FEHLER_ZEIT'), ww_t($ww_zk));
-            $ww_falsch[] = $ww_zf;
-        } else {
-            $ww_cfg[$ww_zf] = $ww_zw;
-        }
-    }
-
     /* Sprachausgabe (seit 0.9.39, Nr. 36 b Stufe 2): der Formular-Baustein der gemeinsamen Sprachausgabe
      * liest und prueft den ganzen Block - Adresse und Vorlage nur im Heimnetz (Entscheidung Nr. 40),
      * Sprechtoken wie ein Kennwort (leer = unveraendert, der Haken loescht, beides zugleich ist ein
@@ -324,7 +310,8 @@ if ($ww_post && isset($_POST['speichern'])) {
     $ww_tbean = array();
     $ww_thinw = array();     // Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Hinweise des Moduls, die das Speichern nicht verhindern
     $ww_cfg['tts'] = ansage_formular_lesen($ww_tpost, ww_tts(), $ww_tmangel, $ww_tbean,
-        ww_ansage_opt() + array('ziele' => ww_mit_zielen()), ww_ansage_k(), $ww_thinw);
+        ww_ansage_opt() + array('ziele' => ww_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), ww_ansage_k(), $ww_thinw);
+    list($ww_cfg['ansage_regeln']) = ansage_regeln_formular($ww_tpost, ww_ansage_regeln(ww_config()), array(), $ww_tmangel, $ww_tbean, ww_ansage_k());     // S2: Wann gesprochen wird (Stamm)
     foreach ($ww_tmangel as $ww_tm) { $ww_fehler[] = ww_e($ww_tm['text']); }
     foreach ($ww_tbean as $ww_tb) { $ww_falsch[] = $ww_tb; }
 
@@ -399,9 +386,9 @@ if ($ww_post && isset($_POST['speichern'])) {
             if (substr($ww_an, -9) === '_loeschen') { $ww_ahk[] = $ww_an; } else { $ww_ax2[] = $ww_an; }
         }
         $ww_eingaben = ww_eingaben_sammeln('settings',
-            array_merge(array('takt_ruhe', 'takt_betrieb', 'wartezeit', 'sprache', 'ansage_ruhe_von', 'ansage_ruhe_bis',
+            array_merge(array('takt_ruhe', 'takt_betrieb', 'wartezeit', 'sprache', 'ansage_ruhe_von', 'ansage_ruhe_bis', 'ansage_sperre_min',
                               'hc_client_id', 'miele_client_id'), $ww_ax2),
-            array_merge($ww_haken_liste, $ww_ahk), $ww_falsch);
+            array_merge($ww_haken_liste, $ww_ahk, array('ansage_ruhe_ein')), $ww_falsch);
         $ww_eingaben['werte'] += ww_ziele_x2_werte($_POST);     // Welle Mehrfach-Ziele (0.9.44): die Tabelle als name[N]
     }
     $ww_tab = 'tab-settings';
@@ -726,7 +713,7 @@ if ($ww_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel'
     if (isset($_POST['ansage_test_ziel']) && $ww_tnur === 0) {
         $ww_tr = array('stand' => 0, 'kennung' => 'ZIEL_UNBEKANNT|-', 'art' => '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
     } elseif ($ww_tnur >= 1) {
-        $ww_tr = ansage_testansage(ww_tts(), $ww_tk, $ww_tnur);
+        $ww_tr = ansage_testansage(ww_ansage_vor_ort(), $ww_tk, $ww_tnur);
     } else {
         $ww_tr = ww_say_ergebnis(ww_t('WW_ANSAGE.TESTTEXT'));
     }
@@ -1287,20 +1274,6 @@ if (!empty($ww_zustand['fehler'])) { ?>
   </label>
   <div class="sm-hilfe"><?= ww_t('WW_ANSAGE.H_FERNSTART') ?></div>
 </div>
-<div class="sm-row">
-    <div>
-        <label><?= ww_e(ww_t('WW_ANSAGE.L_RUHE_VON')) ?></label>
-        <input data-role="none" type="text" name="ansage_ruhe_von" value="<?= ww_e(ww_fw('settings', 'ansage_ruhe_von', $ww_cfg['ansage_ruhe_von'])) ?>" placeholder="22:00"<?= ww_fm('ansage_ruhe_von') ?>>
-    </div>
-    <div>
-        <label><?= ww_e(ww_t('WW_ANSAGE.L_RUHE_BIS')) ?></label>
-        <input data-role="none" type="text" name="ansage_ruhe_bis" value="<?= ww_e(ww_fw('settings', 'ansage_ruhe_bis', $ww_cfg['ansage_ruhe_bis'])) ?>" placeholder="07:00"<?= ww_fm('ansage_ruhe_bis') ?>>
-    </div>
-    <div>
-        <label>&nbsp;</label>
-        <div class="sm-hilfe"><?= ww_t('WW_ANSAGE.H_RUHE') ?></div>
-    </div>
-</div>
 <div class="sm-hinweis"><?= ww_e(ww_t('WW_ANSAGE.HAUSFORM')) ?></div>
 <?php /* Seit 0.9.39 der Formular-Baustein der gemeinsamen Sprachausgabe (ansage_formular_html()): Klassen
          sm-feld, sm-hilfe, sm-hinweis aus der Vorlage; X-2 ueber ww_fw/ww_fm/ww_fh wie die uebrigen Felder
@@ -1314,6 +1287,11 @@ if (!empty($ww_zustand['fehler'])) { ?>
     /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
     'ziele' => ww_mit_zielen(),
     'ziele_post' => (ww_fa('settings') && isset($ww_eingaben['werte']) && is_array($ww_eingaben['werte'])) ? ww_ziele_x2_post($ww_eingaben['werte']) : null), ww_ansage_k()); ?>
+<?= ansage_regeln_html(ww_ansage_regeln(), array(), array(), array(
+    'w' => function ($n, $g) { return ww_fw('settings', $n, $g); },
+    'm' => function ($n) { return ww_fm($n); },
+    'c' => function ($n, $g) { return ww_fh('settings', $n, $g); },
+    'token_vor_ort' => true), ww_ansage_k()) ?>
 
 <?php /* MQTT stand hier bis zu dieser Fassung. Es wohnt jetzt
          vollstaendig im Reiter MQTT - eine Sache, eine Stelle. */ ?>
@@ -2119,6 +2097,7 @@ function ww_bausteinseiten()
    ohne weitere Ziele nichts. */
 if (ww_mit_zielen()) { echo ansage_testknoepfe_html(ww_tts(), ww_ansage_k(), array('klasse' => 'sm-btn sm-b-aktion')); } ?>
   </form>
+<?= ww_ansage_lage_html() ?>
 </div>
 <div class="sm-hilfe"><?= ww_t('WW_ANSAGE.H_TEST_TEXT') ?></div>
 <?php if ($ww_testausgabe !== '') { ?>

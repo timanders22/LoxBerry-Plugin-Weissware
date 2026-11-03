@@ -89,7 +89,8 @@ return array(
                      'mqtt_ein'    => !empty($c['mqtt_ein']));
     },
     'protokoll' => function ($stufe, $text) {
-        ww_log('Befehlsbruecke (' . $stufe . '): ' . $text);
+        // 0.9.47: bb_log() setzt "Befehlsbruecke: " schon vor den Text - bis 0.9.46 stand es doppelt (Nachzug 01.11.2026, wie MGiSmart 1.1.30).
+        ww_log('(' . $stufe . ') ' . $text);
     },
     'teile' => array('nr' => '[2-9]'),
     'befehle' => $ww_befehle_mqtt,
