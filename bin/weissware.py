@@ -3145,6 +3145,11 @@ def auto_schritt(e: dict, g: dict, cfg: dict, quelle: dict, jetzt: float):
     traegt auto_ergebnis() ein."""
     e = dict(e or {})
     jetzt = int(jetzt)
+    if g.get("fernstart_frei") is None and e.get("freigabe") == 1:
+        # 0.9.50 (WW-1): None ist KEINE Aussage (hc_abschnitt macht aus 404/409 ein leeres Verzeichnis), kein Rueckzug
+        # der Freigabe. Bis 0.9.49 war der Stand danach weg, und "einmal je Freigabe" galt nicht mehr: gestartet, fertig,
+        # Aussetzer, Flag wieder 1 -> zweiter Start. Der Stand bleibt unveraendert, auch sein Grund.
+        return ("nichts", 12, e)
     if g.get("fernstart_frei") != 1:
         # Ohne Freigabe wartet nichts; eine neue Freigabe beginnt von vorn (einmal je Freigabe).
         return ("nichts", 1, {"freigabe": 0, "grund": 1})

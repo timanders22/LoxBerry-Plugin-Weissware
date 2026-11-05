@@ -313,6 +313,8 @@ if ($ww_post && isset($_POST['speichern'])) {
     $ww_cfg['tts'] = ansage_formular_lesen($ww_tpost, ww_tts(), $ww_tmangel, $ww_tbean,
         ww_ansage_opt() + array('ziele' => ww_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), ww_ansage_k(), $ww_thinw);
     list($ww_cfg['ansage_regeln']) = ansage_regeln_formular($ww_tpost, ww_ansage_regeln(ww_config()), array(), $ww_tmangel, $ww_tbean, ww_ansage_k());     // S2: Wann gesprochen wird (Stamm)
+    // 0.9.50: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 0.9.49 ueberschrieb es der naechste Abgleich.
+    $ww_cfg['ansage_token_herkunft'] = ansage_token_herkunft_formular($_POST, isset($ww_cfg['ansage_token_herkunft']) ? $ww_cfg['ansage_token_herkunft'] : array());
     foreach ($ww_tmangel as $ww_tm) { $ww_fehler[] = ww_e($ww_tm['text']); }
     foreach ($ww_tbean as $ww_tb) { $ww_falsch[] = $ww_tb; }
 
@@ -388,8 +390,8 @@ if ($ww_post && isset($_POST['speichern'])) {
         }
         $ww_eingaben = ww_eingaben_sammeln('settings',
             array_merge(array('takt_ruhe', 'takt_betrieb', 'wartezeit', 'sprache', 'ansage_ruhe_von', 'ansage_ruhe_bis', 'ansage_sperre_min',
-                              'hc_client_id', 'miele_client_id'), $ww_ax2),
-            array_merge($ww_haken_liste, $ww_ahk, array('ansage_ruhe_ein')), $ww_falsch);
+                              'hc_client_id', 'miele_client_id', 'ansage_tafel_namen', 'ansage_homepod_geraet'), $ww_ax2),     // 0.9.50: Tafel und HomePod dazu
+            array_merge($ww_haken_liste, $ww_ahk, array('ansage_ruhe_ein', 'ansage_tafel_ein', 'ansage_homepod_ein')), $ww_falsch);
         $ww_eingaben['werte'] += ww_ziele_x2_werte($_POST);     // Welle Mehrfach-Ziele (0.9.44): die Tabelle als name[N]
     }
     $ww_tab = 'tab-settings';

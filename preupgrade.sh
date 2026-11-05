@@ -27,6 +27,10 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-weissware}"
+# 05.11.2026: ein Ordnername mit "/" oder "." waere ein Pfad hinaus (dieselbe Formel wie MGiSmart und Govee).
+case "$PFOLDER" in
+    ''|.|..|*/*) echo "<FAIL> Unbrauchbarer Ordnername '$PFOLDER' - nichts angefasst."; exit 2 ;;
+esac
 BASE="${ARGV5:-$LBHOMEDIR}"
 # Ohne brauchbares $5/LBHOMEDIR aufwaerts suchen, sonst nichts tun - dieselbe
 # Regel wie in postinstall.sh und uninstall/uninstall (Regeln/06). Bis 0.9.28
@@ -51,7 +55,7 @@ if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ]; then
 fi
 if [ -z "$BASE" ]; then
     echo "<WARNING> Es wurde kein LoxBerry-Wurzelverzeichnis gefunden - nichts gesichert, nichts angehalten."
-    exit 1
+    exit 2
 fi
 
 CFGDIR="$BASE/config/plugins/$PFOLDER"
@@ -81,8 +85,11 @@ date +%s > "$MARKE" 2>/dev/null
 if [ -s "$MARKE" ]; then
     echo "<OK> Dienststart bis zum Ende der Aktualisierung gesperrt."
 else
-    echo "<WARNING> Die Marke $MARKE liess sich nicht anlegen - der Dienst"
-    echo "<WARNING> koennte waehrend der Aktualisierung anlaufen."
+    # 05.11.2026: ohne Marke haelt die Installation das Update fuer eine Neuinstallation und legt die Einstellungen beiseite; bis hierher nur eine Warnung.
+    [ "$WW_VORHER_MARKE" = 1 ] || rm -f "$MARKE" 2>/dev/null
+    echo "<FAIL> Die Marke $MARKE liess sich nicht anlegen - die Aktualisierung wird abgebrochen,"
+    echo "<FAIL> die bisherige Fassung bleibt unveraendert installiert."
+    exit 2
 fi
 
 # ZUERST merken, ob der Dienst laufen soll - 'dienst.sh stop' entfernt den
@@ -248,10 +255,11 @@ ww_json_lesbar() {
 # ein Schritt, bleibt das bisherige Ziel unberuehrt. Rueckgabe 0 = gesichert.
 WW_GESCHEITERT=""
 ww_sichern() {   # $1 Quelle  $2 Ziel
-    q=$1; z=$2; n="$z.neu"
+    q=$1; z=$2; n="$z.neu.$$"
     rm -f "$n" 2>/dev/null
-    if ! cp -p "$q" "$n" 2>/dev/null; then rm -f "$n" 2>/dev/null; return 1; fi
-    if [ "$(stat -c %s "$q" 2>/dev/null)" != "$(stat -c %s "$n" 2>/dev/null)" ]; then rm -f "$n" 2>/dev/null; return 1; fi
+    # 05.11.2026: Rechte vor Inhalt, cmp statt Groessenvergleich (Bauart Govee 0.9.34).
+    if ! { : > "$n"; } 2>/dev/null || ! chmod 600 "$n" 2>/dev/null; then rm -f "$n" 2>/dev/null; return 1; fi
+    if ! cp "$q" "$n" 2>/dev/null || ! cmp -s "$q" "$n"; then rm -f "$n" 2>/dev/null; return 1; fi
     if ! ww_json_lesbar "$n"; then rm -f "$n" 2>/dev/null; return 1; fi
     if ! mv -f "$n" "$z" 2>/dev/null; then rm -f "$n" 2>/dev/null; return 1; fi
     return 0
@@ -420,8 +428,12 @@ for f in zugang.json weissware.json token.json; do
 done
 # "abgeschlossen" nur, wenn jede Sicherung traegt (Bauliste I3).
 if [ -n "$WW_GESCHEITERT" ]; then
-    echo "<WARNING> preupgrade abgeschlossen, aber nicht gesichert:$WW_GESCHEITERT"
-else
-    echo "<OK> preupgrade abgeschlossen."
+    # 05.11.2026: bis hierher exit 0 - der Purge loeschte das Original.
+    echo "<FAIL> Nicht gesichert:$WW_GESCHEITERT - die Aktualisierung wird abgebrochen, damit der Purge die Originale nicht loescht."
+    echo "<FAIL> Die bisherige Fassung bleibt installiert. Bitte Platz und Rechte unter $SICHER pruefen."
+    [ "$WW_VORHER_MARKE" = 1 ] || rm -f "$MARKE" 2>/dev/null
+    [ -f "$SICHER/$PFOLDER.backup.lief" ] && : > "$PDATA/soll_laufen"
+    exit 2
 fi
+echo "<OK> preupgrade abgeschlossen."
 exit 0
