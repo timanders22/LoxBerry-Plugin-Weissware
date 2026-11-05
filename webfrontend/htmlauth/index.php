@@ -226,6 +226,7 @@ if ($ww_post && isset($_POST['vorlage'])) {
             $ww_v = ww_vorlage($ww_art, (int) $ww_rohnr);
             if (is_array($ww_v)) {
                 list($ww_name, $ww_inhalt) = $ww_v;
+                while (ob_get_level() > 0) { @ob_end_clean(); }
                 header('Content-Type: application/xml; charset=utf-8');
                 header('Content-Disposition: attachment; filename="' . $ww_name . '"');
                 echo $ww_inhalt;
@@ -740,6 +741,7 @@ if ($ww_post && isset($_POST['ww_sichern'])) {
     $ww_js = json_encode(ww_sicherung_bauen(),
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($ww_js !== false) {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="weissware_einstellungen_'
                . date('Ymd_His') . '.json"');
