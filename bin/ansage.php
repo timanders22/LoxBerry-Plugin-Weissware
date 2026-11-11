@@ -31,4 +31,12 @@ $ww_lock = ww_sperre('ansage');
 if ($ww_lock === false) {
     exit(0);
 }
+/* 0.9.53 (Regeln/05): fehlende Einstellungen einmal mit ihrer Vorgabe in weissware.json eintragen - nach der Sperre,
+ * vor dem ersten Lesen der Konfiguration (ww_ansage_check()); nicht waehrend einer Aktualisierung (Marke, siehe
+ * ww_config_vervollstaendigen()). Schreibt nur, wenn etwas fehlt. Ein Fehler hier haelt die Ansage nicht auf. */
+try {
+    ww_config_vervollstaendigen();
+} catch (Throwable $ww_vv) {
+    ww_log_wenn_neu('vervollstaendigen', 'Konfiguration vervollstaendigen abgebrochen (' . get_class($ww_vv) . ').');
+}
 ww_ansage_check();

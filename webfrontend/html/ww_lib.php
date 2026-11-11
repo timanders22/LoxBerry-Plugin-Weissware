@@ -1002,6 +1002,90 @@ function ww_token()
     return (string) $cfg['aktionstoken'];
 }
 
+/** Leere Objekte des Rohtextes ($o, json_decode ohne true) im Feld $a wieder als Objekt fuehren (11.11.2026),
+ *  damit json_encode() sie als {} und nicht als [] schreibt - oben wie verschachtelt, auch unter fremden
+ *  Schluesseln. Nur fuer ww_config_vervollstaendigen(); das Speichern im Formular bleibt, wie es ist.
+ *  Bauart Bewaesserung 0.9.56 (bw_json_leere_objekte()). */
+function ww_json_leere_objekte($a, $o)
+{
+    if (!is_array($a)) { return $a; }
+    if (is_object($o)) {
+        if (!get_object_vars($o) && $a === array()) { return new stdClass(); }
+        foreach ($a as $k => $v) {
+            $ks = (string) $k;
+            if (is_array($v) && property_exists($o, $ks)) { $a[$k] = ww_json_leere_objekte($v, $o->$ks); }
+        }
+    } elseif (is_array($o)) {
+        foreach ($a as $k => $v) {
+            if (is_array($v) && array_key_exists($k, $o)) { $a[$k] = ww_json_leere_objekte($v, $o[$k]); }
+        }
+    }
+    return $a;
+}
+
+/**
+ * Fehlende Einstellungen EINMAL mit ihrer Vorgabe in weissware.json schreiben (seit 0.9.53; Regeln/05, Bauform
+ * Docker NG 1.3.7; Entscheidung des Hausherrn vom 11.11.2026).
+ *
+ * Bis 0.9.52 ergaenzten ww_config() (array_merge mit ww_vorgaben()) und config() in bin/weissware.py fehlende
+ * Schluessel nur im Speicher; in die Datei kamen sie erst beim naechsten Speichern im Formular. Aufgerufen vom
+ * Minutenlauf bin/ansage.php (cron/cron.01min), nach dessen Sperre und vor seinem ersten Lesen der Konfiguration.
+ * Der Python-Dienst schreibt die Datei nicht; er liest sie bei jedem Takt neu.
+ *
+ *  - nur mit LoxBerry-Wurzel und nicht waehrend einer Aktualisierung: eine vorhandene Marke
+ *    data/plugins/<ordner>.upgrade_laeuft haelt das Schreiben an, solange sie nicht nachweislich aelter als eine
+ *    Stunde ist (unlesbar oder vorausdatiert: sie gilt - geschlossen ausfallen);
+ *  - nur an einer Datei mit Merkwort: ein JSON-Objekt mit einem Aktionstoken in der Form, die diese Linie erzeugt
+ *    (ww_config_hat_inhalt(), ww_token_form_ok()); eine fehlende, leere, kaputte oder tokenlose Datei ist Sache von
+ *    ww_selbstheilung() bzw. ww_token();
+ *  - geschrieben werden die WERTE AUS DER DATEI plus die fehlenden Vorgaben, nicht das, was eine Lesefunktion daraus
+ *    macht; fremde Schluessel bleiben stehen; nur die Schluessel aus ww_vorgaben(), die das Speichern im Formular
+ *    ebenfalls schreibt; die Zugangsdaten bleiben in zugang.json;
+ *  - Lese-Regel: ww_config() kennt fuer Bestandsdateien keine eigene - ein fehlender Schluessel gilt als Vorgabe.
+ *    endpunkt_ein traegt postinstall.sh beim Update mit 1 nach (Bestand nutzt den HTTP-Weg); fehlt er danach noch,
+ *    gilt er beim Lesen als 0 und wird NICHT eingetragen (seit 11.11.2026, siehe Schleife unten) - das
+ *    Vervollstaendigen schaltet keinen Endpunkt ein und schreibt auch kein "aus" fest.
+ *    Ein leerer Block ansage_regeln gilt als "aus der alten Ruhezeit"; eingetragen wird der leere Block, die Regel
+ *    bleibt damit erhalten;
+ *  - geschrieben wird nur, wenn etwas fehlt; Weg wie beim Speichern (ww_config_speichern(): 0600, Rechte vor dem
+ *    Inhalt, Zweitschrift ueber ww_zweitschrift_ziehen()); eine Protokollzeile mit den Namen, nie mit Werten.
+ *
+ * Rueckgabe: die Namen der eingetragenen Schluessel; leer, wenn nichts geschrieben wurde.
+ */
+function ww_config_vervollstaendigen()
+{
+    $p = ww_paths();
+    if ($p['home'] === '') { return array(); }
+    list($marke_da, , $marke_alter) = ww_upgrade_marke();
+    if ($marke_da && !($marke_alter > 3600)) { return array(); }
+    clearstatcache(true, $p['config']);
+    if (!is_file($p['config']) || !is_readable($p['config'])) { return array(); }
+    $roh = @file_get_contents($p['config']);
+    if (!is_string($roh) || substr(ltrim($roh), 0, 1) !== '{') { return array(); }
+    $datei = json_decode($roh, true);
+    if (!ww_config_hat_inhalt($datei) || !ww_token_form_ok($datei['aktionstoken'])) { return array(); }
+    // Ein leeres Objekt der Datei ({}) bliebe nach json_decode(..., true) ein leeres Feld und kaeme beim
+    // Schreiben als [] zurueck - der Rohwert wird erhalten, bevor ergaenzt wird (11.11.2026).
+    $datei = ww_json_leere_objekte($datei, json_decode($roh));
+    $fehlend = array();
+    foreach (ww_vorgaben() as $k => $w) {
+        /* endpunkt_ein bleibt aussen vor (11.11.2026): den Uebergang fuer Bestandsanlagen setzt das
+         * Update; ein hier festgeschriebenes "aus" koennte ein spaeteres Update nicht mehr berichtigen. */
+        if ($k === 'endpunkt_ein') {
+            continue;
+        }
+        if (!array_key_exists($k, $datei)) {
+            $datei[$k] = $w;
+            $fehlend[] = (string) $k;
+        }
+    }
+    if (!$fehlend) { return array(); }
+    if (!ww_config_speichern($datei)) { return array(); }
+    ww_log('Konfiguration vervollstaendigt: ' . count($fehlend) . ' fehlende Einstellung(en) mit der Vorgabe '
+        . 'eingetragen (' . implode(', ', $fehlend) . ').');
+    return $fehlend;
+}
+
 /* ---------------- Zwischenspeicher lesen ---------------- */
 
 function ww_loxone()

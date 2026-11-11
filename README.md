@@ -10,12 +10,18 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.52 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.53 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.53
+
+- **Konfiguration wird vervollständigt:** Fehlen in `weissware.json` Einstellungen, die eine neuere Fassung mitbringt, trägt der Minutenlauf (`bin/ansage.php` aus `cron/cron.01min`) sie jetzt einmal mit ihrer Vorgabe in die Datei ein; die Zweitschrift zieht mit. Das Protokoll nennt die ergänzten Namen in einer Zeile, nie die Werte. Bisher ergänzten Oberfläche und Dienst fehlende Einstellungen nur beim Lesen; in die Datei kamen sie erst beim nächsten Speichern im Formular. Die Vorgaben sind die Werte, die das Plugin bisher ohnehin angenommen hat; am Verhalten ändert sich nichts. `endpunkt_ein` trägt das Vervollständigen nicht ein: den Übergang einer bestehenden Anlage setzt weiter allein die Aktualisierung, und ein hier festgeschriebenes „aus“ könnte eine spätere Aktualisierung nicht mehr berichtigen.
+- Geschrieben werden die Werte, die in der Datei stehen, plus die fehlenden Vorgaben. Unbekannte Schlüssel bleiben stehen, geschrieben wird nur, wenn etwas fehlt. Eine fehlende, leere oder beschädigte Datei und eine Datei ohne gültiges Aktionstoken werden nicht angefasst, ebenso wenig während einer Aktualisierung. Die Zugangsdaten bleiben in `zugang.json`. Gemessen ist das im Prüfstand unter PHP 7.4 und 8.4 auf dem Arbeitsrechner, an einer Datei in der Gestalt der Fassung 0.9.43, nicht am Gerät.
+- Leere Objekte (`{}`) in der Datei bleiben beim Vervollständigen erhalten, auch verschachtelte und solche unter unbekannten Schlüsseln; sie werden dabei nicht mehr zu leeren Listen (`[]`). Das Speichern im Formular bleibt, wie es war.
 
 ## Neu in 0.9.52
 
