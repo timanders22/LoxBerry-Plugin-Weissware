@@ -554,6 +554,22 @@ case "$1" in
             exit 0
         fi
         rm -f "$PDATA/wache_pause_gemeldet" 2>/dev/null
+        # NEU in 0.9.54: nach dem Ende einer Pause gilt die Grenze ab dem
+        # Ende der Pause, nicht ab dem letzten Abbild. Das Abbild entsteht
+        # erst, wenn der Abruf nach der Pause fertig ist; der Dienst zaehlt
+        # seine Wartezeit in Schritten von einer Sekunde und kommt deshalb
+        # etwas spaeter zum Zuge, als pause_bis sagt. Bis 0.9.53 war das
+        # Abbild in dieser Luecke schon "zu alt", und der Waechter startete
+        # den gesunden Dienst neu - samt Ruecksetzen der Fehlerbremse. Am
+        # Geraet gemessen am 12.11.2026: Pause bis 01:49:38, um 01:50:08
+        # "seit 2430 s kein Abbild geschrieben (Grenze 1500 s) - Neustart",
+        # danach begann die Zaehlung der Fehlversuche wieder bei 1.
+        # Nur ein pause_bis zwischen Abbild und jetzt zaehlt; ein verdorbener
+        # Wert in der Zukunft ist oben schon ausgeschlossen.
+        if [ "$PAUSE" -gt "$STAND" ] && [ "$PAUSE" -le "$JETZT" ] \
+           && [ $((JETZT - PAUSE)) -le "$GRENZE" ]; then
+            exit 0
+        fi
         # Bremse: hoechstens ein Neustart je Grenzfenster.
         BREMSE="$PDATA/wache_letzter_neustart"
         if [ -f "$BREMSE" ]; then

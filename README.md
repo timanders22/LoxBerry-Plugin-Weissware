@@ -10,12 +10,17 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.53 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.54 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.54
+
+- **Der Wächter startet den Dienst nicht mehr kurz nach dem Ende einer Pause neu.** Nach mehreren Fehlversuchen pausiert der Dienst absichtlich (Fehlerbremse, bis 3600 s), und der Wächter lässt ihn in dieser Zeit in Ruhe (seit 0.9.23). Nach dem Ende der Pause entsteht das nächste Abbild aber erst, wenn der folgende Abruf fertig ist; in dieser Lücke war das Abbild schon älter als die Grenze, und der Wächter startete den gesunden Dienst neu. Der Neustart setzt die Zählung der Fehlversuche zurück und hebt damit die Bremse auf. Am Gerät gemessen am 12.11.2026: Pause bis 01:49:38, um 01:50:08 „seit 2430 s kein Abbild geschrieben (Grenze 1500 s) - Neustart“, danach begann die Zählung wieder bei 1. Jetzt gilt die Grenze nach einer Pause ab deren Ende: Erst wenn auch danach so lange kein Abbild kommt, wird neu gestartet. Ein wirklich stehengebliebener Dienst wird weiter neu gestartet, auch einer mit einem verdorbenen Pausenwert.
+- Gemessen ist das in einem Prüfstand unter WSL (Ubuntu) mit `bin/dienst.sh waechter` in sieben Fällen, nicht am Gerät.
 
 ## Neu in 0.9.53
 
