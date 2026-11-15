@@ -10,12 +10,26 @@ Miele-Geschirrspüler danach genauso aus wie eine Bosch-Waschmaschine.
 | **Miele** | Miele@home (3rd Party API) | OAuth2 Authorization Code, Code von Hand |
 | **SmartThings** | Samsung | Personal Access Token — **siehe Vorbehalt** |
 
-> **Fassung 0.9.54 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
+> **Fassung 0.9.55 — ungeprüft.** Das Plugin wurde ohne Entwicklerkonten und
 > ohne Geräte gebaut. Endpunkte und Datenformen stammen aus den
 > Entwicklerdokumentationen, nicht aus einer Messung. Geprüft ist alles übrige:
 > Oberfläche, Endpunkt, Absicherung, Warteschlange, Sprachdateien und die
 > Zuordnung selbst — letztere gegen nachgebaute Antworten in der dokumentierten
 > Form. Schreibende Befehle sind ab Werk gesperrt.
+
+## Neu in 0.9.55
+
+- **Verhalten geändert – Einstellungen sichern und zurückspielen über das gemeinsame Sicherungsmodul (Fassung 1.2.3):** Die Knöpfe im Reiter *Einstellungen* arbeiten jetzt mit demselben Sicherungsmodul wie die übrigen Plugins des Hauses. Für den Anwender ändert sich:
+  - Die Sicherungsdatei trägt im Kopf das Kennzeichen des Plugins (`_plugin` = `LoxBerry-Plugin-Weissware`) und die Fassung (`_fassung`). Eine Datei eines anderen Plugins und eine Datei ohne Kennzeichen werden als Ganzes abgewiesen; bis 0.9.54 wurden beide gelesen wie eine eigene. Sicherungen von 0.9.18 bis 0.9.54 werden an ihrem Kopf `_hinweis` erkannt und weiter angenommen; die Meldung sagt „ältere Sicherung erkannt“. Fassungen vor 0.9.18 schrieben keinen Kopf; eine solche Datei wird abgewiesen.
+  - Eine Einstellung, die diese Fassung nicht kennt, wird nicht übernommen und mit ihrem Namen gemeldet, nie mit ihrem Wert – oben in der Datei und in den Blöcken Sprachausgabe (`tts`), Ansageregeln und Zugangsdaten (`zugang`). Die übrigen Einstellungen werden zurückgespielt. Bis 0.9.54 wies ein unbekannter Name die ganze Datei ab.
+  - Ein leerer Wert in der Sicherung überschreibt keinen bestehenden; der bisherige Wert bleibt, und die Meldung nennt den Namen. Bis 0.9.54 galt das nur für das Aktionstoken und die Zugangsdaten; ein anderer leerer Wert, der nicht leer sein darf (etwa das MQTT-Thema), wies die ganze Datei ab.
+  - Fehlt einer älteren Sicherung eine Einstellung, die ihre Fassung noch nicht kannte (Startlogik, Befehle über MQTT, HTTP-Endpunkt, frühere MQTT-Präfixe, Ansageregeln, weitere Ausgabeziele), behält sie ihren geltenden Wert wie bisher; jetzt nennt die Meldung sie.
+  - Zwischen dem Feld für die Sicherungsdatei und dem Knopf „Einstellungen zurückspielen“ steht ein Haken „Ja, die geltenden Einstellungen durch die Sicherung ersetzen“, ab Werk aus. Ohne ihn wird die Datei nicht gelesen und nichts geändert, und die Meldung sagt es. Haken, Text und die Prüfung der hochgeladenen Datei (über das Formular gekommen, höchstens 256 KB wie bisher) kommen aus dem gemeinsamen Sicherungsmodul.
+  - Unverändert: Fehlt das Aktionstoken oder ist ein Wert unzulässig, ändert sich gar nichts, und alle Beanstandungen werden genannt. Aktionstoken und Zugangsdaten der Anbieter gehören in die Datei, die Sprechtoken und das Formularmerkmal nicht. Die Zweitschrift zieht mit, die Zugangsdaten gehen nach `zugang.json`, und ein laufender Dienst wird mit den neuen Einstellungen neu gestartet; die Meldung sagt, was mit ihm geschah.
+- **Der Datenordner übersteht ein Update:** Bei jedem Update löscht LoxBerry den Datenordner des Plugins (`data/plugins/weissware/`). Bis 0.9.54 brachte das Plugin davon neun einzeln aufgezählte Dateien hinüber (Anmeldemarken, Gerätenummern, Läufe und sechs Laufzeitdateien); diese Einzelsicherungen bleiben unverändert. Jetzt sichert `preupgrade.sh` zusätzlich über den gemeinsamen Baustein `upgrade_daten.sh` (Fassung 1.1.0) den ganzen Datenordner mit Unterordnern, Rechten und Zeitstempeln neben den Ordner (`data/plugins/weissware.upgrade_daten/`, Ordner 0700) – ohne Sperr- und PID-Dateien und Sockets – und zählt die Kopie Datei für Datei gegen. `postinstall.sh` spielt als Erstes jede Datei zurück, die nach dem Update fehlt; was die neue Fassung schon angelegt hat, wird nicht überschrieben, und was davon nicht aus dem Archiv stammt, nennt das Installationsprotokoll mit Namen. Danach wird die Sicherung entfernt. Eine Sicherung, die älter als eine Stunde ist, wird nicht eingespielt und bleibt liegen; die Deinstallation räumt sie mit ab. Bewusst nicht über das Update getragen werden die Ordner `befehle/` und `antworten/` (ein Auftrag oder eine Antwort von vor dem Update soll danach nicht mehr wirken) und die Dateien `hc_anmeldung.json` und `miele_code` (eine begonnene Anmeldung bei Home Connect bzw. Miele gilt nur Minuten); das Installationsprotokoll zählt und nennt sie.
+- **Verhalten geändert – lieber kein Update als ein leerer Datenordner:** Lässt sich der Datenordner nicht vollständig sichern (zu wenig Platz, fehlende Rechte, eine unlesbare Datei), meldet `preupgrade.sh` das mit `<FAIL>` und bricht die Aktualisierung ab; die bisherige Fassung bleibt mit ihrem Datenordner installiert. Lief der Dienst vor dem Update, legt `preupgrade.sh` seinen Merker `soll_laufen` wieder an, und der Wächter im Minutentakt startet ihn erneut.
+- Berichtigt: Der Reiter *Einbindung in Loxone* sagte, das MQTT-Gateway V2 lege die Virtuellen Eingänge selbst an. Das ist nicht gemessen; jetzt steht dort, dass man je Wert in Loxone Config einen Virtuellen Eingang mit genau dem Namen aus der Tabelle anlegt.
+- Am Gerät nicht gemessen; geprüft mit einem Prüfstand unter PHP 7.4 und 8.4 auf dem Arbeitsrechner, der über einen Webserver die echten Knöpfe drückt, und mit einem nachgestellten Update-Lauf unter WSL (Ubuntu).
 
 ## Neu in 0.9.54
 
@@ -88,7 +102,8 @@ Ansagen.
   entweder diese Startlogik oder die Loxone-Seite „PV-Start“ (den PV-Überschuss kennt nur Loxone).
 * **Gateway V2:** Tabelle „Gateway V2: diese Datenpunkte anhaken“ im Reiter MQTT (Noncached: `ok`, `zaehler`,
   `geraetN/ok`, `status/befehle`), Prüfzeile im Reiter Test; neues Lebenszeichen `weissware/zaehler` (0…999 je
-  Durchgang). Die MQTT-Importvorlage mit Scheinadresse entfällt – die Eingänge legt das Gateway an.
+  Durchgang). Die MQTT-Importvorlage mit Scheinadresse entfällt – die Virtuellen Eingänge legt man in Loxone Config mit
+  dem Namen aus der Tabelle an (berichtigt in 0.9.55).
 * **Befehle über MQTT** (Befehlsbrücke, ab Werk aus): `start`, `stop`, `pause`, `fortsetzen`, `netz` 1/0 je Gerät und
   `auffrischen`; Vorlage im Reiter MQTT. Dieselben Prüfungen wie der HTTP-Weg.
 * **HTTP-Endpunkt:** eigener Haken. Wer die HTTP-Vorlagen nutzt, ändert nichts – der Endpunkt bleibt beim Update an;

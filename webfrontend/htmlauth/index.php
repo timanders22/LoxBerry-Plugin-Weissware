@@ -735,14 +735,15 @@ if ($ww_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel'
 /* ---------------- Einstellungen sichern ----------------
  *
  * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken UND
- * Zugangsdaten, ohne die Sprechtoken (Bauliste A1). Was beim Zurueckspielen
+ * Zugangsdaten, ohne die Sprechtoken (Bauliste A1). 0.9.55: Kopf (_hinweis,
+ * _plugin, _fassung, _stand) und Inhalt baut das gemeinsame Sicherungsmodul
+ * (ww_sicherung_bauen() -> sicherung_bauen()). Was beim Zurueckspielen
  * abgewiesen wuerde, nennt die Datei unter _warnung mit Namen (X-3,
  * Bauliste O6); die Seite zeigt denselben Hinweis gelb am Knopf. Ein Download
  * bleibt ohne Umleitung. */
 if ($ww_post && isset($_POST['ww_sichern'])) {
-    $ww_js = json_encode(ww_sicherung_bauen(),
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($ww_js !== false) {
+    $ww_js = sicherung_json(ww_sicherung_bauen());
+    if ($ww_js !== '') {
         while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="weissware_einstellungen_'
@@ -756,46 +757,38 @@ if ($ww_post && isset($_POST['ww_sichern'])) {
 
 /* ---------------- Einstellungen zurueckspielen ----------------
  *
- * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
- * Servers unterschieben. Dann die Groessengrenze. Bauliste O7: ein leeres
- * Aktionstoken in der Datei laesst das geltende stehen (mit Hinweis), ein
- * Token in fremder Form wird abgewiesen; die Zweitschrift wird mit dem neuen
- * Stand neu geschrieben (ww_config_speichern()). */
+ * 0.9.55: den Eingang prueft das gemeinsame Sicherungsmodul (sicherung_eingang(), Modul 1.1.0,
+ * Entscheidung des Hausherrn 12.11.2026) - in jeder Linie gleich: zuerst der Haken zurueck_ok (ohne
+ * ihn wird nichts gelesen und nichts geaendert), dann is_uploaded_file() (sonst liesse sich jede
+ * Datei des Servers unterschieben) und die Groessengrenze des Moduls (256 KB wie bisher hier).
+ * Danach liest, prueft und spielt das Modul zurueck (sicherung_zurueckspielen(), Beschreibung
+ * ww_sicherung_beschreibung()): Unbekanntes wird mit Namen verworfen, leere Werte lassen den
+ * bisherigen stehen, eine Beanstandung aendert GAR NICHTS (alle Beanstandungen, nicht nur die
+ * erste). ww_config_speichern() schreibt Konfiguration und Zweitschrift, ww_zugang_speichern() die
+ * Zugangsdaten aus dem Teil "zugang"; das Modul misst danach, ob die Zweitschrift inhaltsgleich ist,
+ * und ww_sicherung_nachziehen() sagt, was mit dem Dienst geschah. */
 if ($ww_post && isset($_POST['ww_zurueck'])) {
-    if (!isset($_FILES['ww_sicherung']) || !is_array($_FILES['ww_sicherung'])
-        || !isset($_FILES['ww_sicherung']['tmp_name']) || !is_string($_FILES['ww_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['ww_sicherung']['tmp_name'])) {
-        $ww_fehler[] = ww_t('EINST.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['ww_sicherung']['size'] > 262144) {
-        $ww_fehler[] = ww_t('EINST.SICH_ZU_GROSS');
+    list($ww_roh, $ww_ab) = sicherung_eingang(ww_sicherung_beschreibung(), $_POST, $_FILES, 'ww_sicherung');
+    if ($ww_ab !== null) {
+        $ww_sm = sicherung_meldungen(ww_sicherung_beschreibung(), $ww_ab);
+        foreach ($ww_sm['fehler'] as $ww_x) { $ww_fehler[] = $ww_x; }
     } else {
-        list($ww_neu, $ww_zneu, $ww_mangel, $ww_n, $ww_shinw) = ww_sicherung_lesen(
-            (string) @file_get_contents($_FILES['ww_sicherung']['tmp_name']));
-        if ($ww_neu === null) {
-            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
-             * nichts. */
-            $ww_fehler[] = ww_t('EINST.SICH_ABGELEHNT') . ' '
-                            . implode(' ', $ww_mangel);
-        } elseif (ww_config_speichern($ww_neu)) {
-            $ww_meldungen[] = sprintf(ww_t('EINST.SICH_UEBERNOMMEN'), $ww_n);
-            foreach ($ww_shinw as $ww_sh) {
-                $ww_hinweise[] = $ww_sh;
-            }
-            if (is_array($ww_zneu) && $ww_zneu && !ww_zugang_speichern($ww_zneu)) {
+        $ww_b = ww_sicherung_beschreibung();
+        $ww_b['speichern'] = function ($neu, $jetzt, $r) use (&$ww_misslungen) {
+            if (!ww_config_speichern($neu)) { return false; }
+            $z = isset($r['teile']['zugang']) ? $r['teile']['zugang'] : null;
+            if (is_array($z) && $z && !ww_zugang_speichern($z)) {
                 $ww_misslungen[] = ww_t('EINST.SICH_ZUGANG_FEHL');
             }
-            /* Den Dienst nachziehen und SAGEN, was mit ihm geschah. */
-            if (ww_dienst_pid() > 0) {
-                list($ww_dok, $ww_daus) = ww_dienst('restart');
-                $ww_meldungen[] = $ww_dok
-                    ? ww_t('EINST.SICH_DIENST_NEU')
-                    : ww_t('EINST.SICH_DIENST_FEHL');
-            } else {
-                $ww_meldungen[] = ww_t('EINST.SICH_DIENST_AUS');
-            }
-        } else {
-            $ww_fehler[] = ww_t('EINST.SICH_SCHREIBFEHLER');
-        }
+            return true;
+        };
+        $ww_b['zweitschrift'] = function () { $p = ww_paths(); return array($p['config'], $p['sicherung']); };
+        $ww_b['nachziehen'] = 'ww_sicherung_nachziehen';
+        $ww_b['log'] = 'ww_log';
+        $ww_r = sicherung_zurueckspielen($ww_b, $ww_roh);
+        $ww_sm = sicherung_meldungen($ww_b, $ww_r);
+        foreach ($ww_sm['fehler'] as $ww_x) { $ww_fehler[] = $ww_x; }
+        foreach ($ww_sm['hinweise'] as $ww_x) { $ww_meldungen[] = $ww_x; }
     }
     $ww_tab = 'tab-settings';
 }
@@ -1536,6 +1529,7 @@ if ($ww_sich_namen) { ?>
     <?php echo ww_fmt(); ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="file" name="ww_sicherung" accept=".json">
+    <?= sicherung_haken_zeile(ww_sicherung_beschreibung()) ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ww_zurueck" value="1"><?= ww_t('EINST.K_ZURUECK') ?></button>
   </form>
 </div>

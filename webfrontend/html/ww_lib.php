@@ -30,6 +30,11 @@ if (!function_exists('ww_e')) {
  * Liegt neben dieser Datei; sie legt beim Einbinden nur Funktionen an und schuetzt sich selbst gegen doppeltes Laden. */
 require_once __DIR__ . '/sprachausgabe.php';
 
+/* Gemeinsames Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, seit 0.9.55): "Einstellungen
+ * sichern" und "Einstellungen zurueckspielen" verhalten sich in allen Plugins des Hauses gleich. Liegt neben
+ * dieser Datei und schuetzt sich selbst gegen doppeltes Laden. */
+require_once __DIR__ . '/sicherung.php';
+
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
@@ -2796,20 +2801,8 @@ function ww_ansage_check()
 }
 
 
-/**
- * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
- *
- * Die sieben Punkte aus REGELN_2, und der wichtigste ist der dritte: eine
- * halb gueltige Datei ueberschreibt GAR NICHTS. Wer eine Sicherung
- * zurueckspielt, will entweder den ganzen Stand oder gar keinen - eine zur
- * Haelfte uebernommene Konfiguration ist schlimmer als die alte, und man
- * sieht es ihr nicht an.
- *
- * Unbekannte Schluessel sind eine Beanstandung, kein stiller Verlust: sie
- * stammen aus einer anderen Fassung oder einem anderen Plugin.
- *
- * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
- */
+/* Die beiden Stufen der Wertpruefung (Formular, Sicherung, Endpunkt). Das Lesen einer Sicherung macht seit
+ * 0.9.55 das gemeinsame Sicherungsmodul (ww_sicherung_beschreibung() unten). */
 /**
  * Taugt der Wert ueberhaupt fuer eine Konfigurationsdatei?
  *
@@ -2895,261 +2888,264 @@ function ww_wert_pruefen($schluessel, $w)
     return true;
 }
 
-/** Die Sprachausgabe ist der einzige Schluessel mit einem Unterbau. Seit 0.9.39 prueft die gemeinsame
- *  Sprachausgabe jeden Wert - dieselbe Pruefung wie das Formular (Heimnetz fuer Adresse und Vorlage,
- *  Entscheidung Nr. 40). Ein Sprechtoken in der Datei weist sie ab (Bauliste A1): Sicherungen tragen es nie;
- *  leer ("") ist erlaubt und laesst das geltende stehen. Ein Eintrag, den das Modul nicht kennt, ist fremd. */
-function ww_tts_pruefen($w, &$mangel)
+/**
+ * 0.9.55: Die Schluessel, die eine aeltere Sicherung dieser Linie noch nicht
+ * kennen konnte (gemessen an ww_vorgaben() jeder Fassung 0.9.18 bis 0.9.54 und
+ * mit Werkzeuge/sicherung_pruefstand.py --alt alle). Fehlen sie in der Datei,
+ * behalten sie den geltenden Wert, und die Meldung nennt sie (Regeln/05 Punkt
+ * 6). Bis 0.9.54 begann das Zurueckspielen beim geltenden Stand; ein fehlender
+ * Schluessel blieb deshalb schon dort stehen, aber ungenannt.
+ */
+function ww_sicherung_spaete_schluessel()
 {
-    if (!is_array($w)) {
-        $mangel[] = sprintf(ww_t('EINST.SICH_WERT'), 'tts');
-        return false;
-    }
-    $ok = true;
-    foreach (array('alexa_token', 'google_token') as $f) {
-        if (array_key_exists($f, $w) && $w[$f] !== '') {
-            $mangel[] = sprintf(ww_t('EINST.SICH_SPRECHTOKEN'), 'tts.' . $f);
-            $ok = false;
-        }
-    }
-    foreach ($w as $f => $wert) {
-        $f = (string) $f;
-        if ($f === 'alexa_token' || $f === 'google_token') {
-            continue;
-        }
-        // Welle Mehrfach-Ziele (0.9.44): die Liste 'ziele' gehoert dazu (ww_ansage_schluessel()) - bis dahin "fremd"
-        if (!in_array($f, ww_ansage_schluessel(), true)) {
-            $mangel[] = sprintf(ww_t('EINST.SICH_FREMD'), htmlspecialchars('tts.' . $f, ENT_QUOTES, 'UTF-8'));
-            $ok = false;
-            continue;
-        }
-        $g = '';
-        if (ansage_wert_pruefen(array($f => $wert), $g, ww_ansage_modi()) === null) {
-            $mangel[] = sprintf(ww_t('EINST.SICH_WERT'), 'tts.' . $f);
-            $ok = false;
-        }
-    }
-    return $ok;
+    return array('mqtt_topic_alt', 'befehle_mqtt_ein', 'endpunkt_ein', 'auto_geraete', 'auto_quelle', 'auto_von',
+                 'auto_frist', 'auto_stunden', 'auto_soc', 'auto_frist_start', 'ansage_regeln');
 }
 
 /**
- * Baut den Inhalt der Sicherungsdatei.
+ * Ist dieser Wert fuer diesen Schluessel zulaessig? '' = ja, sonst der Satz
+ * (fertig maskiert). Dieselbe Pruefung wie bis 0.9.54 in ww_sicherung_lesen():
+ * erst die Form (ww_wert_taugt()), dann die Regel des Formulars
+ * (ww_wert_pruefen()); die Liste frueherer Praefixe hoechstens 20 Eintraege,
+ * jeder in der Form von ww_praefix_ok(). Ein leeres Aktionstoken ist kein
+ * Mangel: es heisst "keins gesichert", und das geltende bleibt (Regel 3 des
+ * Moduls).
+ */
+function ww_sicherung_wert_mangel($k, $w)
+{
+    if ($k === 'mqtt_topic_alt') {
+        $ok = is_array($w) && count($w) <= 20 && array_values($w) === $w;
+        if ($ok) {
+            foreach ($w as $x) {
+                if (!ww_praefix_ok($x)) { $ok = false; }
+            }
+        }
+        return $ok ? '' : sprintf(ww_t('EINST.SICH_WERT'), 'mqtt_topic_alt');
+    }
+    if (!ww_wert_taugt($w) || !ww_wert_pruefen($k, $w)) {
+        return sprintf(ww_t('EINST.SICH_WERT'), ww_e((string) $k));
+    }
+    return '';
+}
+
+/**
+ * 0.9.55: Die Beschreibung dieser Linie fuer das gemeinsame Sicherungsmodul
+ * (Werkzeuge/gemeinsam/sicherung.php, Abschrift sicherung.php neben dieser
+ * Datei; Auftrag des Hausherrn 12.11.2026). Lesen, Pruefen und Zurueckspielen
+ * macht das Modul. Bis 0.9.54 stand hier eine eigene Schleife
+ * (ww_sicherung_lesen()): ein unbekannter Schluessel - oben wie in den Bloecken
+ * tts und zugang - wies die ganze Datei ab, eine Datei ohne Kennzeichen oder
+ * mit dem eines anderen Plugins wurde gelesen wie eine eigene, und ein leerer
+ * Wert, der nicht leer sein darf, wies die Datei ab (gemessen 15.11.2026 an
+ * 0.9.54 mit Werkzeuge/sicherung_pruefstand.py --profil ist, Klasse A).
+ *
+ * Seither: der Kopf traegt _plugin = 'LoxBerry-Plugin-Weissware' (Name des
+ * Repositorys; bis 0.9.54 gab es kein Kennzeichen) und _fassung; eine Datei mit
+ * fremdem Kennzeichen wird abgewiesen, eine ohne nur dann gelesen, wenn sie
+ * eine aeltere eigene Sicherung ist (ww_sicherung_alt_erkennen(), ab 0.9.18);
+ * unbekannte Schluessel oben und in den Bloecken werden verworfen und mit
+ * Namen gemeldet; ein leerer Wert ueberschreibt keinen bestehenden.
+ *
+ * Wie bisher: jeder Wert geht durch ww_sicherung_wert_mangel() (dieselbe
+ * Positivliste wie das Formular); der Block tts Feld fuer Feld durch
+ * ansage_wert_pruefen(), eine Datei mit Sprechtoken wird abgewiesen; der Block
+ * ansage_regeln durch ansage_regeln_wert() und in dessen Normalform
+ * uebernommen; die Zugangsdaten der Anbieter stehen im Teil "zugang" und gehen
+ * nach zugang.json, nicht in die Konfiguration; fehlt das Aktionstoken, wird
+ * die Datei abgewiesen; eine halb gueltige Datei aendert nichts, alle
+ * Beanstandungen werden gesammelt; der Vermerk ansage_token_herkunft kommt nie
+ * aus einer Datei und behaelt seinen geltenden Wert (Modul 1.2.1).
+ */
+function ww_sicherung_beschreibung()
+{
+    $p = ww_paths();
+    $tts_s = array_merge(ww_ansage_schluessel(), ansage_geheim());
+    $tts_knoten = array();
+    if (ww_mit_zielen()) {
+        $tts_knoten['ziele'] = sicherung_liste(array('art', 'wo', 'laut', 'sprache', 'ein')) + array('fehlt' => 'behalten');
+    }
+    $schluessel = array(
+        'tts' => sicherung_block($tts_s, $tts_knoten) + array(
+            'sichern' => 'ansage_sicherung_bereinigen',
+            'pruefen' => function ($w, $k = '', $neu = null, $roh = null) {
+                /* Bauliste A1: eine Sicherung dieses Plugins traegt nie ein Sprechtoken - traegt die Datei eines,
+                 * wird sie abgewiesen. Gemessen am Block der DATEI, denn Regel 3 des Moduls setzt ein leeres Feld
+                 * vorher auf den geltenden Wert. */
+                $m = array();
+                foreach (ansage_sicherung_mangel($roh) as $n) {
+                    $m[] = sprintf(ww_t('EINST.SICH_SPRECHTOKEN'), ww_e($n));
+                }
+                if ($m) { return $m; }
+                if (!is_array($w)) { return sprintf(ww_t('EINST.SICH_WERT'), 'tts'); }
+                foreach ($w as $f => $wert) {
+                    if (in_array((string) $f, ansage_geheim(), true)) { continue; }
+                    $g = '';
+                    if (ansage_wert_pruefen(array($f => $wert), $g, ww_ansage_modi()) === null) {
+                        $m[] = sprintf(ww_t('EINST.SICH_WERT'), ww_e('tts.' . $f));
+                    }
+                }
+                return $m;
+            }),
+        'ansage_regeln' => sicherung_block(array_keys(ansage_regeln_vorgaben())) + array(
+            'pruefen' => function ($w) {
+                $g = '';
+                return ansage_regeln_wert($w, $g) === null ? sprintf(ww_t('EINST.SICH_WERT'), 'ansage_regeln') : '';
+            },
+            'wandeln' => function ($w) {
+                $g = '';
+                return ansage_regeln_wert($w, $g);
+            }),
+        'zugang' => sicherung_block(array('hc_client_id', 'hc_client_secret', 'miele_client_id',
+                                          'miele_client_secret', 'st_token')),
+    );
+    foreach (ww_sicherung_spaete_schluessel() as $s) {
+        if (!isset($schluessel[$s])) { $schluessel[$s] = array(); }
+        $schluessel[$s]['fehlt'] = 'behalten';
+    }
+    return array(
+        'kennzeichen' => 'LoxBerry-Plugin-Weissware',
+        /* Der Kopftext wie bis 0.9.54: ww_sicherung_alt_erkennen() erkennt aeltere Sicherungen an seinem Anfang. */
+        'hinweis' => 'Sicherung des Plugins Weissware Cloud. Enthaelt das '
+                   . 'Aktionstoken und die Zugangsdaten der Anbieter - wie ein '
+                   . 'Passwort behandeln. Die Sprechtoken fuer Alexa-NG und '
+                   . 'Chromecast 4 Lox NG sind nicht enthalten; nach dem '
+                   . 'Zurueckspielen bleiben die geltenden.',
+        /* Die Fassung im Kopf kommt aus der Plugin-Datenbank bzw. plugin.cfg - keine fuenfte Stelle neben den
+         * vier, die Werkzeuge/fassung_setzen.py pflegt. */
+        'home' => (string) $p['home'], 'ordner' => (string) $p['plugin'],
+        'plugin_cfg' => dirname(dirname(__DIR__)) . '/plugin.cfg',
+        'vorgaben' => ww_vorgaben(),
+        'schluessel' => $schluessel,
+        'nie_aus_datei' => array('ansage_token_herkunft'),
+        'teile' => array('zugang' => 'ww_sicherung_zugang_teil'),
+        'teile_jetzt' => array('zugang' => function () { return ww_json_lesen(ww_paths()['zugang']); }),
+        'pruefen' => function ($k, $w) {
+            return ww_sicherung_wert_mangel($k, $w);
+        },
+        'uebersetzer' => 'ww_sicherung_alt_erkennen',
+        'vorbereiten' => 'ww_sicherung_vorbereiten',
+        'jetzt' => function () { return ww_config(); },
+        't' => 'ww_t',
+        'e' => 'ww_e',
+    );
+}
+
+/**
+ * 0.9.55: Der Teil "zugang" der Sicherung (die Zugangsdaten der drei Anbieter,
+ * gespeichert in zugang.json). Jeder Wert wie bis 0.9.54: Form nach
+ * ww_wert_taugt(), hoechstens 512 Zeichen. Rueckgabe array(Werte|null,
+ * Beanstandungen). Unbekannte Felder hat das Modul vorher verworfen und
+ * genannt, ein leeres Feld traegt dort schon den geltenden Wert.
+ */
+function ww_sicherung_zugang_teil($w, $jetzt = null)
+{
+    if (!is_array($w)) {
+        return array(null, array(sprintf(ww_t('EINST.SICH_WERT'), 'zugang')));
+    }
+    $m = array();
+    $z = array();
+    foreach ($w as $zk => $zw) {
+        if (!ww_wert_taugt($zw) || strlen((string) $zw) > 512) {
+            $m[] = sprintf(ww_t('EINST.SICH_WERT'), ww_e('zugang.' . $zk));
+            continue;
+        }
+        $z[(string) $zk] = (string) $zw;
+    }
+    return $m ? array(null, $m) : array($z, array());
+}
+
+/**
+ * 0.9.55: Eine Sicherung dieser Linie aus der Zeit vor dem Kennzeichen _plugin
+ * (0.9.18 bis 0.9.54) traegt den lesbaren Kopf _hinweis, den nur der
+ * Sichern-Knopf dieser Linie schreibt, fest im Code und in jeder Sprache gleich.
+ * Gemessen 15.11.2026 an allen Fassungen 0.9.15 bis 0.9.54 (Ordner und
+ * Archive): ab 0.9.18 ein einziger Wortlaut, er beginnt mit "Sicherung des
+ * Plugins Weissware Cloud. Enthaelt das". Daran wird sie erkannt. 0.9.15 bis
+ * 0.9.17 schrieben keinen Kopf; eine solche Datei ist nicht sicher von einer
+ * fremden zu unterscheiden und wird abgewiesen (Entscheidung des Hausherrn
+ * 12.11.2026). Rueckgabe: die Daten oder null.
+ */
+function ww_sicherung_alt_erkennen($d)
+{
+    return (is_array($d) && isset($d['_hinweis']) && is_string($d['_hinweis'])
+            && strpos($d['_hinweis'], 'Sicherung des Plugins Weissware Cloud. Enthaelt das') === 0)
+        ? $d : null;
+}
+
+/**
+ * Die Sicherung, die "Einstellungen sichern" ausgibt: der lesbare Kopf
+ * (_hinweis, _plugin, _fassung, _stand, bei Bedarf _warnung), alle Schluessel
+ * der Vorgaben aus der geltenden Konfiguration und der Teil "zugang" aus
+ * zugang.json, gebaut vom gemeinsamen Sicherungsmodul (sicherung_bauen()).
  *
  * Zweck der beiden Knoepfe ist der UMZUG auf einen zweiten LoxBerry. Deshalb
- * gehoeren die Zugangsdaten hinein - ohne sie stuenden dort alle Felder
- * richtig, und das Plugin kaeme trotzdem an keinen Anbieter. Bis 0.9.17 gab
- * die Ausfuhr nur ww_config() aus; der Warntext am Knopf versprach dennoch
- * "Die Datei enthaelt Ihre Zugangsdaten", und das stimmte nicht.
- *
- * Der Formulartoken gehoert NICHT hinein: er ist ein Sitzungsmerkmal und
- * wohnt ohnehin im Datenverzeichnis, nicht in der Konfiguration.
+ * gehoeren Aktionstoken und Zugangsdaten hinein; die Sprechtoken nicht (Bauliste
+ * A1), der Vermerk ansage_token_herkunft auch nicht, der Formulartoken nicht.
+ * X-3 wie bisher: wuerde das eigene Zurueckspielen die Datei abweisen, nennt
+ * _warnung die Namen, nie Werte; geliefert wird sie trotzdem.
  */
 function ww_sicherung_bauen()
 {
     $cfg = ww_config();
-    /* Die Sprechtoken von Alexa-NG und Chromecast 4 Lox NG gehoeren NICHT
-     * hinein (Bauliste A1): eine Datei mit Token wird beim Zurueckspielen
-     * abgewiesen, und nach dem Zurueckspielen bleiben die geltenden. */
-    $tts = ansage_sicherung_bereinigen(ww_tts());   // Nr. 36 b: ohne Sprechtoken, eine Quelle
-    $cfg['tts'] = $tts;
-    unset($cfg['ansage_token_herkunft']);     // 0.9.47
-    $cfg['_hinweis'] = 'Sicherung des Plugins Weissware Cloud. Enthaelt das '
-                     . 'Aktionstoken und die Zugangsdaten der Anbieter - wie ein '
-                     . 'Passwort behandeln. Die Sprechtoken fuer Alexa-NG und '
-                     . 'Chromecast 4 Lox NG sind nicht enthalten; nach dem '
-                     . 'Zurueckspielen bleiben die geltenden.';
-    $cfg['_stand']   = date('Y-m-d H:i:s');
-    $cfg['zugang']   = ww_json_lesen(ww_paths()['zugang']);
-    /* X-3 (Bauliste O6): was beim Zurueckspielen abgewiesen wuerde, steht mit
-     * NAMEN (nie mit Wert) unter _warnung; die Datei bleibt vollstaendig. */
-    $namen = ww_sicherung_warnung($cfg);
-    if ($namen) {
-        $cfg['_warnung'] = 'Diese Werte wuerden beim Zurueckspielen abgewiesen und sollten '
-                         . 'vorher berichtigt werden: ' . implode(', ', $namen);
-    }
-    return $cfg;
+    $cfg['tts'] = ww_tts($cfg);
+    return sicherung_bauen(ww_sicherung_beschreibung(), $cfg,
+                           array('zugang' => ww_json_lesen(ww_paths()['zugang'])));
 }
 
 /**
- * Welche Schluessel einer Sicherung wuerden beim Zurueckspielen abgewiesen?
- * Nur die NAMEN (X-3, Bauliste O6). Ohne Argument: der gespeicherte Stand.
+ * Welche Schluessel der eigenen Sicherung wuerden beim Zurueckspielen
+ * abgewiesen? Nur die NAMEN (X-3, Bauliste O6). Seit 0.9.55 dieselbe Pruefung
+ * wie beim Zurueckspielen ueber das Modul (sicherung_selbstpruefung()) an genau
+ * der Datei, die "Einstellungen sichern" liefert.
  */
-function ww_sicherung_warnung($daten = null)
+function ww_sicherung_warnung()
 {
-    if (!is_array($daten)) {
-        $daten = ww_config();
-        $tts = ansage_sicherung_bereinigen(ww_tts());   // Nr. 36 b: ohne Sprechtoken
-        $daten['tts'] = $tts;
-        unset($daten['ansage_token_herkunft']);     // 0.9.47
-        $daten['zugang'] = ww_json_lesen(ww_paths()['zugang']);
-    }
-    $namen = array();
-    $json = json_encode($daten, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($json === false) {
-        return array('(nicht als JSON darstellbar)');
-    }
-    ww_sicherung_lesen($json, $namen);
-    return $namen;
+    $daten = ww_sicherung_bauen();
+    unset($daten['_warnung']);
+    return sicherung_selbstpruefung(ww_sicherung_beschreibung(), $daten, ww_config());
 }
 
 /**
- * Liest eine Sicherungsdatei.
- *
- * Die sieben Punkte aus REGELN_2, und der wichtigste ist der dritte: eine
- * halb gueltige Datei ueberschreibt GAR NICHTS. Wer eine Sicherung
- * zurueckspielt, will entweder den ganzen Stand oder gar keinen - eine zur
- * Haelfte uebernommene Konfiguration ist schlimmer als die alte, und man
- * sieht es ihr nicht an.
- *
- * Grundlage ist der BESTAND, nicht die Werkseinstellung. Bis 0.9.17 begann
- * die Funktion mit ww_vorgaben(); alles, was in der Datei fehlte, kam damit
- * aus den Vorgaben. Gemessen: eine Sicherung ohne 'aktionstoken' wurde
- * angenommen, meldete "17 Werte uebernommen" - und setzte das Token auf leer.
- * Der Endpunkt antwortet danach KEIN_TOKEN_GESETZT, jeder Virtuelle Eingang
- * bekommt 403 und wertet ihn nicht aus, und beim naechsten Oeffnen der
- * Oberflaeche wird ein neues Token gewuerfelt: jede im Miniserver eingetragene
- * Adresse ist still tot.
- *
- * Rueckgabe: array(Konfiguration|null, Zugangsdaten|null, Beanstandungen[],
- *                  uebernommene Werte).
+ * 0.9.55: Vor dem Speichern (Rueckruf 'vorbereiten' des Moduls). Der Block tts
+ * wird wie bis 0.9.54 gebildet: was die Datei nicht traegt, kommt aus dem
+ * Werksblock (ohne dessen Ziele - die erbt keine Datei, 0.9.47), und die
+ * geltenden Sprechtoken bleiben (die Sicherung traegt keine). Fehlt die Liste
+ * der weiteren Ziele, hat das Modul vorher die geltende eingesetzt und nennt
+ * sie (tts.ziele).
  */
-function ww_sicherung_lesen($roh, &$namen = null)
+function ww_sicherung_vorbereiten($neu, $jetzt, $r)
 {
-    /* $namen sammelt die Schluessel mit unzulaessigem Wert (fuer X-3). Ein
-     * fuenftes Feld der Rueckgabe traegt Hinweise, die keine Beanstandung
-     * sind (leeres Aktionstoken: das geltende bleibt, Bauliste O7). */
-    $namen = array();
+    if (isset($neu['tts']) && is_array($neu['tts'])) {
+        $werk = ww_vorgaben();
+        $werk = is_array($werk['tts']) ? $werk['tts'] : array();
+        $neu['tts'] = array_merge(array_diff_key($werk, array('ziele' => 1)), $neu['tts']);
+        $neu['tts'] = ansage_sicherung_tokens_behalten($neu['tts'], ww_tts(is_array($jetzt) ? $jetzt : array()));
+    }
+    return $neu;
+}
+
+/**
+ * 0.9.55: Nach dem Zurueckspielen: Zugangsdaten schreiben, Dienst nachziehen
+ * und SAGEN, was geschah (Regeln/05). Rueckgabe array(Hinweise, Fehler),
+ * fertig maskiert.
+ *  - Ein leeres Aktionstoken in der Datei liess das geltende stehen (Regel 3
+ *    des Moduls); der Satz dazu wie bis 0.9.54 (Bauliste O7).
+ *  - Der Dienst liest die Konfiguration bei jedem Takt; laeuft er, wird er mit
+ *    den neuen Einstellungen neu gestartet, sonst bleibt er aus.
+ */
+function ww_sicherung_nachziehen($neu, $jetzt, $r)
+{
     $hinweise = array();
-    $mangel = array();
-    $daten = json_decode((string) $roh, true);
-    if (!is_array($daten)) {
-        return array(null, null, array(ww_t('EINST.SICH_KEIN_JSON')), 0, array());
+    if (in_array('aktionstoken', $r['leer_behalten'], true)) {
+        $hinweise[] = ww_t('EINST.SICH_TOKEN_LEER');
     }
-    $neu = ww_config();
-    $bekannt = array_keys(ww_vorgaben());
-    $zugang = null;
-    $anzahl = 0;
-    $hatte_token = false;
-    foreach ($daten as $k => $w) {
-        // Der lesbare Kopf wird UEBERGANGEN, nicht beanstandet.
-        if ($k !== '' && $k[0] === '_') {
-            continue;
-        }
-        if ($k === 'zugang') {
-            if (!is_array($w)) {
-                $mangel[] = sprintf(ww_t('EINST.SICH_WERT'), 'zugang');
-                continue;
-            }
-            $zfelder = array('hc_client_id', 'hc_client_secret', 'miele_client_id',
-                             'miele_client_secret', 'st_token');
-            $zneu = array();
-            foreach ($w as $zk => $zw) {
-                if (!in_array($zk, $zfelder, true)) {
-                    $mangel[] = sprintf(ww_t('EINST.SICH_FREMD'),
-                        htmlspecialchars('zugang.' . (string) $zk, ENT_QUOTES, 'UTF-8'));
-                    continue;
-                }
-                if (!ww_wert_taugt($zw) || strlen((string) $zw) > 512) {
-                    $mangel[] = sprintf(ww_t('EINST.SICH_WERT'), 'zugang.' . $zk);
-                    $namen[] = 'zugang.' . $zk;
-                    continue;
-                }
-                $zneu[$zk] = (string) $zw;
-                $anzahl++;
-            }
-            $zugang = $zneu;
-            continue;
-        }
-        if ($k === 'ansage_token_herkunft') { continue; }     // S2: nie aus einer Datei
-        if ($k === 'ansage_regeln') {     // S2: ungueltig = abgewiesen, gueltig = uebernommen
-            $s2_g = '';
-            $s2_r = ansage_regeln_wert($w, $s2_g);
-            if ($s2_r === null) { $mangel[] = sprintf(ww_t('EINST.SICH_WERT'), 'ansage_regeln'); $namen[] = 'ansage_regeln'; continue; }
-            $neu['ansage_regeln'] = $s2_r;
-            $anzahl++;
-            continue;
-        }
-        if (!in_array($k, $bekannt, true)) {
-            $mangel[] = sprintf(ww_t('EINST.SICH_FREMD'),
-                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
-            continue;
-        }
-        if ($k === 'tts') {
-            $vorher = count($mangel);
-            if (ww_tts_pruefen($w, $mangel)) {
-                /* Die geltenden Sprechtoken bleiben (Bauliste A1). */
-                $akt = ww_tts();
-                $neu['tts'] = array_merge(array_diff_key(ww_vorgaben()['tts'], array('ziele' => 1)), $w);     // 0.9.47: die Werk-Ziele erbt keine Datei
-                $neu['tts']['alexa_token'] = $akt['alexa_token'];
-                $neu['tts']['google_token'] = $akt['google_token'];
-                $ww_tjetzt = array('tts' => $akt);
-                $ww_spaet = array();
-                /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1, Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei einer
-                 * aelteren Fassung), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis. Eine Sicherung MIT leerer Liste
-                 * heisst "keine weiteren Ziele" und wird so uebernommen. */
-                $ww_spaete = array();
-                if (is_array($neu['tts']) && function_exists('ansage_sicherung_spaet')) {
-                    list($neu['tts'], $ww_spaete) = ansage_sicherung_spaet($neu['tts'],
-                        (isset($ww_tjetzt['tts']) && is_array($ww_tjetzt['tts'])) ? $ww_tjetzt['tts'] : null);
-                }
-                foreach ($ww_spaete as $ww_sn) { $ww_spaet[] = $ww_sn; }     // Welle Mehrfach-Ziele: tts.ziele (Spaetliste)
-                if ($ww_spaet) { $hinweise[] = sprintf(ww_t('EINST.SICH_SPAET'), implode(', ', $ww_spaet)); }
-                $anzahl++;
-            } elseif (count($mangel) > $vorher) {
-                $namen[] = 'tts';
-            }
-            continue;
-        }
-        if ($k === 'mqtt_topic_alt') {
-            /* Bauliste I6: eine Liste frueherer Praefixe, hoechstens 20. */
-            $liste_ok = is_array($w) && count($w) <= 20 && array_values($w) === $w;
-            if ($liste_ok) {
-                foreach ($w as $x) {
-                    if (!ww_praefix_ok($x)) { $liste_ok = false; }
-                }
-            }
-            if (!$liste_ok) {
-                $mangel[] = sprintf(ww_t('EINST.SICH_WERT'), 'mqtt_topic_alt');
-                $namen[] = 'mqtt_topic_alt';
-                continue;
-            }
-            $neu[$k] = $w;
-            $anzahl++;
-            continue;
-        }
-        if (!ww_wert_taugt($w) || !ww_wert_pruefen($k, $w)) {
-            $mangel[] = sprintf(ww_t('EINST.SICH_WERT'),
-                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
-            $namen[] = (string) $k;
-            continue;
-        }
-        if ($k === 'aktionstoken') {
-            $hatte_token = true;
-            if ((string) $w === '') {
-                /* Bauliste O7 (02.10.2026): ein leeres Token in der Datei
-                 * laesst das geltende stehen - mit Hinweis. Bis 0.9.36 wurde
-                 * es leer gespeichert, die Selbstheilung holte beim naechsten
-                 * Seitenaufbau die alte Konfiguration zurueck, die Zugangsdaten
-                 * aus der Datei blieben: ein Mischzustand ohne Hinweis
-                 * (weissware_agenten/oberflaeche Befund 8). */
-                $hinweise[] = ww_t('EINST.SICH_TOKEN_LEER');
-                continue;
-            }
-        }
-        $neu[$k] = $w;
-        $anzahl++;
+    if (ww_dienst_pid() > 0) {
+        list($ok, ) = ww_dienst('restart');
+        $hinweise[] = $ok ? ww_t('EINST.SICH_DIENST_NEU') : ww_t('EINST.SICH_DIENST_FEHL');
+    } else {
+        $hinweise[] = ww_t('EINST.SICH_DIENST_AUS');
     }
-    if ($anzahl === 0) {
-        $mangel[] = ww_t('EINST.SICH_LEER');
-    }
-    /* Fehlt das Aktionstoken, obwohl sonst etwas uebernommen wurde, wird die
-     * Datei ABGEWIESEN statt das Token auf leer zu setzen. Das ist der Fall,
-     * der jede Loxone-Adresse still entwertet hat. */
-    if ($anzahl > 0 && !$hatte_token) {
-        $mangel[] = ww_t('EINST.SICH_OHNE_TOKEN');
-    }
-    return array($mangel ? null : $neu, $mangel ? null : $zugang, $mangel, $anzahl,
-                 $mangel ? array() : $hinweise);
+    return $hinweise;
 }
 
 /* ==================================================================

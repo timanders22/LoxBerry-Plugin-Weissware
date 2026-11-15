@@ -24,6 +24,10 @@
 #                                 startet auch der Waechter nicht mehr
 #                                 (bin/dienst.sh, Zweig 'waechter'): das Plugin
 #                                 schaltete sich beim Update still selbst ab.
+# [upgrade_daten] Argumente des Installers festhalten - unten sichert der gemeinsame Baustein
+# [upgrade_daten] upgrade_daten.sh (neben diesem Skript) den ganzen Datenordner.
+UPGD_ORDNER="$3"; UPGD_WURZEL="$5"
+
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-weissware}"
@@ -436,4 +440,30 @@ if [ -n "$WW_GESCHEITERT" ]; then
     exit 2
 fi
 echo "<OK> preupgrade abgeschlossen."
+# Baustein upgrade_daten.sh 1.1.0 (15.11.2026): was dieses Update bewusst NICHT ueberlebt - befehle/ und
+# antworten/ (ein Auftrag oder eine Antwort von vor dem Update soll danach nicht mehr wirken; mit Baustein 1.0.0
+# kam ein vier Sekunden alter Auftrag zurueck, der Dienst verwirft erst ab 60 s), hc_anmeldung.json und
+# miele_code (eine begonnene Anmeldung gilt Minuten; geschrieben von weissware.py bzw. ww_miele_code_ablegen()).
+# Alles andere im Datenordner traegt der Baustein ueber das Update.
+UPGD_OHNE="befehle antworten hc_anmeldung.json miele_code"
+# Der Fehlerweg, wenn der Baustein den Datenordner nicht sichern kann: die Aktualisierung bricht ab, die
+# bisherige Fassung bleibt installiert - und der Dienstmerker kommt zurueck wie im eigenen Fehlerweg oben,
+# sonst bliebe der Dienst aus (bin/dienst.sh, Zweig waechter, startet nur mit soll_laufen). Die Marke
+# entfernt der Baustein selbst, bevor er diese Funktion ruft.
+upgd_bei_fehler() {
+    if [ -f "$SICHER/$PFOLDER.backup.lief" ]; then
+        : > "$PDATA/soll_laufen"
+        echo "<INFO> Der Dienst lief vor dem Update - der Merker soll_laufen ist wieder gesetzt, der Waechter im Minutentakt startet ihn."
+    fi
+    return 0
+}
+# [upgrade_daten] Gemeinsamer Baustein (Werkzeuge/gemeinsam/upgrade_daten.sh): den ganzen Datenordner
+# [upgrade_daten] neben den Ordner sichern; misslingt das, bricht die Aktualisierung mit Rueckgabe 2 ab.
+if [ -f "$(dirname "$0")/upgrade_daten.sh" ] && . "$(dirname "$0")/upgrade_daten.sh"; then
+    upgrade_daten_sichern "$UPGD_ORDNER" "$UPGD_WURZEL" || exit 2
+else
+    echo "<FAIL> Der Baustein upgrade_daten.sh fehlt neben $(basename "$0") - die Aktualisierung wird abgebrochen,"
+    echo "<FAIL> die bisherige Fassung bleibt installiert."
+    exit 2
+fi
 exit 0
