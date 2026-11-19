@@ -2039,7 +2039,8 @@ function ww_bausteinseiten()
 <tr><th style="width:36px;">&nbsp;</th><th><?= ww_e(ww_t('TEST.T_FRAGE')) ?></th><th><?= ww_e(ww_t('TEST.T_BEFUND')) ?></th></tr>
 <?php foreach (ww_pruefungen($ww_tab === 'tab-test') as $ww_z) { ?>
 <tr><td style="text-align:center;"><?php
-    if ($ww_z['stand'] === 1) { echo '<span class="sm-an">&#10004;</span>'; }
+    if (isset($ww_z['uhr'])) { echo uhr_zeichen($ww_z['uhr']); }
+    elseif ($ww_z['stand'] === 1) { echo '<span class="sm-an">&#10004;</span>'; }
     elseif ($ww_z['stand'] === 0) { echo '<span class="sm-aus">&#10008;</span>'; }
     else { echo '<span style="color:#888;">&#9679;</span>'; }
 ?></td><td><?= $ww_z['frage'] ?></td><td><?= $ww_z['antwort'] ?></td></tr>

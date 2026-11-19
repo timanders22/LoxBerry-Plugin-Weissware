@@ -35,6 +35,7 @@ Aufrufe:
 from __future__ import annotations
 
 import json
+import uhrabgleich  # gemeinsames Uhrmodul (Frage 95), Abschrift bin/uhrabgleich.py
 import logging
 import os
 import re
@@ -3562,7 +3563,9 @@ def _dienst_lauf(einmal: bool = False) -> int:
 
     # Der Mitschnitt liegt UM die Sitzung, nicht in den einzelnen Aufrufen:
     # sonst muesste jede der vierzehn Stellen daran denken.
-    sitzung = Mitschnittsitzung(requests.Session(), config)
+    _uhr_echt = requests.Session()
+    _uhr_echt.hooks["response"].append(uhrabgleich.uhr_requests_haken(str(PDATA)))  # Uhrmodul (Frage 95), nur lesend
+    sitzung = Mitschnittsitzung(_uhr_echt, config)
     # Bauliste C6: der zuletzt abgelegte Stand, nicht leer (stand_laden()).
     stand = stand_laden()
     # Beendete Laeufe werden nur gegen einen Stand DIESES Dienstes gezaehlt:

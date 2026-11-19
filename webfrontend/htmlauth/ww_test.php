@@ -612,6 +612,13 @@ function ww_pruefungen($offen = false)
             $al === null ? ww_t('AUTO.NOCH_KEIN_LAUF') : ww_e(ww_t(isset($gr[$g]) ? $gr[$g] : 'AUTO.G0')));
     }
 
+    /* Gemeinsames Uhrmodul (Frage 95): Systemuhr gegen die Kopfzeile Date der Cloud - nur melden. */
+    list($uhr_s, $uhr_t) = uhr_pruefzeile(array('ordner' => $p['datadir'], 'dienst' => 'Hersteller-Cloud', 't' => 'ww_t'));
+    $uhr_z = ww_pruefzeile($uhr_s === 1 ? 1 : -1, htmlspecialchars(uhr_frage(array('t' => 'ww_t')), ENT_QUOTES, 'UTF-8'),
+        htmlspecialchars($uhr_t, ENT_QUOTES, 'UTF-8'));
+    $uhr_z['uhr'] = $uhr_s;
+    $zeilen[] = $uhr_z;
+
     return $zeilen;
 }
 
