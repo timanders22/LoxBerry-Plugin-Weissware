@@ -389,7 +389,7 @@ if ($ww_post && isset($_POST['speichern'])) {
             if (substr($ww_an, -9) === '_loeschen') { $ww_ahk[] = $ww_an; } else { $ww_ax2[] = $ww_an; }
         }
         $ww_eingaben = ww_eingaben_sammeln('settings',
-            array_merge(array('takt_ruhe', 'takt_betrieb', 'wartezeit', 'sprache', 'ansage_ruhe_von', 'ansage_ruhe_bis', 'ansage_sperre_min',
+            array_merge(array('takt_ruhe', 'takt_betrieb', 'wartezeit', 'sprache', 'ansage_ruhe_von', 'ansage_ruhe_bis', 'ansage_ruhe_bis_frei' /* 0.9.61, Stamm 1.5.0 */, 'ansage_sperre_min',
                               'hc_client_id', 'miele_client_id', 'ansage_tafel_namen', 'ansage_homepod_geraet'), $ww_ax2),     // 0.9.50: Tafel und HomePod dazu
             array_merge($ww_haken_liste, $ww_ahk, array('ansage_ruhe_ein', 'ansage_tafel_ein', 'ansage_homepod_ein')), $ww_falsch);
         $ww_eingaben['werte'] += ww_ziele_x2_werte($_POST);     // Welle Mehrfach-Ziele (0.9.44): die Tabelle als name[N]
