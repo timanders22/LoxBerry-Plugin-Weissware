@@ -29,11 +29,13 @@ if (!function_exists('ww_e')) {
  * Nr. 36 b, Stufe 1; seit 0.9.44 Stamm 1.2.1 mit weiteren Ausgabezielen, ww_mit_zielen(), Welle Mehrfach-Ziele).
  * Liegt neben dieser Datei; sie legt beim Einbinden nur Funktionen an und schuetzt sich selbst gegen doppeltes Laden. */
 require_once __DIR__ . '/sprachausgabe.php';
+require_once __DIR__ . '/meldung.php';     // Statusmeldungen an SignalBot (seit 0.9.62)
 
 /* Gemeinsames Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, seit 0.9.55): "Einstellungen
  * sichern" und "Einstellungen zurueckspielen" verhalten sich in allen Plugins des Hauses gleich. Liegt neben
  * dieser Datei und schuetzt sich selbst gegen doppeltes Laden. */
 require_once __DIR__ . '/sicherung.php';
+require_once __DIR__ . '/haus_bereiche.php';     // gemeinsame Bereiche unter haus/ (seit 0.9.62, Regeln/07)
 require_once __DIR__ . '/uhrabgleich.php';   // gemeinsames Uhrmodul (Frage 95), Abschrift von Werkzeuge/gemeinsam/uhrabgleich.php
 
 
@@ -205,6 +207,7 @@ function ww_vorgaben()
         'ansage_ein'     => 1,
         'ansage_stoerung'  => 1,
         'ansage_fernstart' => 1,
+        'meldung'          => meld_vorgaben(ww_meld_anlaesse(), ww_meld_haken_vorgabe()),   // 0.9.62: Meldungen an SignalBot, ab Werk aus
         // Ruhezeit. Bis 0.9.6 gab es keine: der Kommentar begruendete den
         // Vorgabewert ausdruecklich mit "womoeglich nachts", und genau dagegen
         // half nichts, sobald jemand die Ansage einschaltete.
@@ -2574,6 +2577,8 @@ function ww_ansage_senden($jetzt = null)
         $conf = ww_config();
         ww_ansage_token_pflegen($conf);
         $conf = ww_config();
+        ww_meld_senden($frisch, $conf);     // 0.9.62: dieselben Anlaesse an SignalBot (eigene Haken)
+        $frisch = ww_meld_nur_ansage($frisch, $conf);     // die Ansage nur mit ihrem eigenen Haken
         $a = ansage_regel_sprechen($frisch, ww_tts($conf), ww_ansage_regeln($conf), ww_ansage_k());
         $erg = $a['regel'] !== '' ? $a['regel'] : 'gesprochen';
         if ($a['r'] !== null) {
@@ -2734,7 +2739,7 @@ function ww_ansage_text_zu($ereignis, $name)
 function ww_ansage_check()
 {
     $cfg = ww_config();
-    if (empty($cfg['ansage_ein'])) {
+    if (empty($cfg['ansage_ein']) && !ww_meld_aktiv($cfg)) {     // 0.9.62: auch fuer die Meldung an SignalBot
         return;
     }
     /* 0.9.47: Nachtruhe, Sperre und Schalter stehen im Stamm. Der Stand wird fortgeschrieben, nachgeholt wird nicht; gesprochen wird in einem eigenen Vorgang. */
@@ -2772,7 +2777,7 @@ function ww_ansage_check()
                  : (((int) $wert === (int) $ausloeser) ? 1 : 0);
             $schluessel = $kennung . '#' . $ereignis;
             $neu[$schluessel] = $ist;
-            if ($erstlauf || empty($cfg[$haken])) {
+            if ($erstlauf || !ww_meld_will($ereignis, $cfg)) {     // 0.9.62: Ansage (Hauptschalter und Haken) oder Meldung
                 continue;
             }
             if (array_key_exists($schluessel, $alt)) {
@@ -2836,6 +2841,9 @@ function ww_wert_taugt($w)
  */
 function ww_wert_pruefen($schluessel, $w)
 {
+    if ($schluessel === 'meldung') {     // 0.9.62: Block der Meldungen an SignalBot (gemeinsames Modul meldung.php)
+        return !meld_block_pruefen($w, ww_meld_anlaesse());
+    }
     switch ($schluessel) {
         case 'takt_betrieb':
             return preg_match('/^[0-9]+$/', (string) $w) === 1
@@ -2926,6 +2934,11 @@ function ww_sicherung_wert_mangel($k, $w)
     if (!ww_wert_taugt($w) || !ww_wert_pruefen($k, $w)) {
         return sprintf(ww_t('EINST.SICH_WERT'), ww_e((string) $k));
     }
+    /* 0.9.62: kein Praefix auf einem gemeinsamen Bereich unter haus/ (Regeln/07) - wie im Formular. */
+    if ($k === 'mqtt_topic' && is_string($w) && hb_bereich($w) !== '') {
+        return sprintf(ww_t('EINST.SICH_WERT'), ww_e((string) $k)) . ' '
+            . ww_e(sprintf(ww_t('HAUSBEREICH.SICH_W'), hb_bereich($w)));
+    }
     return '';
 }
 
@@ -2996,6 +3009,7 @@ function ww_sicherung_beschreibung()
                 $g = '';
                 return ansage_regeln_wert($w, $g);
             }),
+        'meldung' => meld_sicherung_knoten(ww_meld_anlaesse(), ww_meld_k()),     // 0.9.62
         'zugang' => sicherung_block(array('hc_client_id', 'hc_client_secret', 'miele_client_id',
                                           'miele_client_secret', 'st_token')),
     );
@@ -3943,4 +3957,151 @@ function ww_gesund_fakten(array $cfg)
         $f['bruecke_laeuft'] = $l[0] === true;
     }
     return $f;
+}
+
+/**
+ * 0.9.62 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): Zeile im Reiter Test -
+ * faellt das gespeicherte Themen-Praefix auf einen gemeinsamen Bereich unter haus/? Speichern und Zurueckspielen
+ * weisen ein solches Praefix ab; ein schon gespeichertes bleibt in Betrieb und ist hier rot, grau bei ausgeschaltetem MQTT.
+ * Dazu der Vergleich der Liste mit der, die der Dienst in seinen Zustand schreibt (haus_bereiche).
+ * Liste und Pruefung aus dem gemeinsamen Modul haus_bereiche.php. Rueckgabe array(stand, html).
+ */
+function ww_pruef_praefix_haus($cfg)
+{
+    $p = (trim((string) $cfg['mqtt_topic'], '/') !== '' ? trim((string) $cfg['mqtt_topic'], '/') : 'weissware');
+    $b = hb_bereich($p);
+    if ($b !== '') {
+        if (!(!empty($cfg['mqtt_ein']))) {
+            return array(-1, sprintf(ww_t('HAUSBEREICH.A_AUS'), ww_e($p), ww_e($b)));
+        }
+        return array(0, sprintf(ww_t('HAUSBEREICH.A_NEIN'), ww_e($p), ww_e($b)));
+    }
+    $z = (is_array(ww_zustand()) && isset(ww_zustand()['haus_bereiche'])) ? ww_zustand()['haus_bereiche'] : null;
+    if (!is_array($z)) {
+        return array(-1, sprintf(ww_t('HAUSBEREICH.A_UNBEKANNT'), ww_e($p)));
+    }
+    if ($z !== hb_bereiche()) {
+        return array(0, sprintf(ww_t('HAUSBEREICH.A_LISTE'), ww_e(implode(', ', hb_bereiche())),
+            ww_e(implode(', ', array_map('strval', $z)))));
+    }
+    return array(1, sprintf(ww_t('HAUSBEREICH.A_JA'), ww_e($p)));
+}
+
+if (!function_exists('ww_meld_block')) {
+
+/* ---------------- Statusmeldungen an SignalBot (0.9.62, gemeinsames Modul meldung.php) ----------------
+ *
+ * Auftrag des Hausherrn 23.11.2026, Entscheidungen 23./24.11.2026: dieselben Anlaesse wie die Ansage, eigener Haken je
+ * Anlass, ab Werk aus; Sperre, Bremse und Versand im Modul. Die Erkennung laeuft auch ohne Ausgabeart, wenn eine Meldung
+ * eingeschaltet ist (ww_meld_aktiv()), und legt einen Anlass hin, wenn Ansage ODER Meldung ihn will
+ * (ww_meld_will()); der Sender trennt die Wege wieder (ww_meld_nur_ansage()).
+ */
+
+/** Die meldbaren Anlaesse: Name => Beschriftung (dieselben wie die Ansage). */
+function ww_meld_anlaesse()
+{
+    return array('fertig' => ww_t('WW_ANSAGE.N_FERTIG'), 'stoerung' => ww_t('WW_ANSAGE.N_STOERUNG'), 'fernstart' => ww_t('WW_ANSAGE.N_FERNSTART'));
+}
+
+/** Die ab-Werk-Haken der Ansage dieser Linie: so stehen auch die Haken der Meldung, solange der Block nie gespeichert ist. */
+function ww_meld_haken_vorgabe()
+{
+    return array('fertig' => 1, 'stoerung' => 1, 'fernstart' => 1);
+}
+
+/** Ist der Haken dieses Anlasses fuer die ANSAGE gesetzt? */
+function ww_ansage_anlass_sprache($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = ww_config(); }
+    $h = array('fertig' => 'ansage_ein', 'stoerung' => 'ansage_stoerung', 'fernstart' => 'ansage_fernstart');
+    return isset($h[$a]) && is_array($cfg) && !empty($cfg['ansage_ein']) && !empty($cfg[$h[$a]]);
+}
+
+/** Der wirksame Block 'meldung' fuer den Betrieb (ungueltig gespeichert gilt als aus und wird im Formular genannt). */
+function ww_meld_block($cfg = null)
+{
+    if ($cfg === null) { $cfg = ww_config(); }
+    list($b) = meld_block(is_array($cfg) && array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, ww_meld_anlaesse(), ww_meld_haken_vorgabe());
+    return $b;
+}
+
+/** Die Beanstandungen eines gespeicherten Blocks (leer = gueltig). */
+function ww_meld_bean($cfg = null)
+{
+    if ($cfg === null) { $cfg = ww_config(); }
+    list(, $f) = meld_block(is_array($cfg) && array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, ww_meld_anlaesse(), ww_meld_haken_vorgabe());
+    return $f;
+}
+
+/** Ist irgendein Anlass zur Meldung eingeschaltet? Dann laeuft die Erkennung auch ohne Ausgabeart. */
+function ww_meld_aktiv($cfg = null)
+{
+    return meld_irgendein_an(ww_meld_block($cfg));
+}
+
+/** Will die Ansage ODER die Meldung diesen Anlass? */
+function ww_meld_will($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = ww_config(); }
+    return ww_ansage_anlass_sprache($a, $cfg) || meld_anlass_an(ww_meld_block($cfg), (string) $a);
+}
+
+/** Der Kontext des Moduls: Datenordner (data/plugins/<ordner>, daraus der Absender) und Texte - wie bei der Ansage. */
+function ww_meld_k()
+{
+    return ww_ansage_k();
+}
+
+/** Fuer die Ansage nur Eintraege, deren Ansage-Haken gesetzt ist; ein Eintrag ohne bekannten Anlass bleibt wie bisher. */
+function ww_meld_nur_ansage(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = ww_config(); }
+    $anl = ww_meld_anlaesse();
+    $aus = array();
+    foreach ($l as $e) {
+        if (is_array($e) && array_key_exists(meld_anlass_von($e), $anl) && !ww_ansage_anlass_sprache(meld_anlass_von($e), $cfg)) { continue; }
+        $aus[] = $e;
+    }
+    return $aus;
+}
+
+/** Die Eintraege an SignalBot melden. Protokoll: eine Zeile, wenn gesendet oder gescheitert (nie der Text). */
+function ww_meld_senden(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = ww_config(); }
+    $b = ww_meld_block($cfg);
+    if (empty($b['ein']) || !$l) { return null; }
+    $a = meld_regel_senden($l, $b, ww_meld_k());
+    if ($a['regel'] === '' || in_array($a['regel'], array('BREMSE', 'STAND', 'ORDNER'), true)) {
+        ww_ansage_log(meld_regel_kurz($a));
+    }
+    return $a;
+}
+
+/** Der Knopf "Testmeldung senden": array(angenommen, Satz). Geht an Haken, Sperre und Bremse vorbei. */
+function ww_meld_test()
+{
+    $r = meld_testmeldung(ww_meld_k());
+    ww_ansage_log('Testmeldung an SignalBot: ' . ($r[0] ? 'angenommen' : 'nicht angenommen'));
+    return $r;
+}
+
+/** Der Block im Einstellungsformular (unter den Ansage-Regeln, im selben Formular), mit Lage und Knopf. */
+function ww_meld_form_html($cfg = null)
+{
+    if ($cfg === null) { $cfg = ww_config(); }
+    $e = function ($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); };
+    $k = ww_meld_k();
+    $o = array();
+    /* 0.9.62: unsichtbarer Doppel des Speicherknopfs VOR dem Knopf Testmeldung - die Eingabetaste in einem Textfeld
+     * loest den ersten Absendeknopf des Formulars aus; sie soll speichern wie bisher, nicht die Testmeldung senden. */
+    $o[] = '<button data-role="none" type="submit" tabindex="-1" aria-hidden="true" style="position:absolute;left:-10000px;top:auto;width:1px;height:1px;overflow:hidden"></button>';
+    $o[] = '<h3>' . $e(meld_t('TITEL', $k)) . '</h3>';
+    $o[] = meld_formular_html(ww_meld_block($cfg), ww_meld_anlaesse(), array(), $k);
+    list(, $lage) = meld_pruefzeile(ww_meld_block($cfg), ww_meld_bean($cfg), $k);
+    $o[] = '<div class="sm-hilfe">' . $e(meld_t('F_TEST', $k) . ' ' . $lage) . '</div>';
+    $o[] = '<div class="sm-knopfreihe"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="meld_test" value="1">'
+         . $e(meld_t('K_TEST', $k)) . '</button></div>';
+    return implode("\n", $o) . "\n";
+}
 }

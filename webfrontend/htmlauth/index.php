@@ -250,7 +250,7 @@ if ($ww_post && isset($_POST['vorlage'])) {
  * ohne ein Wort (weissware_agenten/oberflaeche Befund 3); bei einer
  * Beanstandung war das neue Miele-Geheimnis trotzdem gespeichert (Befund 4),
  * und die Eingaben waren fort (Befund 2). */
-if ($ww_post && isset($_POST['speichern'])) {
+if ($ww_post && isset($_POST['speichern']) && !isset($_POST['meld_test'])) {     // 0.9.62: der Knopf Testmeldung (im selben Formular) speichert nicht
     $ww_cfg = ww_config();
     $ww_falsch = array();
 
@@ -313,6 +313,8 @@ if ($ww_post && isset($_POST['speichern'])) {
     $ww_cfg['tts'] = ansage_formular_lesen($ww_tpost, ww_tts(), $ww_tmangel, $ww_tbean,
         ww_ansage_opt() + array('ziele' => ww_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), ww_ansage_k(), $ww_thinw);
     list($ww_cfg['ansage_regeln']) = ansage_regeln_formular($ww_tpost, ww_ansage_regeln(ww_config()), array(), $ww_tmangel, $ww_tbean, ww_ansage_k());     // S2: Wann gesprochen wird (Stamm)
+    // 0.9.62: der Block 'Meldungen an SignalBot' (eine Beanstandung haelt das Speichern an, wie die Ansage)
+    $ww_cfg['meldung'] = meld_formular_lesen($_POST, isset($ww_cfg['meldung']) ? $ww_cfg['meldung'] : null, ww_meld_anlaesse(), $ww_tmangel, $ww_tbean, ww_meld_k(), ww_meld_haken_vorgabe());
     // 0.9.50: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 0.9.49 ueberschrieb es der naechste Abgleich.
     $ww_cfg['ansage_token_herkunft'] = ansage_token_herkunft_formular($_POST, isset($ww_cfg['ansage_token_herkunft']) ? $ww_cfg['ansage_token_herkunft'] : array());
     foreach ($ww_tmangel as $ww_tm) { $ww_fehler[] = ww_e($ww_tm['text']); }
@@ -420,6 +422,13 @@ if ($ww_post && isset($_POST['save_mqtt'])) {
     $ww_mtopic = (string) ww_post_text('mqtt_topic');
     if (!ww_praefix_ok($ww_mtopic)) {
         $ww_fehler[] = ww_t('EINST.FEHLER_TOPIC');
+        $ww_falsch[] = 'mqtt_topic';
+    } elseif (hb_bereich($ww_mtopic) !== '' && $ww_mtopic !== (string) $ww_mcfg['mqtt_topic']) {   // nur NEUE Eingaben: ein schon gespeichertes Praefix sperrt das Speichern
+        // des Reiters nicht (Regeln/07; Bauart Einspeisebremse 0.9.25)
+        /* 0.9.62 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): kein Praefix auf einem
+         * gemeinsamen Bereich unter haus/ - nur hier und beim Zurueckspielen, nicht in der Pruefung beim Lesen der
+         * Konfiguration: ein schon gespeichertes bleibt in Betrieb, der Reiter Test meldet es. */
+        $ww_fehler[] = sprintf(ww_t('HAUSBEREICH.FEHLER'), ww_e($ww_mtopic), ww_e(hb_bereich($ww_mtopic)));
         $ww_falsch[] = 'mqtt_topic';
     } else {
         $ww_mcfg['mqtt_topic'] = $ww_mtopic;
@@ -710,6 +719,12 @@ if ($ww_post && isset($_POST['selbsttest'])) {
  * Lox NG mit deren Antwortzeile (ohne Token), nie den Text. POST, Einmalmeldung, 303 wie jeder Knopf. */
 /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht
  * nur dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
+/* 0.9.62: Testmeldung an SignalBot (Knopf unter den Ansage-Regeln). */
+if ($ww_post && isset($_POST['meld_test'])) {
+    list($meld_ok, $meld_satz) = ww_meld_test();
+    if ($meld_ok) { $ww_meldungen[] = ww_e($meld_satz); } else { $ww_misslungen[] = ww_e($meld_satz); }
+    $ww_tab = 'tab-test';
+}
 if ($ww_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
     $ww_tk = ww_ansage_k();
     $ww_tnur = (isset($_POST['ansage_test_ziel']) && ww_mit_zielen()) ? ansage_test_ziel($_POST) : 0;
@@ -1290,6 +1305,7 @@ if (!empty($ww_zustand['fehler'])) { ?>
     'm' => function ($n) { return ww_fm($n); },
     'c' => function ($n, $g) { return ww_fh('settings', $n, $g); },
     'token_vor_ort' => true), ww_ansage_k()) ?>
+<?= ww_meld_form_html($ww_cfg) ?>
 
 <?php /* MQTT stand hier bis zu dieser Fassung. Es wohnt jetzt
          vollstaendig im Reiter MQTT - eine Sache, eine Stelle. */ ?>

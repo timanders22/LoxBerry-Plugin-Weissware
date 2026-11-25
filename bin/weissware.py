@@ -2620,6 +2620,26 @@ def getrennt_fortschreiben(vorher: dict, jetzt: dict) -> None:
                     g[feld] = alt[feld]
 
 
+def _haus_bereiche():
+    """0.9.62 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): das gemeinsame
+    Modul haus_bereiche.py neben dem Dienst, beim ersten Aufruf geladen."""
+    hier = os.path.dirname(os.path.abspath(__file__))
+    if hier not in sys.path:
+        sys.path.insert(0, hier)
+    import haus_bereiche  # noqa: E402
+    return haus_bereiche
+
+
+def praefix_haus_melden(praefix):
+    """0.9.62: einmal je Aenderung eine Protokollzeile, solange das Praefix auf einen gemeinsamen Bereich unter
+    haus/ faellt; der Versand bleibt, wie er ist. Rueckgabe der gemeldete Bereich oder ""."""
+    hb = _haus_bereiche()
+    bereich = hb.hb_melden_faellig(praefix)
+    if bereich:
+        _LOG.warning("%s", hb.hb_logtext(praefix, bereich))
+    return bereich
+
+
 def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str, ausfaelle: dict,
                      fehler_folge: int = 0) -> dict:
     """Bei einem fehlgeschlagenen Abruf bleiben die zuletzt gueltigen Werte
@@ -2641,6 +2661,7 @@ def abbild_schreiben(stand: dict, cfg: dict, ok: int, fehler: str, ausfaelle: di
                                  "ausfaelle": ausfaelle, "geraete": geraete})
 
     praefix = str(cfg.get("mqtt_topic") or "weissware").strip("/") or "weissware"
+    praefix_haus_melden(praefix)   # 0.9.62: im gemeinsamen Bereich? melden, nicht anhalten
     # Ueber MQTT gibt es kein "Alter": beim Senden ist es immer null. Wer die
     # Ausfallerkennung auch auf diesem Weg haben will, braucht den ZEITSTEMPEL
     # des letzten erfolgreichen Abrufs und rechnet auf der Gegenseite. Ohne ihn
@@ -3680,7 +3701,8 @@ def _dienst_lauf(einmal: bool = False) -> int:
             # liegengebliebene Pause wuerde den Waechter dauerhaft stilllegen -
             # dieselbe Falle, die 0.9.7 mit der Ausfallliste hatte. Bei
             # --einmal gibt es keine Pause, dort ist der Wert 0.
-            zustand_schreiben(ok=ok, fehler=fehler, fehler_folge=fehler_folge,
+            zustand_schreiben(haus_bereiche=list(_haus_bereiche().HB_BEREICHE),   # 0.9.62
+                              ok=ok, fehler=fehler, fehler_folge=fehler_folge,
                               pid=os.getpid(), anzahl_geraete=len(stand["geraete"]),
                               ausfaelle=ausfaelle,
                               pause_bis=(int(time.time()) + rest

@@ -564,6 +564,9 @@ function ww_pruefungen($offen = false)
     $zeilen[] = ww_pruefzeile($mqttEin ? 1 : -1, ww_t('TEST.F_MQTT_EIN'),
         ww_t($mqttEin ? 'TEST.A_MQTT_EIN_JA' : 'TEST.A_MQTT_EIN_NEIN'));
 
+    // 0.9.62: faellt das Themen-Praefix auf einen gemeinsamen Bereich unter haus/ (Regeln/07)?
+    $ww_hb = ww_pruef_praefix_haus($cfg);
+    $zeilen[] = ww_pruefzeile($ww_hb[0], ww_e(ww_t('HAUSBEREICH.F_TEST')), $ww_hb[1]);
     $m = ww_mqtt_zustand();
     if (!$m['gefunden']) {
         $zeilen[] = ww_pruefzeile(0, ww_t('TEST.F_MQTT'), ww_t('TEST.A_MQTT_NICHT_GEFUNDEN'));
